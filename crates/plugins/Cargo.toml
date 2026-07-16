@@ -1,0 +1,11 @@
+[package]
+name = "aegis-plugins"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+aegis-event-store = { path = "../event_store" }

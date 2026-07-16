@@ -1,0 +1,16 @@
+# Cargo compilation outputs
+target/
+target/manual/
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+
+# Local configurations
+aegis.toml
+.env
+
+# OS-specific files
+Thumbs.db
+.DS_Store
