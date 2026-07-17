@@ -1,25 +1,49 @@
 [workspace]
 resolver = "2"
 members = [
-    "apps/cli",
-    "apps/daemon",
-    "apps/tui",
-    "crates/deployment",
-    "crates/process",
-    "crates/git",
-    "crates/analytics",
-    "crates/logs",
-    "crates/metrics",
-    "crates/ssh",
-    "crates/health",
-    "crates/event_store",
-    "crates/plugins",
-    "crates/config",
-    "crates/auth",
-    "crates/secrets",
-    "crates/notifications",
-    "crates/scheduler",
-    "crates/api",
+    # Core Domain & Apps
+    "core/daemon",
+    "core/config",
+    "core/event_store",
+    "core/plugin",
+    "core/api",
+    "core/state",
+    "core/scheduler",
+    "core/auth",
+    "core/secrets",
+    "core/ssh",
+    "core/types",
+    "core/event_bus",
+    "core/projection",
+
+    # Deployment
+    "deployment/builder",
+    "deployment/release",
+    "deployment/rollback",
+    "deployment/health",
+    "deployment/analytics",
+    "deployment/artifact_store",
+    "deployment/strategy",
+
+    # Runtime
+    "runtime/process",
+    "runtime/logs",
+    "runtime/metrics",
+    "runtime/engine",
+
+    # Git
+    "git/repository",
+    "git/webhook",
+    "git/action",
+
+    # UI
+    "ui/cli",
+    "ui/tui",
+
+    # Integrations
+    "integrations/github",
+    "integrations/docker",
+    "integrations/slack",
 ]
 
 [workspace.dependencies]
@@ -58,7 +82,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 
 # Core Utils
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.8", features = ["v4", "serde"] }
+uuid = { version = "1.8", features = ["v4", "v7", "serde"] }
 thiserror = "1.0"
 anyhow = "1.0"
 async-trait = "0.1"

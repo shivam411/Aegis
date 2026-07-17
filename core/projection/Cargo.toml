@@ -1,0 +1,10 @@
+[package]
+name = "aegis-projection"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+aegis-types = { path = "../types" }
+aegis-event-bus = { path = "../event_bus" }

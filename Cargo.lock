@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "aegis-action"
+version = "0.1.0"
+
+[[package]]
 name = "aegis-analytics"
 version = "0.1.0"
 
@@ -17,7 +21,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aegis-artifact-store"
+version = "0.1.0"
+dependencies = [
+ "aegis-types",
+ "anyhow",
+ "tokio",
+]
+
+[[package]]
 name = "aegis-auth"
+version = "0.1.0"
+
+[[package]]
+name = "aegis-builder"
 version = "0.1.0"
 
 [[package]]
@@ -53,6 +70,7 @@ dependencies = [
  "aegis-event-store",
  "aegis-logs",
  "aegis-plugins",
+ "aegis-types",
  "anyhow",
  "async-trait",
  "futures-core",
@@ -70,9 +88,34 @@ name = "aegis-deployment"
 version = "0.1.0"
 
 [[package]]
+name = "aegis-docker"
+version = "0.1.0"
+
+[[package]]
+name = "aegis-engine"
+version = "0.1.0"
+dependencies = [
+ "aegis-types",
+ "anyhow",
+ "async-trait",
+ "tokio",
+]
+
+[[package]]
+name = "aegis-event-bus"
+version = "0.1.0"
+dependencies = [
+ "aegis-types",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "aegis-event-store"
 version = "0.1.0"
 dependencies = [
+ "aegis-types",
  "anyhow",
  "chrono",
  "serde",
@@ -86,6 +129,10 @@ dependencies = [
 
 [[package]]
 name = "aegis-git"
+version = "0.1.0"
+
+[[package]]
+name = "aegis-github"
 version = "0.1.0"
 
 [[package]]
@@ -113,6 +160,7 @@ name = "aegis-plugins"
 version = "0.1.0"
 dependencies = [
  "aegis-event-store",
+ "aegis-types",
  "anyhow",
  "async-trait",
  "tokio",
@@ -121,6 +169,20 @@ dependencies = [
 
 [[package]]
 name = "aegis-process"
+version = "0.1.0"
+
+[[package]]
+name = "aegis-projection"
+version = "0.1.0"
+dependencies = [
+ "aegis-event-bus",
+ "aegis-types",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "aegis-rollback"
 version = "0.1.0"
 
 [[package]]
@@ -136,7 +198,33 @@ name = "aegis-ssh"
 version = "0.1.0"
 
 [[package]]
+name = "aegis-state"
+version = "0.1.0"
+
+[[package]]
+name = "aegis-strategy"
+version = "0.1.0"
+dependencies = [
+ "aegis-types",
+ "anyhow",
+ "async-trait",
+ "tokio",
+]
+
+[[package]]
 name = "aegis-tui"
+version = "0.1.0"
+
+[[package]]
+name = "aegis-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "aegis-webhook"
 version = "0.1.0"
 
 [[package]]
