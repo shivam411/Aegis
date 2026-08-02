@@ -87,10 +87,12 @@ version = "0.1.0"
 dependencies = [
  "aegis-api",
  "aegis-config",
+ "aegis-event-bus",
  "aegis-event-store",
  "aegis-logs",
  "aegis-plugins",
  "aegis-projection",
+ "aegis-scheduler",
  "aegis-types",
  "anyhow",
  "async-trait",
@@ -259,6 +261,16 @@ dependencies = [
 [[package]]
 name = "aegis-scheduler"
 version = "0.1.0"
+dependencies = [
+ "aegis-event-bus",
+ "aegis-types",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-secrets"

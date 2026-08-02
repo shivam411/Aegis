@@ -55,6 +55,20 @@ enum Commands {
         /// Process ID to stop
         process_id: String,
     },
+    /// Configure a daily auto-deployment schedule at specific hours
+    Schedule {
+        /// Target project ID
+        project_id: String,
+        /// Target deployment hour (0-23)
+        #[arg(short, long)]
+        hour: u32,
+        /// Target deployment minute (0-59)
+        #[arg(short, long, default_value = "0")]
+        minute: u32,
+        /// Target Git branch
+        #[arg(short, long, default_value = "main")]
+        branch: String,
+    },
     /// Restart a process
     Restart {
         /// Process ID to restart
@@ -193,6 +207,34 @@ async fn main() -> Result<(), anyhow::Error> {
 
             if response.success {
                 println!("Stop signal sent to process {}", process_id);
+            }
+        }
+        Commands::Schedule {
+            project_id,
+            hour,
+            minute,
+            branch,
+        } => {
+            println!(
+                "Configuring daily auto-deployment schedule for project {} at {:02}:{:02} (Branch: {})",
+                project_id, hour, minute, branch
+            );
+            let response = client
+                .emit_event(EmitEventRequest {
+                    event_type: "ScheduleConfigured".to_string(),
+                    payload_json: serde_json::json!({
+                        "project_id": project_id,
+                        "target_hour": hour,
+                        "target_minute": minute,
+                        "branch": branch,
+                    })
+                    .to_string(),
+                })
+                .await?
+                .into_inner();
+
+            if response.success {
+                println!("Daily auto-deployment schedule configured successfully!");
             }
         }
         Commands::Restart { process_id } => {

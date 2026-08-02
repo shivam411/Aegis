@@ -190,7 +190,13 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     });
 
-    // 8. Start gRPC Server
+    // 8. Initialize Scheduler Engine & Start Daily Auto-Deploy Loop
+    let scheduler_engine = aegis_scheduler::SchedulerEngine::new();
+    let event_bus = aegis_event_bus::EventBus::new();
+    scheduler_engine.start_scheduler_loop(event_bus);
+    tracing::info!("Scheduler Engine initialized with daily auto-deployment worker");
+
+    // 9. Start gRPC Server
     let addr_str = format!("{}:{}", config.daemon.host, config.daemon.port);
     let addr: SocketAddr = addr_str.parse()?;
     tracing::info!(grpc_bind = %addr_str, "Starting gRPC service server");
