@@ -5,7 +5,7 @@
 The fastest way to install Aegis on Linux or macOS:
 
 ```bash
-curl -fsSL https://shivam411.github.io/Aegis/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
 ```
 
 This script automatically:

@@ -25,7 +25,7 @@ Aegis is a modern, high-performance alternative to PM2, Heroku, and Vercel for s
 ## Quick Install
 
 ```bash
-curl -fsSL https://shivam411.github.io/Aegis/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
 ```
 
 ## License

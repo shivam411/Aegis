@@ -8,7 +8,7 @@
 **Aegis** is a zero-dependency, event-sourced deployment platform and process manager written in Rust. A modern, self-hosted alternative to PM2, Heroku, and Vercel for single-server VPS environments.
 
 ```bash
-curl -fsSL https://shivam411.github.io/Aegis/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
 ```
 
 ---
@@ -34,7 +34,7 @@ curl -fsSL https://shivam411.github.io/Aegis/install.sh | bash
 ### One-Line Installer (Linux & macOS)
 
 ```bash
-curl -fsSL https://shivam411.github.io/Aegis/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
 ```
 
 The installer automatically detects your OS and CPU architecture, downloads the latest release from GitHub, and installs to `~/.local/bin/`.
