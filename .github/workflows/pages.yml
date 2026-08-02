@@ -1,0 +1,74 @@
+name: Deploy Docs to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare docs site
+        run: |
+          mkdir -p _site
+
+          # Copy documentation files
+          cp -r docs/* _site/
+
+          # Copy installer script so it's served at /install.sh
+          if [ -f install.sh ]; then
+            cp install.sh _site/install.sh
+          fi
+
+          # Generate a simple index.html from index.md if no index.html exists
+          if [ -f _site/index.md ] && [ ! -f _site/index.html ]; then
+            echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' > _site/index.html
+            echo '<meta name="viewport" content="width=device-width, initial-scale=1">' >> _site/index.html
+            echo '<title>Aegis – Zero-Downtime Deployment Platform</title>' >> _site/index.html
+            echo '<style>' >> _site/index.html
+            echo 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;' >> _site/index.html
+            echo 'max-width: 800px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #e0e0e0;' >> _site/index.html
+            echo 'background: #0d1117; }' >> _site/index.html
+            echo 'a { color: #58a6ff; } code { background: #161b22; padding: 2px 6px; border-radius: 4px; }' >> _site/index.html
+            echo 'pre { background: #161b22; padding: 1rem; border-radius: 8px; overflow-x: auto; }' >> _site/index.html
+            echo 'h1, h2, h3 { color: #f0f6fc; } hr { border-color: #30363d; }' >> _site/index.html
+            echo '</style></head><body>' >> _site/index.html
+            echo '<p><a href="install.md">Install</a> · <a href="quickstart.md">Quickstart</a> · <a href="architecture.md">Architecture</a> · <a href="https://github.com/shivam411/Aegis">GitHub</a></p>' >> _site/index.html
+            echo '<hr>' >> _site/index.html
+            # Serve the raw markdown as pre-formatted for now; replace with MkDocs/Docusaurus later
+            echo '<pre>' >> _site/index.html
+            cat _site/index.md >> _site/index.html
+            echo '</pre></body></html>' >> _site/index.html
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
