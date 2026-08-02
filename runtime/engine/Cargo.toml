@@ -7,4 +7,6 @@ edition = "2021"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }
 aegis-types = { path = "../../core/types" }
+aegis-process = { path = "../process" }

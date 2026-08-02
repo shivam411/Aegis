@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 
 aegis-config = { path = "../../core/config" }
 aegis-api = { path = "../../core/api" }
+aegis-types = { path = "../../core/types" }

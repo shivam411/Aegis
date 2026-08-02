@@ -41,6 +41,7 @@ impl aegis_plugins::Plugin for DemoPlugin {
 pub struct DaemonService {
     event_store: EventStore,
     plugin_manager: Arc<PluginManager>,
+    projection_engine: aegis_projection::ProjectionEngine,
 }
 
 #[tonic::async_trait]
@@ -57,6 +58,9 @@ impl AegisDaemon for DaemonService {
         let events = self.event_store.get_events().await.map_err(|e| {
             Status::internal(format!("Failed to retrieve events from store: {}", e))
         })?;
+
+        let projected_projects = self.projection_engine.get_projects();
+        tracing::debug!(project_count = projected_projects.len(), "Retrieved projected state");
 
         let response = StatusResponse {
             initialized: true,
@@ -172,7 +176,21 @@ async fn main() -> Result<(), anyhow::Error> {
     plugin_manager.start_event_loop(event_store.subscribe());
     let plugin_manager = Arc::new(plugin_manager);
 
-    // 7. Start gRPC Server
+    // 7. Initialize Projection Engine & Replay History
+    let projection_engine = aegis_projection::ProjectionEngine::new();
+    let initial_events = event_store.get_events().await?;
+    projection_engine.replay_from_store(&initial_events);
+    tracing::info!(replayed = initial_events.len(), "Projection Engine state replayed");
+
+    let proj_engine_clone = projection_engine.clone();
+    let mut proj_rx = event_store.subscribe();
+    tokio::spawn(async move {
+        while let Ok(event) = proj_rx.recv().await {
+            proj_engine_clone.apply_event(&event);
+        }
+    });
+
+    // 8. Start gRPC Server
     let addr_str = format!("{}:{}", config.daemon.host, config.daemon.port);
     let addr: SocketAddr = addr_str.parse()?;
     tracing::info!(grpc_bind = %addr_str, "Starting gRPC service server");
@@ -180,6 +198,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let service = DaemonService {
         event_store,
         plugin_manager,
+        projection_engine,
     };
 
     Server::builder()

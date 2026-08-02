@@ -24,9 +24,15 @@ dependencies = [
 name = "aegis-artifact-store"
 version = "0.1.0"
 dependencies = [
+ "aegis-release",
  "aegis-types",
  "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -36,6 +42,19 @@ version = "0.1.0"
 [[package]]
 name = "aegis-builder"
 version = "0.1.0"
+dependencies = [
+ "aegis-artifact-store",
+ "aegis-engine",
+ "aegis-event-bus",
+ "aegis-release",
+ "aegis-types",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-cli"
@@ -43,6 +62,7 @@ version = "0.1.0"
 dependencies = [
  "aegis-api",
  "aegis-config",
+ "aegis-types",
  "anyhow",
  "clap",
  "prost",
@@ -70,6 +90,7 @@ dependencies = [
  "aegis-event-store",
  "aegis-logs",
  "aegis-plugins",
+ "aegis-projection",
  "aegis-types",
  "anyhow",
  "async-trait",
@@ -84,10 +105,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aegis-deployment"
-version = "0.1.0"
-
-[[package]]
 name = "aegis-docker"
 version = "0.1.0"
 
@@ -95,10 +112,12 @@ version = "0.1.0"
 name = "aegis-engine"
 version = "0.1.0"
 dependencies = [
+ "aegis-process",
  "aegis-types",
  "anyhow",
  "async-trait",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -130,6 +149,12 @@ dependencies = [
 [[package]]
 name = "aegis-git"
 version = "0.1.0"
+dependencies = [
+ "aegis-types",
+ "anyhow",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-github"
@@ -138,6 +163,12 @@ version = "0.1.0"
 [[package]]
 name = "aegis-health"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-logs"
@@ -154,6 +185,14 @@ version = "0.1.0"
 [[package]]
 name = "aegis-notifications"
 version = "0.1.0"
+dependencies = [
+ "aegis-plugins",
+ "aegis-types",
+ "anyhow",
+ "async-trait",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-plugins"
@@ -170,6 +209,13 @@ dependencies = [
 [[package]]
 name = "aegis-process"
 version = "0.1.0"
+dependencies = [
+ "aegis-types",
+ "anyhow",
+ "async-trait",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-projection"
@@ -178,12 +224,33 @@ dependencies = [
  "aegis-event-bus",
  "aegis-types",
  "serde",
+ "serde_json",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "aegis-release"
+version = "0.1.0"
+dependencies = [
+ "aegis-types",
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "aegis-rollback"
 version = "0.1.0"
+dependencies = [
+ "aegis-artifact-store",
+ "aegis-release",
+ "aegis-types",
+ "anyhow",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-scheduler"
@@ -205,15 +272,28 @@ version = "0.1.0"
 name = "aegis-strategy"
 version = "0.1.0"
 dependencies = [
+ "aegis-artifact-store",
+ "aegis-health",
+ "aegis-release",
  "aegis-types",
  "anyhow",
  "async-trait",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "aegis-tui"
 version = "0.1.0"
+dependencies = [
+ "aegis-api",
+ "aegis-config",
+ "aegis-types",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "aegis-types"
@@ -226,6 +306,16 @@ dependencies = [
 [[package]]
 name = "aegis-webhook"
 version = "0.1.0"
+dependencies = [
+ "aegis-event-bus",
+ "aegis-types",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aho-corasick"

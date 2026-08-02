@@ -20,4 +20,5 @@ aegis-logs = { path = "../../runtime/logs" }
 aegis-api = { path = "../api" }
 aegis-event-store = { path = "../event_store" }
 aegis-plugins = { path = "../plugin" }
+aegis-projection = { path = "../projection" }
 aegis-types = { path = "../types" }

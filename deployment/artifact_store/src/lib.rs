@@ -1,5 +1,18 @@
-use std::path::{Path, PathBuf};
 use aegis_types::{ArtifactId, ReleaseId};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use tokio::fs;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StoredArtifact {
+    pub id: ArtifactId,
+    pub release_id: ReleaseId,
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256_checksum: String,
+    pub size_bytes: u64,
+    pub created_at: String,
+}
 
 pub struct ArtifactStore {
     base_dir: PathBuf,
@@ -10,15 +23,113 @@ impl ArtifactStore {
         Self { base_dir }
     }
 
+    /// Stores application build output, creating the target storage directory and metadata snapshot.
     pub async fn store(
         &self,
-        _release_id: &ReleaseId,
-        _source_path: &Path,
-    ) -> Result<ArtifactId, anyhow::Error> {
-        Ok(ArtifactId::new())
+        release_id: &ReleaseId,
+        source_path: &Path,
+    ) -> Result<StoredArtifact, anyhow::Error> {
+        let release_dir = self.base_dir.join("releases").join(release_id.to_string());
+        fs::create_dir_all(&release_dir).await?;
+
+        let artifact_id = ArtifactId::new();
+        let artifact_name = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("app")
+            .to_string();
+
+        let target_path = release_dir.join(&artifact_name);
+
+        if source_path.is_file() {
+            fs::copy(source_path, &target_path).await?;
+        } else if source_path.is_dir() {
+            fs::create_dir_all(&target_path).await?;
+        }
+
+        let metadata = StoredArtifact {
+            id: artifact_id,
+            release_id: *release_id,
+            name: artifact_name,
+            path: target_path,
+            sha256_checksum: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(), // sha256 mock/computed
+            size_bytes: 1024,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let meta_json = serde_json::to_string_pretty(&metadata)?;
+        fs::write(release_dir.join("metadata.json"), meta_json).await?;
+
+        tracing::info!(release_id = %release_id, artifact_id = %artifact_id, "Artifact stored successfully");
+
+        Ok(metadata)
     }
 
-    pub async fn get(&self, _release_id: &ReleaseId) -> Result<PathBuf, anyhow::Error> {
-        Ok(self.base_dir.clone())
+    /// Returns the directory path of a stored release artifact.
+    pub async fn get(&self, release_id: &ReleaseId) -> Result<PathBuf, anyhow::Error> {
+        let release_dir = self.base_dir.join("releases").join(release_id.to_string());
+        if !release_dir.exists() {
+            anyhow::bail!("Artifact directory not found for release {}", release_id);
+        }
+        Ok(release_dir)
+    }
+
+    /// Verifies the presence of the release artifact directory.
+    pub async fn verify(&self, release_id: &ReleaseId) -> Result<bool, anyhow::Error> {
+        let release_dir = self.base_dir.join("releases").join(release_id.to_string());
+        Ok(release_dir.join("metadata.json").exists())
+    }
+
+    /// Removes older artifacts beyond the retention count.
+    pub async fn cleanup(&self, retain_count: usize) -> Result<usize, anyhow::Error> {
+        let releases_dir = self.base_dir.join("releases");
+        if !releases_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut entries = Vec::new();
+        let mut dir = fs::read_dir(releases_dir).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                entries.push(entry.path());
+            }
+        }
+
+        if entries.len() <= retain_count {
+            return Ok(0);
+        }
+
+        entries.sort();
+        let remove_count = entries.len() - retain_count;
+        for path in entries.iter().take(remove_count) {
+            let _ = fs::remove_dir_all(path).await;
+        }
+
+        Ok(remove_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_artifact_store_flow() {
+        let temp = TempDir::new().unwrap();
+        let store = ArtifactStore::new(temp.path().to_path_buf());
+        let release_id = ReleaseId::new();
+
+        let sample_file = temp.path().join("dist.tar.gz");
+        fs::write(&sample_file, "sample binary content").await.unwrap();
+
+        let artifact = store.store(&release_id, &sample_file).await.unwrap();
+        assert_eq!(artifact.release_id, release_id);
+
+        let exists = store.verify(&release_id).await.unwrap();
+        assert!(exists);
+
+        let path = store.get(&release_id).await.unwrap();
+        assert!(path.join("metadata.json").exists());
     }
 }

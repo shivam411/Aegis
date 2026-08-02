@@ -17,7 +17,15 @@ impl PluginManager {
     pub fn new() -> Self {
         Self { plugins: Vec::new() }
     }
+}
 
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PluginManager {
     pub fn register(&mut self, plugin: Arc<dyn Plugin>) {
         tracing::info!(plugin = %plugin.name(), "Registering plugin");
         self.plugins.push(plugin);

@@ -19,6 +19,47 @@ struct Cli {
 enum Commands {
     /// Check daemon status and loaded plugins
     Status,
+    /// Initialize a project and auto-detect runtime
+    Init {
+        /// Project name
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Repository URL
+        #[arg(short, long)]
+        repo: Option<String>,
+    },
+    /// Trigger build and deployment for a project
+    Deploy {
+        /// Project ID
+        project_id: String,
+        /// Target Git branch
+        #[arg(short, long, default_value = "main")]
+        branch: String,
+    },
+    /// Rollback a project to a previous release version
+    Rollback {
+        /// Project ID
+        project_id: String,
+        /// Release version to roll back to
+        version: String,
+    },
+    /// List all active projects and running processes
+    List,
+    /// Stream logs for a process or system
+    Logs {
+        /// Target process ID
+        process_id: Option<String>,
+    },
+    /// Stop a running process
+    Stop {
+        /// Process ID to stop
+        process_id: String,
+    },
+    /// Restart a process
+    Restart {
+        /// Process ID to restart
+        process_id: String,
+    },
     /// Manually emit an operational event to the daemon
     EmitEvent {
         /// The event type (e.g. RepositoryAdded, DeploymentStarted)
@@ -57,11 +98,121 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             println!("  Total Events: {}", response.event_count);
         }
+        Commands::Init { name, repo } => {
+            let project_id = aegis_types::ProjectId::new();
+            let proj_name = name.unwrap_or_else(|| "unnamed-project".to_string());
+            let repo_url = repo.unwrap_or_else(|| "https://github.com/aegis/project".to_string());
+
+            println!("Initializing Aegis Project '{}' ({})", proj_name, project_id);
+            let response = client
+                .emit_event(EmitEventRequest {
+                    event_type: "ProjectCreated".to_string(),
+                    payload_json: serde_json::json!({
+                        "project_id": project_id.to_string(),
+                        "name": proj_name,
+                        "repository_url": repo_url,
+                        "branch": "main",
+                    })
+                    .to_string(),
+                })
+                .await?
+                .into_inner();
+
+            if response.success {
+                println!("Project created successfully! (Event ID: {})", response.event_id);
+            }
+        }
+        Commands::Deploy { project_id, branch } => {
+            let deployment_id = aegis_types::DeploymentId::new();
+            let release_id = aegis_types::ReleaseId::new();
+
+            println!("Deploying project {} (Branch: {})", project_id, branch);
+            let response = client
+                .emit_event(EmitEventRequest {
+                    event_type: "DeploymentQueued".to_string(),
+                    payload_json: serde_json::json!({
+                        "deployment_id": deployment_id.to_string(),
+                        "project_id": project_id,
+                        "release_id": release_id.to_string(),
+                        "branch": branch,
+                        "strategy": "Immediate",
+                    })
+                    .to_string(),
+                })
+                .await?
+                .into_inner();
+
+            if response.success {
+                println!("Deployment queued successfully! (Deployment ID: {})", deployment_id);
+            }
+        }
+        Commands::Rollback { project_id, version } => {
+            println!("Triggering rollback for project {} to version {}", project_id, version);
+            let response = client
+                .emit_event(EmitEventRequest {
+                    event_type: "RollbackTriggered".to_string(),
+                    payload_json: serde_json::json!({
+                        "project_id": project_id,
+                        "target_version": version,
+                    })
+                    .to_string(),
+                })
+                .await?
+                .into_inner();
+
+            if response.success {
+                println!("Rollback triggered successfully!");
+            }
+        }
+        Commands::List => {
+            println!("Querying Aegis active projects and processes...");
+            let response = client.get_status(StatusRequest {}).await?.into_inner();
+            println!("Daemon Version: {}", response.version);
+            println!("Total Events Logged: {}", response.event_count);
+        }
+        Commands::Logs { process_id } => {
+            if let Some(id) = process_id {
+                println!("Streaming logs for process {}...", id);
+            } else {
+                println!("Streaming all system operational logs...");
+            }
+            let mut stream = client.stream_events(StreamEventsRequest {}).await?.into_inner();
+            while let Some(event) = stream.message().await? {
+                println!("[{}] TYPE: {} | PAYLOAD: {}", event.created_at, event.event_type, event.payload_json);
+            }
+        }
+        Commands::Stop { process_id } => {
+            println!("Stopping process {}...", process_id);
+            let response = client
+                .emit_event(EmitEventRequest {
+                    event_type: "ProcessStopped".to_string(),
+                    payload_json: serde_json::json!({ "process_id": process_id }).to_string(),
+                })
+                .await?
+                .into_inner();
+
+            if response.success {
+                println!("Stop signal sent to process {}", process_id);
+            }
+        }
+        Commands::Restart { process_id } => {
+            println!("Restarting process {}...", process_id);
+            let response = client
+                .emit_event(EmitEventRequest {
+                    event_type: "ProcessRestarted".to_string(),
+                    payload_json: serde_json::json!({ "process_id": process_id }).to_string(),
+                })
+                .await?
+                .into_inner();
+
+            if response.success {
+                println!("Restart signal sent to process {}", process_id);
+            }
+        }
         Commands::EmitEvent {
             event_type,
             payload_json,
         } => {
-            // Verify payload is valid JSON
             let _: serde_json::Value = serde_json::from_str(&payload_json)
                 .map_err(|e| anyhow::anyhow!("Payload is not valid JSON: {}", e))?;
 
