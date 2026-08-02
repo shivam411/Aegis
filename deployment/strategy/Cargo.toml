@@ -12,3 +12,6 @@ aegis-types = { path = "../../core/types" }
 aegis-release = { path = "../release" }
 aegis-health = { path = "../health" }
 aegis-artifact-store = { path = "../artifact_store" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

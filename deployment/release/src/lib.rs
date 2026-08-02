@@ -2,6 +2,9 @@ use aegis_types::{ArtifactId, ProjectId, ReleaseId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod switcher;
+pub use switcher::ReleaseSwitcher;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildMetadata {
     pub runtime: String,

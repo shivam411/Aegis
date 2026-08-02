@@ -111,9 +111,41 @@ impl ProcessSupervisor {
 
     /// Stops a running process.
     pub async fn stop_process(&self, process_id: &ProcessId) -> Result<(), anyhow::Error> {
+        self.graceful_stop_process(process_id, 2).await
+    }
+
+    /// Gracefully stops a process, granting a drain timeout before force killing.
+    pub async fn graceful_stop_process(
+        &self,
+        process_id: &ProcessId,
+        drain_timeout_secs: u64,
+    ) -> Result<(), anyhow::Error> {
         if let Some(proc) = self.processes.write().unwrap().get_mut(process_id) {
             if let Some(pid) = proc.pid {
-                tracing::info!(process_id = %process_id, pid = pid, "Killing process");
+                tracing::info!(
+                    process_id = %process_id,
+                    pid = pid,
+                    timeout_secs = drain_timeout_secs,
+                    "Gracefully terminating old process"
+                );
+
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/PID", &pid.to_string()])
+                        .output();
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = std::process::Command::new("kill")
+                        .arg("-15")
+                        .arg(pid.to_string())
+                        .output();
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(drain_timeout_secs)).await;
+
+                // Force kill if process is still marked running
                 #[cfg(windows)]
                 {
                     let _ = std::process::Command::new("taskkill")

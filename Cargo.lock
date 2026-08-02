@@ -234,9 +234,13 @@ name = "aegis-release"
 version = "0.1.0"
 dependencies = [
  "aegis-types",
+ "anyhow",
  "chrono",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -278,6 +282,7 @@ dependencies = [
  "aegis-types",
  "anyhow",
  "async-trait",
+ "tempfile",
  "tokio",
  "tracing",
 ]

@@ -1,12 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+fn default_max_retained_versions() -> usize {
+    2
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DaemonConfig {
     pub host: String,
     pub port: u16,
     pub database_path: PathBuf,
     pub log_level: String,
+    #[serde(default = "default_max_retained_versions")]
+    pub max_retained_versions: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -22,6 +28,7 @@ impl Default for Config {
                 port: 50051,
                 database_path: PathBuf::from("aegis.db"),
                 log_level: "info".to_string(),
+                max_retained_versions: 2,
             },
         }
     }
