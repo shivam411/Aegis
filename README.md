@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue?style=flat-square)](https://shivam411.github.io/Aegis/)
 
-**Aegis** is a zero-dependency, event-sourced deployment platform and process manager written in Rust. A modern, self-hosted alternative to PM2, Heroku, and Vercel for single-server VPS environments.
+**Aegis** is production operations from your terminal. Zero-dependency, event-sourced process supervision and zero-downtime deployment platform written in Rust.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
@@ -72,26 +72,42 @@ Requires Rust 1.75+, SQLite3, and `protoc`.
 ## 🚀 Quickstart
 
 ```bash
-# 1. Start the daemon
-aegis-daemon
+# 1. Install Aegis (Linux & macOS)
+curl -fsSL https://get.aegis.sh | sh
 
-# 2. Initialize a project (auto-detects runtime)
-aegis-cli init --name my-api --repo https://github.com/user/my-api
+# 2. Initialize project in your repository
+aegis init
 
-# 3. Deploy with zero downtime
-aegis-cli deploy --project <PROJECT_ID> --branch main
+# 3. Verify project configuration
+aegis validate
 
-# 4. Schedule daily auto-deployments at 2 AM
-aegis-cli schedule --project <PROJECT_ID> --hour 2
+# 4. Trigger zero-downtime deployment
+aegis deploy
 
-# 5. Instant rollback
-aegis-cli rollback --project <PROJECT_ID> --version v1.0.0
-
-# 6. Launch the terminal UI
-aegis-tui
+# 5. Launch interactive terminal dashboard
+aegis dashboard
 ```
 
-For a detailed walkthrough, see the [**Quickstart Guide**](https://shivam411.github.io/Aegis/quickstart.md).
+For an interactive 2-minute tour, run: `aegis demo`.
+
+---
+
+## 📊 Feature Maturity & Empirical Evidence
+
+Every capability in Aegis is assigned a Feature Maturity Level:
+
+| Feature / Capability | Maturity Level | Empirical Validation Report |
+| :--- | :---: | :--- |
+| **Event Store & Event Bus** | 🟢 **Dogfooded** | [`validation/dogfood/dogfood-report.md`](validation/dogfood/dogfood-report.md) |
+| **Detector Pipeline** | 🟡 **Validated** | [`validation/compatibility/compatibility-report.md`](validation/compatibility/compatibility-report.md) |
+| **Runtime Supervisor Engine** | 🟡 **Validated** | [`validation/soak/72h-report.md`](validation/soak/72h-report.md) |
+| **Atomic Release Switcher** | 🟡 **Validated** | [`validation/chaos/chaos-report.md`](validation/chaos/chaos-report.md) |
+| **PM2 & Systemd Migration Engine** | 🟡 **Validated** | [`validation/migration/migration-report.md`](validation/migration/migration-report.md) |
+| **Deployment Replay (`aegis replay`)** | 🧪 **Experimental** | [`docs/proof_phase.md`](docs/proof_phase.md) |
+| **Time Travel Inspection (`aegis inspect --at`)** | 🧪 **Experimental** | [`docs/proof_phase.md`](docs/proof_phase.md) |
+| **Outage Investigation Engine (`aegis investigate`)** | 🧪 **Experimental** | [`docs/proof_phase.md`](docs/proof_phase.md) |
+
+For complete empirical evidence, see the [`validation/`](validation/) evidence repository.
 
 ---
 
