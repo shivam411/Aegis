@@ -44,6 +44,9 @@ members = [
     "integrations/github",
     "integrations/docker",
     "integrations/slack",
+
+    # Benchmarks
+    "benchmarks",
 ]
 
 [workspace.dependencies]

@@ -218,17 +218,14 @@ mod tests {
         let engine = ProjectionEngine::new();
         let proj_id = ProjectId::new();
 
-        let event = Event {
-            id: EventId::new(),
-            event_type: "ProjectCreated".to_string(),
-            payload_json: serde_json::json!({
-                "project_id": proj_id.to_string(),
-                "name": "aegis-app",
-                "repository_url": "https://github.com/aegis/app",
-                "branch": "main"
-            }).to_string(),
-            created_at: "2026-08-02T12:00:00Z".to_string(),
-        };
+        let payload = serde_json::json!({
+            "project_id": proj_id.to_string(),
+            "name": "aegis-app",
+            "repository_url": "https://github.com/aegis/app",
+            "branch": "main"
+        }).to_string();
+        let mut event = Event::new("ProjectCreated", payload);
+        event.created_at = "2026-08-02T12:00:00Z".to_string();
 
         engine.apply_event(&event);
 

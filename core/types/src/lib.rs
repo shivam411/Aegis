@@ -54,10 +54,47 @@ define_id!(ServerId);
 define_id!(EventId);
 define_id!(ArtifactId);
 
+pub mod error;
+pub use error::AegisError;
+
+use std::collections::HashMap;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: EventId,
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub event_type: String,
+    #[serde(default)]
+    pub aggregate_type: String,
+    #[serde(default)]
+    pub aggregate_id: String,
+    pub correlation_id: Option<String>,
+    pub causation_id: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
     pub payload_json: String,
     pub created_at: String,
 }
+
+fn default_schema_version() -> u32 {
+    1
+}
+
+impl Event {
+    pub fn new(event_type: impl Into<String>, payload_json: impl Into<String>) -> Self {
+        Self {
+            id: EventId::new(),
+            schema_version: 1,
+            event_type: event_type.into(),
+            aggregate_type: "System".to_string(),
+            aggregate_id: String::new(),
+            correlation_id: None,
+            causation_id: None,
+            metadata: HashMap::new(),
+            payload_json: payload_json.into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+

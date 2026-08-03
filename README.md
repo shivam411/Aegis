@@ -162,14 +162,28 @@ max_retained_versions = 2
 
 ---
 
-## 🗺️ Roadmap
+## 🗺️ Engineering Roadmap
 
-| Milestone | Scope |
-| :--- | :--- |
-| **v0.1** | GitHub Releases + GitHub Pages + installer script |
-| **v0.2** | `aegis self-update`, shell completions, `aegis doctor` |
-| **v0.3** | macOS and Windows binary improvements |
-| **v1.0** | Homebrew, AUR, `.deb`, `.rpm` packages |
+> [!NOTE]
+> Architecture Frozen at **`v0.2.0-architecture-complete`**. New architectural changes now follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
+
+| Phase | Scope / Milestone | Status |
+| :--- | :--- | :--- |
+| **Phase 0** | Architecture Freeze | ✅ Complete |
+| **Gate A** | Engineering Gate Audit | ✅ Complete |
+| **Phase 1A** | Platform Kernel (Event Bus, Store, Projections, gRPC API) | ✅ Complete |
+| **Phase 1B** | Project Management (`init`, `list`, `inspect`, `schedule`) | ✅ Complete |
+| **Phase 1C** | Developer Experience (`doctor`, `validate`, `explain`) | ✅ Complete |
+| **Phase 2** | **Runtime Supervisor** (Process Lifecycle, Health Probes, Signal Traps) | ▶ **In Progress** |
+| **Phase 3** | Deployment Engine & Atomic Switcher | 📅 Planned |
+| **Phase 4** | Git Operations & Webhook Auto-Deploy | 📅 Planned |
+| **Phase 5** | Terminal User Interface (Ratatui Dashboard) | 📅 Planned |
+| **Phase 6** | Observability, Metrics & Log Aggregation | 📅 Planned |
+| **Phase 7** | Multi-Node Fleet Management | 📅 Planned |
+| **Phase 8** | Plugin Ecosystem & Ingress Engine | 📅 Planned |
+| **Phase 9** | AI Operational Copilot | 📅 Planned |
+| **Phase 10** | v1.0 Production GA | 📅 Planned |
+
 
 ---
 

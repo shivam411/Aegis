@@ -33,14 +33,7 @@ impl EventStore {
     ) -> Result<Event, anyhow::Error> {
         let id = EventId::new();
         let payload_json = serde_json::to_string(&payload)?;
-        let created_at = Utc::now().to_rfc3339();
-
-        let event = Event {
-            id,
-            event_type: event_type.to_string(),
-            payload_json,
-            created_at,
-        };
+        let event = Event::new(event_type, payload_json);
 
         let id_str = event.id.to_string();
         sqlx::query(
@@ -71,12 +64,10 @@ impl EventStore {
             use sqlx::Row;
             let id_str: String = row.try_get(0)?;
             let id: EventId = id_str.parse().map_err(|e| anyhow::anyhow!("Failed to parse EventId: {}", e))?;
-            events.push(Event {
-                id,
-                event_type: row.try_get(1)?,
-                payload_json: row.try_get(2)?,
-                created_at: row.try_get(3)?,
-            });
+            let mut ev = Event::new(row.try_get::<String, _>(1)?, row.try_get::<String, _>(2)?);
+            ev.id = id;
+            ev.created_at = row.try_get(3)?;
+            events.push(ev);
         }
 
         Ok(events)

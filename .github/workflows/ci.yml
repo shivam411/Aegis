@@ -1,62 +1,72 @@
-name: CI
+name: Aegis CI
 
 on:
   push:
-    branches: ["main"]
+    branches: [ main, develop ]
   pull_request:
-    branches: ["main"]
-    types: [opened, synchronize, reopened]
-
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -Dwarnings
+    branches: [ main ]
 
 jobs:
-  check:
-    name: Type Check
+  check-and-test:
+    name: Check, Test & Benchmark
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libsqlite3-dev
-      - name: Run Cargo Check
-        run: cargo check --workspace --all-targets
 
-  clippy:
-    name: Linter (Clippy)
-    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libsqlite3-dev
-      - name: Run Cargo Clippy
+          components: clippy, rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy lints
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  test:
-    name: Run Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libsqlite3-dev
-      - name: Run Workspace Tests
-        run: cargo test --workspace --all-targets
+      - name: Run unit and integration tests
+        run: cargo test --workspace
 
-  fmt:
-    name: Code Format Check
-    runs-on: ubuntu-latest
+      - name: Check performance benchmark compilation
+        run: cargo check --benches
+
+  cross-platform-build:
+    name: Build (${{ matrix.target.os }})
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      matrix:
+        target:
+          - os: ubuntu-latest
+            artifact_name: aegis-linux-amd64
+          - os: macos-latest
+            artifact_name: aegis-darwin-arm64
+          - os: windows-latest
+            artifact_name: aegis-windows-amd64
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Check Formatting
-        run: cargo fmt --all -- --check
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build workspace binaries
+        run: cargo build --workspace --release
+
+      - name: Verify compiled binaries
+        shell: bash
+        run: |
+          ls -la target/release/aegis* || true

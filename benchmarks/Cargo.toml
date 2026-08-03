@@ -1,0 +1,16 @@
+[package]
+name = "aegis-benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aegis-types = { path = "../core/types" }
+aegis-event-bus = { path = "../core/event_bus" }
+aegis-projection = { path = "../core/projection" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+criterion = "0.5"
+
+[[bench]]
+name = "event_throughput"
+harness = false

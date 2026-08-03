@@ -92,20 +92,19 @@ impl SchedulerEngine {
 
                     let deployment_id = DeploymentId::new();
                     let release_id = ReleaseId::new();
-                    let event = Event {
-                        id: EventId::new(),
-                        event_type: "DeploymentQueued".to_string(),
-                        payload_json: serde_json::json!({
-                            "deployment_id": deployment_id.to_string(),
-                            "project_id": task.project_id.to_string(),
-                            "release_id": release_id.to_string(),
-                            "branch": task.branch,
-                            "strategy": "GracefulSwitch",
-                            "trigger_source": "ScheduledAutoDeploy",
-                        })
-                        .to_string(),
-                        created_at: Utc::now().to_rfc3339(),
-                    };
+                    let payload = serde_json::json!({
+                        "deployment_id": deployment_id.to_string(),
+                        "project_id": task.project_id.to_string(),
+                        "release_id": release_id.to_string(),
+                        "branch": task.branch,
+                        "strategy": "GracefulSwitch",
+                        "trigger_source": "ScheduledAutoDeploy",
+                    })
+                    .to_string();
+
+                    let mut event = Event::new("DeploymentQueued", payload);
+                    event.aggregate_type = "Deployment".to_string();
+                    event.aggregate_id = deployment_id.to_string();
 
                     event_bus.publish(event);
                     tracing::info!(

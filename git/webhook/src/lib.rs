@@ -25,20 +25,19 @@ impl<'a> WebhookHandler<'a> {
         let deployment_id = DeploymentId::new();
         let release_id = ReleaseId::new();
 
-        let event = Event {
-            id: EventId::new(),
-            event_type: "DeploymentQueued".to_string(),
-            payload_json: serde_json::json!({
-                "deployment_id": deployment_id.to_string(),
-                "project_id": project_id.to_string(),
-                "release_id": release_id.to_string(),
-                "commit_sha": payload.commit_sha,
-                "repository_url": payload.repository_url,
-                "strategy": "Immediate",
-            })
-            .to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
+        let payload_json = serde_json::json!({
+            "deployment_id": deployment_id.to_string(),
+            "project_id": project_id.to_string(),
+            "release_id": release_id.to_string(),
+            "commit_sha": payload.commit_sha,
+            "repository_url": payload.repository_url,
+            "strategy": "Immediate",
+        })
+        .to_string();
+
+        let mut event = Event::new("DeploymentQueued", payload_json);
+        event.aggregate_type = "Deployment".to_string();
+        event.aggregate_id = deployment_id.to_string();
 
         self.event_bus.publish(event.clone());
         tracing::info!(deployment_id = %deployment_id, project_id = %project_id, "Webhook push processed and deployment queued");

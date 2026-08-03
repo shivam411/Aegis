@@ -1,0 +1,10 @@
+{
+  "name": "sample-node-service",
+  "version": "1.0.0",
+  "description": "Sample Node.js service template for Aegis deployments",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "build": "echo 'Node build complete'"
+  }
+}

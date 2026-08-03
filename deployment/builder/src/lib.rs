@@ -43,17 +43,17 @@ impl<'a> BuildPipeline<'a> {
 
     /// Emits a domain event to the EventBus.
     fn emit_stage_event(&self, stage: PipelineStage, status: &str) {
-        let event = Event {
-            id: EventId::new(),
-            event_type: format!("BuildStage{:?}", stage),
-            payload_json: serde_json::json!({
-                "project_id": self.project_id.to_string(),
-                "stage": format!("{:?}", stage),
-                "status": status,
-            })
-            .to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
+        let payload = serde_json::json!({
+            "project_id": self.project_id.to_string(),
+            "stage": format!("{:?}", stage),
+            "status": status,
+        })
+        .to_string();
+
+        let mut event = Event::new(format!("BuildStage{:?}", stage), payload);
+        event.aggregate_type = "Build".to_string();
+        event.aggregate_id = self.project_id.to_string();
+
         self.event_bus.publish(event);
     }
 
