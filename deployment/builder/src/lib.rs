@@ -2,7 +2,7 @@ use aegis_artifact_store::ArtifactStore;
 use aegis_engine::Runtime;
 use aegis_event_bus::EventBus;
 use aegis_release::Release;
-use aegis_types::{DeploymentId, Event, EventId, ProjectId};
+use aegis_types::{DeploymentId, Event, ProjectId};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

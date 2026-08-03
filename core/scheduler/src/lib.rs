@@ -1,5 +1,5 @@
 use aegis_event_bus::EventBus;
-use aegis_types::{DeploymentId, Event, EventId, ProjectId, ReleaseId};
+use aegis_types::{DeploymentId, Event, ProjectId, ReleaseId};
 use chrono::{Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

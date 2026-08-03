@@ -211,7 +211,6 @@ impl ProjectionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_types::EventId;
 
     #[test]
     fn test_projection_engine_event_folding() {

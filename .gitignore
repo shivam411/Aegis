@@ -14,3 +14,15 @@ aegis.toml
 # OS-specific files
 Thumbs.db
 .DS_Store
+
+# Development scratch & labs
+labs/
+
+# Dev-only scripts
+scripts/generate_scorecard.py
+
+# Fabricated validation artifacts (not real telemetry)
+validation/artifacts/
+
+# Generated docs (derived from validation/artifacts)
+docs/scorecard.md

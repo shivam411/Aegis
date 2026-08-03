@@ -1,4 +1,3 @@
-use chrono::Utc;
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 use aegis_types::{Event, EventId};
@@ -31,7 +30,7 @@ impl EventStore {
         event_type: &str,
         payload: serde_json::Value,
     ) -> Result<Event, anyhow::Error> {
-        let id = EventId::new();
+        let _id = EventId::new();
         let payload_json = serde_json::to_string(&payload)?;
         let event = Event::new(event_type, payload_json);
 

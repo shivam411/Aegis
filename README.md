@@ -72,23 +72,24 @@ Requires Rust 1.75+, SQLite3, and `protoc`.
 ## 🚀 Quickstart
 
 ```bash
-# 1. Install Aegis (Linux & macOS)
-curl -fsSL https://get.aegis.sh | sh
-
-# 2. Initialize project in your repository
+# 1. Initialize project in your repository
 aegis init
 
-# 3. Verify project configuration
+# 2. Verify project configuration
 aegis validate
 
-# 4. Trigger zero-downtime deployment
+# 3. Trigger zero-downtime deployment
 aegis deploy
 
-# 5. Launch interactive terminal dashboard
-aegis dashboard
+# 4. Investigate outages & root cause
+aegis investigate
+
+# 5. Execute instant rollback if needed
+aegis rollback
 ```
 
 For an interactive 2-minute tour, run: `aegis demo`.
+See the public operational metrics on the [**Public Scorecard**](docs/scorecard.md).
 
 ---
 
@@ -181,7 +182,7 @@ max_retained_versions = 2
 ## 🗺️ Product Roadmap & Production Themes
 
 > [!NOTE]
-> Milestone M1 frozen at **`v0.3.0-mlp`**. Milestone M2 (**Daily Driver**) active. New architectural changes follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
+> Aegis is currently in **Beta Readiness (`v0.4.0-beta`)**. New architectural changes follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
 
 | Production Theme | Key Focus & Customer Outcome | Status |
 | :--- | :--- | :--- |

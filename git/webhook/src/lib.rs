@@ -1,5 +1,5 @@
 use aegis_event_bus::EventBus;
-use aegis_types::{DeploymentId, Event, EventId, ProjectId, ReleaseId};
+use aegis_types::{DeploymentId, Event, ProjectId, ReleaseId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]

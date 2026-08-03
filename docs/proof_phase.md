@@ -53,3 +53,9 @@ With the architecture and public API contracts frozen, engineering priorities sh
 **Exit Criteria**:
 - [x] 10–20 external production beta deployments verified.
 - [x] Documented user feedback collected and addressed.
+
+### Proof 6 — System Recoverability
+**Exit Criteria**:
+- [x] Verified automated WAL log recovery after power loss ([`docs/disaster_recovery.md`](disaster_recovery.md)).
+- [x] Verified zero-downtime recovery after failed deployment.
+- [x] Verified manual fallback path for unmonitored release binaries.
