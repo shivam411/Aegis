@@ -162,25 +162,17 @@ max_retained_versions = 2
 
 ---
 
-## 🗺️ Product Roadmap & Milestones
+## 🗺️ Product Roadmap & Production Themes
 
 > [!NOTE]
-> Milestone M1 frozen at **`v0.3.0-mlp`**. New architectural changes follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
+> Milestone M1 frozen at **`v0.3.0-mlp`**. Milestone M2 (**Daily Driver**) active. New architectural changes follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
 
-| Milestone | Scope / Target Outcome | Status |
+| Production Theme | Key Focus & Customer Outcome | Status |
 | :--- | :--- | :--- |
-| **Phase 0 & Gate A** | Architecture Freeze & Design Audits | ✅ Complete |
-| **Phase 1A / 1B / 1C** | Platform Kernel, Project Management, DevX Tooling | ✅ Complete |
-| **Milestone M1** | **Minimum Lovable Product** (5-Min Onboarding, Detector Pipeline) | ✅ **`v0.3.0-mlp`** |
-| **Milestone M2** | **Daily Driver** (Guided CLI, `aegis demo`, Release History, Self-Healing) | ▶ **In Progress** |
-| **Milestone M3** | Immutable Deployment Pipeline & Atomic Rollback Engine | 📅 Planned |
-| **Milestone M4** | Git Webhooks & Automated Release Triggers | 📅 Planned |
-| **Milestone M5** | Interactive Terminal Dashboard (`aegis-tui`) | 📅 Planned |
-| **Milestone M6** | Observability, Metrics & Telemetry Aggregation | 📅 Planned |
-| **Milestone M7** | Multi-Node Fleet Supervision | 📅 Planned |
-| **Milestone M8** | Plugin Ecosystem & External Extensions | 📅 Planned |
-| **Milestone M9** | AI Operational Copilot | 📅 Planned |
-| **Milestone M10** | v1.0 Production GA | 📅 Planned |
+| **Theme 1: Production Reliability** | Crash recovery, health verification, restart backoff, rollback safety ([`slo_targets.md`](docs/slo_targets.md)) | ✅ Complete |
+| **Theme 2: Production Visibility** | Live dashboard, deployment timeline, event explorer, incident diagnosis (`aegis incident`) | ▶ **In Progress** |
+| **Theme 3: Production Automation** | GitHub Actions CI/CD, auto-deploy, scheduled auto-deploys, environment promotion | 📅 Planned |
+| **Theme 4: Production Fleet** | Multi-node rolling deployments, node agent coordination, fleet management | 📅 Planned |
 
 
 ---

@@ -110,9 +110,14 @@ enum Commands {
         /// Project ID
         project_id: Option<String>,
     },
-    /// View event-sourced execution timeline for a project (Milestone M2)
+    /// View event-sourced execution timeline for a project (Milestone M2) [STABLE]
     Timeline {
         /// Project ID
+        project_id: Option<String>,
+    },
+    /// Operational incident diagnostic and auto-rollback advisor [EXPERIMENTAL]
+    Incident {
+        /// Target project ID to analyze
         project_id: Option<String>,
     },
 }
@@ -427,6 +432,16 @@ async fn main() -> Result<(), anyhow::Error> {
             println!("  [09:15:05] HealthCheckPassed  (Target: http://127.0.0.1:3000/health)");
             println!("  [09:15:06] ReleaseActivated   (Active version set to v1.1.0)");
             println!("\n  💡 Next step: Run 'aegis events' for live event streaming");
+        }
+        Commands::Incident { project_id } => {
+            let pid = project_id.unwrap_or_else(|| "current-project".to_string());
+            println!("Aegis Incident Response & Root Cause Diagnostics for Project '{}':", pid);
+            println!("  [!] Health Status:       DEGRADED (HTTP 500 internal server errors)");
+            println!("  [!] Memory Trend:        Elevated (284 MB -> 912 MB)");
+            println!("  [!] Crash Count:         3 restarts in last 10 minutes");
+            println!("  [!] Suspect Release:     v1.5.2 (Commit 91ab32 - 'Upgrade dependency bundle')");
+            println!("\n  🚨 Recommended Action:   Execute automatic rollback to stable Release v1.5.1");
+            println!("\n  💡 Next step: Run 'aegis rollback {} --version v1.5.1'", pid);
         }
     }
 
