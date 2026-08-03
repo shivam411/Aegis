@@ -10,3 +10,7 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 aegis-types = { path = "../../core/types" }
 aegis-process = { path = "../process" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+

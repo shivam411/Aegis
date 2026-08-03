@@ -1,3 +1,6 @@
+pub mod detector_pipeline;
+pub use detector_pipeline::{DetectedConfig, DetectorPipeline};
+
 use aegis_types::{ProcessId, ProjectId};
 use async_trait::async_trait;
 use std::collections::HashMap;

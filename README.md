@@ -162,27 +162,25 @@ max_retained_versions = 2
 
 ---
 
-## 🗺️ Engineering Roadmap
+## 🗺️ Product Roadmap & Milestones
 
 > [!NOTE]
-> Architecture Frozen at **`v0.2.0-architecture-complete`**. New architectural changes now follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
+> Milestone M1 frozen at **`v0.3.0-mlp`**. New architectural changes follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
 
-| Phase | Scope / Milestone | Status |
+| Milestone | Scope / Target Outcome | Status |
 | :--- | :--- | :--- |
-| **Phase 0** | Architecture Freeze | ✅ Complete |
-| **Gate A** | Engineering Gate Audit | ✅ Complete |
-| **Phase 1A** | Platform Kernel (Event Bus, Store, Projections, gRPC API) | ✅ Complete |
-| **Phase 1B** | Project Management (`init`, `list`, `inspect`, `schedule`) | ✅ Complete |
-| **Phase 1C** | Developer Experience (`doctor`, `validate`, `explain`) | ✅ Complete |
-| **Phase 2** | **Runtime Supervisor** (Process Lifecycle, Health Probes, Signal Traps) | ▶ **In Progress** |
-| **Phase 3** | Deployment Engine & Atomic Switcher | 📅 Planned |
-| **Phase 4** | Git Operations & Webhook Auto-Deploy | 📅 Planned |
-| **Phase 5** | Terminal User Interface (Ratatui Dashboard) | 📅 Planned |
-| **Phase 6** | Observability, Metrics & Log Aggregation | 📅 Planned |
-| **Phase 7** | Multi-Node Fleet Management | 📅 Planned |
-| **Phase 8** | Plugin Ecosystem & Ingress Engine | 📅 Planned |
-| **Phase 9** | AI Operational Copilot | 📅 Planned |
-| **Phase 10** | v1.0 Production GA | 📅 Planned |
+| **Phase 0 & Gate A** | Architecture Freeze & Design Audits | ✅ Complete |
+| **Phase 1A / 1B / 1C** | Platform Kernel, Project Management, DevX Tooling | ✅ Complete |
+| **Milestone M1** | **Minimum Lovable Product** (5-Min Onboarding, Detector Pipeline) | ✅ **`v0.3.0-mlp`** |
+| **Milestone M2** | **Daily Driver** (Guided CLI, `aegis demo`, Release History, Self-Healing) | ▶ **In Progress** |
+| **Milestone M3** | Immutable Deployment Pipeline & Atomic Rollback Engine | 📅 Planned |
+| **Milestone M4** | Git Webhooks & Automated Release Triggers | 📅 Planned |
+| **Milestone M5** | Interactive Terminal Dashboard (`aegis-tui`) | 📅 Planned |
+| **Milestone M6** | Observability, Metrics & Telemetry Aggregation | 📅 Planned |
+| **Milestone M7** | Multi-Node Fleet Supervision | 📅 Planned |
+| **Milestone M8** | Plugin Ecosystem & External Extensions | 📅 Planned |
+| **Milestone M9** | AI Operational Copilot | 📅 Planned |
+| **Milestone M10** | v1.0 Production GA | 📅 Planned |
 
 
 ---

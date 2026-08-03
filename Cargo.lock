@@ -131,6 +131,7 @@ dependencies = [
  "aegis-types",
  "anyhow",
  "async-trait",
+ "tempfile",
  "tokio",
  "tracing",
 ]
