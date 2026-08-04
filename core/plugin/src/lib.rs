@@ -78,3 +78,60 @@ impl PluginManager {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::broadcast;
+
+    struct TestPlugin {
+        initialized: Arc<AtomicBool>,
+        event_received: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Plugin for TestPlugin {
+        fn name(&self) -> &str {
+            "test-plugin"
+        }
+
+        async fn on_init(&self) -> Result<(), anyhow::Error> {
+            self.initialized.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn on_event(&self, _event: &Event) -> Result<(), anyhow::Error> {
+            self.event_received.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plugin_manager_lifecycle() {
+        let mut manager = PluginManager::default();
+        let initialized = Arc::new(AtomicBool::new(false));
+        let event_received = Arc::new(AtomicBool::new(false));
+
+        let plugin = Arc::new(TestPlugin {
+            initialized: initialized.clone(),
+            event_received: event_received.clone(),
+        });
+
+        manager.register(plugin);
+
+        assert_eq!(manager.get_loaded_plugins(), vec!["test-plugin".to_string()]);
+
+        manager.initialize_all().await.unwrap();
+        assert!(initialized.load(Ordering::SeqCst));
+
+        let (tx, rx) = broadcast::channel(10);
+        manager.start_event_loop(rx);
+
+        let event = Event::new("TestEvent", "{}");
+        tx.send(event).unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(event_received.load(Ordering::SeqCst));
+    }
+}

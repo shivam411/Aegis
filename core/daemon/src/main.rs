@@ -214,3 +214,81 @@ async fn main() -> Result<(), anyhow::Error> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_stream::StreamExt;
+
+    async fn create_test_service() -> DaemonService {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        EventStore::initialize_db(&pool).await.unwrap();
+        let event_store = EventStore::new(pool);
+
+        let mut plugin_manager = PluginManager::new();
+        plugin_manager.register(Arc::new(DemoPlugin));
+        let plugin_manager = Arc::new(plugin_manager);
+
+        let projection_engine = aegis_projection::ProjectionEngine::new();
+
+        DaemonService {
+            event_store,
+            plugin_manager,
+            projection_engine,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_daemon_service_grpc_handlers() {
+        let service = create_test_service().await;
+
+        // 1. Test get_status
+        let status_res = service.get_status(Request::new(StatusRequest {})).await.unwrap().into_inner();
+        assert!(status_res.initialized);
+        assert_eq!(status_res.event_count, 0);
+        assert_eq!(status_res.loaded_plugins, vec!["demo-system-plugin"]);
+
+        // 2. Test emit_event invalid json
+        let invalid_req = Request::new(EmitEventRequest {
+            event_type: "TestEvent".to_string(),
+            payload_json: "{ bad }".to_string(),
+        });
+        assert!(service.emit_event(invalid_req).await.is_err());
+
+        // 3. Test emit_event valid
+        let valid_req = Request::new(EmitEventRequest {
+            event_type: "TestEvent".to_string(),
+            payload_json: r#"{"foo":"bar"}"#.to_string(),
+        });
+        let emit_res = service.emit_event(valid_req).await.unwrap().into_inner();
+        assert!(emit_res.success);
+        assert!(!emit_res.event_id.is_empty());
+
+        // 4. Verify event count updated
+        let status_res2 = service.get_status(Request::new(StatusRequest {})).await.unwrap().into_inner();
+        assert_eq!(status_res2.event_count, 1);
+
+        // 5. Test stream_events
+        let mut stream = service
+            .stream_events(Request::new(aegis_api::aegis::StreamEventsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Emit an event while streaming
+        let emit_req = Request::new(EmitEventRequest {
+            event_type: "StreamedEvent".to_string(),
+            payload_json: r#"{"num":42}"#.to_string(),
+        });
+        service.emit_event(emit_req).await.unwrap();
+
+        let streamed_msg = stream.next().await.unwrap().unwrap();
+        assert_eq!(streamed_msg.event_type, "StreamedEvent");
+        assert!(streamed_msg.payload_json.contains("42"));
+    }
+}

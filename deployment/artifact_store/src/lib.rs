@@ -132,4 +132,32 @@ mod tests {
         let path = store.get(&release_id).await.unwrap();
         assert!(path.join("metadata.json").exists());
     }
+
+    #[tokio::test]
+    async fn test_artifact_store_dir_and_cleanup() {
+        let temp = TempDir::new().unwrap();
+        let store = ArtifactStore::new(temp.path().to_path_buf());
+
+        // 1. Store a directory
+        let sample_dir = temp.path().join("build_dir");
+        fs::create_dir_all(&sample_dir).await.unwrap();
+        let rel1 = ReleaseId::new();
+        let artifact = store.store(&rel1, &sample_dir).await.unwrap();
+        assert_eq!(artifact.name, "build_dir");
+
+        let rel2 = ReleaseId::new();
+        store.store(&rel2, &sample_dir).await.unwrap();
+
+        let rel3 = ReleaseId::new();
+        store.store(&rel3, &sample_dir).await.unwrap();
+
+        // 2. Test get non-existent error
+        let missing_rel = ReleaseId::new();
+        assert!(store.get(&missing_rel).await.is_err());
+        assert!(!store.verify(&missing_rel).await.unwrap());
+
+        // 3. Test cleanup (retain 1)
+        let removed = store.cleanup(1).await.unwrap();
+        assert_eq!(removed, 2);
+    }
 }

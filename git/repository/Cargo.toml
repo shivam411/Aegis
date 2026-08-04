@@ -8,3 +8,6 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 aegis-types = { path = "../../core/types" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

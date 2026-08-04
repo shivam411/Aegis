@@ -15,3 +15,7 @@ aegis-event-bus = { path = "../../core/event_bus" }
 aegis-release = { path = "../release" }
 aegis-artifact-store = { path = "../artifact_store" }
 aegis-engine = { path = "../../runtime/engine" }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tempfile = { workspace = true }

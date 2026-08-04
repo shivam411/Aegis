@@ -98,3 +98,48 @@ impl Event {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_id_macro_operations() {
+        let id1 = ProjectId::new();
+        let id2 = ProjectId::default();
+        assert_ne!(id1, id2);
+
+        let uuid = id1.as_uuid();
+        let id_from_uuid = ProjectId::from_uuid(uuid);
+        assert_eq!(id1, id_from_uuid);
+
+        let id_str = id1.to_string();
+        let parsed_id: ProjectId = id_str.parse().unwrap();
+        assert_eq!(id1, parsed_id);
+
+        let invalid_parse = "not-a-valid-uuid".parse::<ProjectId>();
+        assert!(invalid_parse.is_err());
+    }
+
+    #[test]
+    fn test_event_construction_and_serde() {
+        let mut event = Event::new("TestEvent", r#"{"key":"value"}"#);
+        event.aggregate_type = "Project".to_string();
+        event.aggregate_id = "proj-123".to_string();
+        event.correlation_id = Some("corr-456".to_string());
+        event.causation_id = Some("cause-789".to_string());
+        event.metadata.insert("env".to_string(), "test".to_string());
+
+        assert_eq!(event.event_type, "TestEvent");
+        assert_eq!(event.schema_version, 1);
+        assert_eq!(event.aggregate_type, "Project");
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, event.id);
+        assert_eq!(deserialized.event_type, "TestEvent");
+        assert_eq!(deserialized.correlation_id, Some("corr-456".to_string()));
+        assert_eq!(deserialized.metadata.get("env").unwrap(), "test");
+    }
+}
+

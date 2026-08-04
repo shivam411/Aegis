@@ -95,4 +95,45 @@ mod tests {
         assert_eq!(config.runtime_engine, "Node.js");
         assert_eq!(config.build_command, "npm run build");
     }
+
+    #[test]
+    fn test_detector_pipeline_other_runtimes_and_toml() {
+        let pipeline = DetectorPipeline::default();
+
+        // Java
+        let temp_java = TempDir::new().unwrap();
+        std::fs::write(temp_java.path().join("pom.xml"), "<project></project>").unwrap();
+        let cfg_java = pipeline.detect_all(temp_java.path());
+        assert_eq!(cfg_java.runtime_engine, "Java");
+        assert_eq!(cfg_java.default_port, 8080);
+
+        // Go
+        let temp_go = TempDir::new().unwrap();
+        std::fs::write(temp_go.path().join("go.mod"), "module app").unwrap();
+        let cfg_go = pipeline.detect_all(temp_go.path());
+        assert_eq!(cfg_go.runtime_engine, "Go");
+
+        // Python
+        let temp_py = TempDir::new().unwrap();
+        std::fs::write(temp_py.path().join("pyproject.toml"), "").unwrap();
+        let cfg_py = pipeline.detect_all(temp_py.path());
+        assert_eq!(cfg_py.runtime_engine, "Python");
+
+        // Docker
+        let temp_doc = TempDir::new().unwrap();
+        std::fs::write(temp_doc.path().join("Dockerfile"), "FROM alpine").unwrap();
+        let cfg_doc = pipeline.detect_all(temp_doc.path());
+        assert_eq!(cfg_doc.runtime_engine, "Docker");
+
+        // Generic
+        let temp_gen = TempDir::new().unwrap();
+        let cfg_gen = pipeline.detect_all(temp_gen.path());
+        assert_eq!(cfg_gen.runtime_engine, "Generic");
+
+        // Test generate_toml
+        let toml_str = pipeline.generate_toml(&cfg_go, "proj-1234");
+        assert!(toml_str.contains("proj-1234"));
+        assert!(toml_str.contains("runtime = \"Go\""));
+        assert!(toml_str.contains("strategy = \"GracefulSwitch\""));
+    }
 }

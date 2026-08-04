@@ -64,12 +64,29 @@ impl HealthChecker for HttpHealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
 
     #[tokio::test]
-    async fn test_tcp_health_checker() {
-        let checker = TcpHealthChecker::new(100);
-        // Connecting to unreachable port should fail gracefully returning false
-        let result = checker.check_health("127.0.0.1:59999").await.unwrap();
-        assert!(!result);
+    async fn test_tcp_and_http_health_checkers() {
+        let tcp_checker = TcpHealthChecker::new(100);
+        let http_checker = HttpHealthChecker::new(100);
+
+        assert_eq!(tcp_checker.name(), "TCP");
+        assert_eq!(http_checker.name(), "HTTP");
+
+        // 1. Unreachable port -> false
+        let unreach_tcp = tcp_checker.check_health("127.0.0.1:59999").await.unwrap();
+        assert!(!unreach_tcp);
+        let unreach_http = http_checker.check_health("127.0.0.1:59999").await.unwrap();
+        assert!(!unreach_http);
+
+        // 2. Bound local listener -> true
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap().to_string();
+
+        let reach_tcp = tcp_checker.check_health(&local_addr).await.unwrap();
+        assert!(reach_tcp);
+        let reach_http = http_checker.check_health(&local_addr).await.unwrap();
+        assert!(reach_http);
     }
 }

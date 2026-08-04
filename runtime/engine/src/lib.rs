@@ -351,5 +351,77 @@ mod tests {
         // Aegis repository contains Cargo.toml -> RustRuntime
         let detected = detector.detect_runtime(&current_dir).await;
         assert_eq!(detected.name(), "Rust");
+
+        let temp = tempfile::TempDir::new().unwrap();
+        // 1. Node detection
+        std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+        assert_eq!(detector.detect_runtime(temp.path()).await.name(), "Node.js");
+
+        // 2. Go detection
+        let temp_go = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp_go.path().join("go.mod"), "module test").unwrap();
+        assert_eq!(detector.detect_runtime(temp_go.path()).await.name(), "Go");
+
+        // 3. Python detection
+        let temp_py = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp_py.path().join("requirements.txt"), "").unwrap();
+        assert_eq!(detector.detect_runtime(temp_py.path()).await.name(), "Python");
+
+        // 4. Generic fallback
+        let temp_gen = tempfile::TempDir::new().unwrap();
+        assert_eq!(detector.detect_runtime(temp_gen.path()).await.name(), "Generic");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_lifecycle_methods() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let ctx = RuntimeContext {
+            project_id: ProjectId::new(),
+            project_path: temp.path().to_path_buf(),
+            working_dir: temp.path().to_path_buf(),
+            environment: HashMap::new(),
+            build_command: Some("echo build".to_string()),
+            start_command: Some("echo start".to_string()),
+        };
+
+        // NodeRuntime
+        let node = NodeRuntime;
+        node.prepare(&ctx).await.unwrap();
+        node.build(&ctx).await.unwrap();
+        let handle = node.start(&ctx).await.unwrap();
+        assert_eq!(node.health(&handle).await.unwrap(), HealthStatus::Healthy);
+        node.stop(&handle).await.unwrap();
+
+        // RustRuntime
+        let rust_rt = RustRuntime;
+        rust_rt.prepare(&ctx).await.unwrap();
+        rust_rt.install(&ctx).await.unwrap();
+        let handle = rust_rt.start(&ctx).await.unwrap();
+        assert_eq!(rust_rt.health(&handle).await.unwrap(), HealthStatus::Healthy);
+        rust_rt.stop(&handle).await.unwrap();
+
+        // GoRuntime
+        let go_rt = GoRuntime;
+        go_rt.prepare(&ctx).await.unwrap();
+        let handle = go_rt.start(&ctx).await.unwrap();
+        assert_eq!(go_rt.health(&handle).await.unwrap(), HealthStatus::Healthy);
+        go_rt.stop(&handle).await.unwrap();
+
+        // PythonRuntime
+        let py_rt = PythonRuntime;
+        py_rt.prepare(&ctx).await.unwrap();
+        py_rt.build(&ctx).await.unwrap();
+        let handle = py_rt.start(&ctx).await.unwrap();
+        assert_eq!(py_rt.health(&handle).await.unwrap(), HealthStatus::Healthy);
+        py_rt.stop(&handle).await.unwrap();
+
+        // GenericRuntime
+        let gen_rt = GenericRuntime;
+        gen_rt.prepare(&ctx).await.unwrap();
+        gen_rt.install(&ctx).await.unwrap();
+        gen_rt.build(&ctx).await.unwrap();
+        let handle = gen_rt.start(&ctx).await.unwrap();
+        assert_eq!(gen_rt.health(&handle).await.unwrap(), HealthStatus::Healthy);
+        gen_rt.stop(&handle).await.unwrap();
     }
 }

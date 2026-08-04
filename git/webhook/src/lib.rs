@@ -45,3 +45,32 @@ impl<'a> WebhookHandler<'a> {
         Ok(event)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_webhook_handler_push() {
+        let event_bus = EventBus::new();
+        let mut rx = event_bus.subscribe();
+        let handler = WebhookHandler::new(&event_bus);
+
+        let proj_id = ProjectId::new();
+        let payload = GitHubPushPayload {
+            ref_branch: Some("refs/heads/main".to_string()),
+            repository_url: "https://github.com/shivam411/Aegis".to_string(),
+            commit_sha: "abc1234def5678".to_string(),
+            commit_message: Some("Test commit".to_string()),
+            author: Some("Dev".to_string()),
+        };
+
+        let event = handler.handle_push(proj_id, payload).unwrap();
+        assert_eq!(event.event_type, "DeploymentQueued");
+        assert_eq!(event.aggregate_type, "Deployment");
+
+        let recv_event = rx.recv().await.unwrap();
+        assert_eq!(recv_event.id, event.id);
+        assert!(recv_event.payload_json.contains("abc1234def5678"));
+    }
+}

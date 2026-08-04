@@ -37,3 +37,23 @@ impl Plugin for SlackPlugin {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_slack_plugin_lifecycle_and_events() {
+        let plugin = SlackPlugin::new("https://hooks.slack.com/services/xxx".to_string());
+        assert_eq!(plugin.name(), "slack-notifications-plugin");
+        assert_eq!(plugin.webhook_url, "https://hooks.slack.com/services/xxx");
+
+        assert!(plugin.on_init().await.is_ok());
+
+        let deploy_event = Event::new("DeploymentCompleted", r#"{"status":"ok"}"#);
+        assert!(plugin.on_event(&deploy_event).await.is_ok());
+
+        let ignored_event = Event::new("UnrelatedEvent", r#"{}"#);
+        assert!(plugin.on_event(&ignored_event).await.is_ok());
+    }
+}

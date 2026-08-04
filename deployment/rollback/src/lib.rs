@@ -60,4 +60,25 @@ mod tests {
         let result = RollbackExecutor::execute_rollback(proj_id, &release, &store).await;
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_rollback_executor_missing_artifact() {
+        let temp = TempDir::new().unwrap();
+        let store = ArtifactStore::new(temp.path().to_path_buf());
+        let proj_id = ProjectId::new();
+
+        let release = Release::new(
+            proj_id,
+            "v1.0.0".to_string(),
+            "1234567".to_string(),
+            "Initial".to_string(),
+            "Dev".to_string(),
+            "main".to_string(),
+            "Rust".to_string(),
+        );
+
+        let result = RollbackExecutor::execute_rollback(proj_id, &release, &store).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot rollback"));
+    }
 }

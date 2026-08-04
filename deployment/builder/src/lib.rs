@@ -131,3 +131,109 @@ impl<'a> BuildPipeline<'a> {
         Ok(release)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aegis_engine::{HealthStatus, ProcessHandle, RuntimeContext};
+    use async_trait::async_trait;
+    use tempfile::TempDir;
+
+    struct MockRuntime {
+        should_fail: bool,
+    }
+
+    #[async_trait]
+    impl Runtime for MockRuntime {
+        fn name(&self) -> &str {
+            "MockRuntime"
+        }
+
+        async fn detect(&self, _path: &std::path::Path) -> bool {
+            true
+        }
+
+        async fn prepare(&self, _ctx: &RuntimeContext) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+
+        async fn install(&self, _ctx: &RuntimeContext) -> Result<(), anyhow::Error> {
+            if self.should_fail {
+                anyhow::bail!("Install step mock error");
+            }
+            Ok(())
+        }
+
+        async fn build(&self, _ctx: &RuntimeContext) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+
+        async fn start(&self, _ctx: &RuntimeContext) -> Result<ProcessHandle, anyhow::Error> {
+            Ok(ProcessHandle {
+                process_id: aegis_types::ProcessId::new(),
+                pid: Some(9999),
+            })
+        }
+
+        async fn stop(&self, _handle: &ProcessHandle) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+
+        async fn health(&self, _handle: &ProcessHandle) -> Result<HealthStatus, anyhow::Error> {
+            Ok(HealthStatus::Healthy)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_pipeline_success() {
+        let temp = TempDir::new().unwrap();
+        let event_bus = EventBus::new();
+        let mut rx = event_bus.subscribe();
+
+        let artifact_store = ArtifactStore::new(temp.path().to_path_buf());
+        let mock_runtime = MockRuntime { should_fail: false };
+        let proj_id = ProjectId::new();
+
+        let pipeline = BuildPipeline::new(
+            proj_id,
+            temp.path().to_path_buf(),
+            &event_bus,
+            &artifact_store,
+            &mock_runtime,
+        );
+
+        let release = pipeline.run_pipeline("sha123", "v1.0.0").await.unwrap();
+        assert_eq!(release.project_id, proj_id);
+        assert_eq!(release.version, "v1.0.0");
+
+        // Verify events were emitted for stages
+        let mut events_emitted = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events_emitted.push(event.event_type);
+        }
+        assert!(events_emitted.contains(&"BuildStageClone".to_string()));
+        assert!(events_emitted.contains(&"BuildStagePromote".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_build_pipeline_failure_propagation() {
+        let temp = TempDir::new().unwrap();
+        let event_bus = EventBus::new();
+
+        let artifact_store = ArtifactStore::new(temp.path().to_path_buf());
+        let mock_runtime = MockRuntime { should_fail: true };
+        let proj_id = ProjectId::new();
+
+        let pipeline = BuildPipeline::new(
+            proj_id,
+            temp.path().to_path_buf(),
+            &event_bus,
+            &artifact_store,
+            &mock_runtime,
+        );
+
+        let result = pipeline.run_pipeline("sha123", "v1.0.0").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Install step mock error"));
+    }
+}

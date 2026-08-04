@@ -163,4 +163,29 @@ mod tests {
         let re_triggered = engine.evaluate_and_trigger(&event_bus, 2, 0, "2026-08-02");
         assert_eq!(re_triggered, 0);
     }
+
+    #[test]
+    fn test_schedule_management_and_normalization() {
+        let engine = SchedulerEngine::new();
+        let proj_id1 = ProjectId::new();
+        let proj_id2 = ProjectId::new();
+
+        let task1 = engine.schedule_daily_deploy(proj_id1, 25, 70, "dev".to_string());
+        assert_eq!(task1.target_hour, 1);
+        assert_eq!(task1.target_minute, 10);
+
+        let task2 = engine.schedule_daily_deploy(proj_id2, 14, 30, "main".to_string());
+        assert_eq!(task2.target_hour, 14);
+        assert_eq!(task2.target_minute, 30);
+
+        let schedules = engine.get_schedules();
+        assert_eq!(schedules.len(), 2);
+
+        let removed = engine.remove_schedule(&proj_id1);
+        assert!(removed);
+        assert_eq!(engine.get_schedules().len(), 1);
+
+        let remove_again = engine.remove_schedule(&proj_id1);
+        assert!(!remove_again);
+    }
 }

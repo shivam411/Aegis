@@ -121,6 +121,9 @@ impl ProcessSupervisor {
         drain_timeout_secs: u64,
     ) -> Result<(), anyhow::Error> {
         if let Some(proc) = self.processes.write().unwrap().get_mut(process_id) {
+            if !proc.is_running {
+                return Ok(());
+            }
             if let Some(pid) = proc.pid {
                 tracing::info!(
                     process_id = %process_id,
@@ -206,6 +209,12 @@ mod tests {
         let procs = supervisor.list_processes();
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0].id, proc_id);
+
+        // Wait brief moment for process exit loop to set is_running = false
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        supervisor.graceful_stop_process(&proc_id, 0).await.unwrap();
+        let procs_after = supervisor.list_processes();
+        assert!(!procs_after[0].is_running);
     }
 }
 

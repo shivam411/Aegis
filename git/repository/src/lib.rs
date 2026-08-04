@@ -47,3 +47,30 @@ impl GitRepository {
         Ok(sha)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_git_repository_struct_and_head_commit() {
+        let current_dir = std::env::current_dir().unwrap();
+        let repo = GitRepository::new("https://github.com/shivam411/Aegis.git".to_string(), current_dir.clone());
+
+        assert_eq!(repo.url, "https://github.com/shivam411/Aegis.git");
+        assert_eq!(repo.path, current_dir);
+
+        let sha_res = repo.get_head_commit().await;
+        assert!(sha_res.is_ok());
+        let sha = sha_res.unwrap();
+        assert_eq!(sha.len(), 40);
+
+        // Test sync on existing repository path (runs git fetch origin)
+        assert!(repo.sync("main").await.is_ok());
+
+        // Test get_head_commit failure on invalid directory
+        let temp = tempfile::TempDir::new().unwrap();
+        let invalid_repo = GitRepository::new("https://invalid.url".to_string(), temp.path().to_path_buf());
+        assert!(invalid_repo.get_head_commit().await.is_err());
+    }
+}

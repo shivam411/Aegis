@@ -232,5 +232,92 @@ mod tests {
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "aegis-app");
         assert_eq!(projects[0].id, proj_id);
+
+        let single_proj = engine.get_project(&proj_id);
+        assert!(single_proj.is_some());
+        assert_eq!(single_proj.unwrap().name, "aegis-app");
+    }
+
+    #[test]
+    fn test_projection_engine_deployment_and_process_events() {
+        let engine = ProjectionEngine::new();
+        let proj_id = ProjectId::new();
+        let rel_id = aegis_types::ReleaseId::new();
+        let dep_id = aegis_types::DeploymentId::new();
+        let proc_id = aegis_types::ProcessId::new();
+
+        // 1. DeploymentQueued
+        let payload1 = serde_json::json!({
+            "deployment_id": dep_id.to_string(),
+            "project_id": proj_id.to_string(),
+            "release_id": rel_id.to_string(),
+            "strategy": "GracefulSwitch"
+        }).to_string();
+        let event1 = Event::new("DeploymentQueued", payload1);
+        engine.apply_event(&event1);
+
+        let deps = engine.get_deployments();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].status, "Queued");
+
+        // 2. DeploymentCompleted
+        let payload2 = serde_json::json!({
+            "deployment_id": dep_id.to_string(),
+        }).to_string();
+        let event2 = Event::new("DeploymentCompleted", payload2);
+        engine.apply_event(&event2);
+
+        let deps = engine.get_deployments();
+        assert_eq!(deps[0].status, "Success");
+        assert!(deps[0].completed_at.is_some());
+
+        // 3. ProcessStarted
+        let payload3 = serde_json::json!({
+            "process_id": proc_id.to_string(),
+            "project_id": proj_id.to_string(),
+            "pid": 1234
+        }).to_string();
+        let event3 = Event::new("ProcessStarted", payload3);
+        engine.apply_event(&event3);
+
+        let procs = engine.get_processes();
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].status, "Running");
+        assert_eq!(procs[0].pid, Some(1234));
+
+        // 4. ProcessStopped
+        let payload4 = serde_json::json!({
+            "process_id": proc_id.to_string(),
+        }).to_string();
+        let event4 = Event::new("ProcessStopped", payload4);
+        engine.apply_event(&event4);
+
+        let procs = engine.get_processes();
+        assert_eq!(procs[0].status, "Stopped");
+        assert_eq!(procs[0].pid, None);
+
+        // Check empty collections getters
+        assert!(engine.get_releases().is_empty());
+        assert!(engine.get_servers().is_empty());
+    }
+
+    #[test]
+    fn test_projection_engine_replay_and_invalid_json() {
+        let engine = ProjectionEngine::new();
+        let invalid_event = Event::new("ProjectCreated", "{ invalid_json }");
+        engine.apply_event(&invalid_event);
+        assert!(engine.get_projects().is_empty());
+
+        let proj_id = ProjectId::new();
+        let payload = serde_json::json!({
+            "project_id": proj_id.to_string(),
+            "name": "replayed-app",
+            "repository_url": "https://github.com/aegis/replayed"
+        }).to_string();
+        let event = Event::new("ProjectCreated", payload);
+
+        engine.replay_from_store(&[event]);
+        assert_eq!(engine.get_projects().len(), 1);
+        assert_eq!(engine.get_projects()[0].name, "replayed-app");
     }
 }

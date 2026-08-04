@@ -26,3 +26,25 @@ impl Default for EventBus {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_event_bus_pub_sub() {
+        let bus = EventBus::default();
+        let mut rx1 = bus.subscribe();
+        let mut rx2 = bus.subscribe();
+
+        let event = Event::new("DeploymentStarted", r#"{"deployment_id":"dep-1"}"#);
+        bus.publish(event.clone());
+
+        let recv1 = rx1.recv().await.unwrap();
+        let recv2 = rx2.recv().await.unwrap();
+
+        assert_eq!(recv1.id, event.id);
+        assert_eq!(recv1.event_type, "DeploymentStarted");
+        assert_eq!(recv2.id, event.id);
+    }
+}

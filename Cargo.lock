@@ -61,9 +61,11 @@ dependencies = [
  "aegis-release",
  "aegis-types",
  "anyhow",
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -168,6 +170,7 @@ version = "0.1.0"
 dependencies = [
  "aegis-types",
  "anyhow",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -332,6 +335,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "uuid",
 ]

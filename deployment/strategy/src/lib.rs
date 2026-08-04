@@ -256,4 +256,49 @@ mod tests {
         let active = switcher.get_active_version().await.unwrap();
         assert_eq!(active, Some("v2.0.0".to_string()));
     }
+
+    struct MockFailedChecker;
+    #[async_trait::async_trait]
+    impl aegis_health::HealthChecker for MockFailedChecker {
+        fn name(&self) -> &str { "MockFailed" }
+        async fn check_health(&self, _target: &str) -> Result<bool, anyhow::Error> { Ok(false) }
+    }
+
+    #[tokio::test]
+    async fn test_rolling_strategy_and_failed_health_checks() {
+        let rolling = RollingStrategy { batch_size: 2 };
+        assert_eq!(rolling.name(), "Rolling");
+
+        let proj_id = ProjectId::new();
+        let release = Release::new(
+            proj_id,
+            "v1.0.0".to_string(),
+            "sha".to_string(),
+            "msg".to_string(),
+            "author".to_string(),
+            "main".to_string(),
+            "Rust".to_string(),
+        );
+
+        let ctx = DeploymentContext {
+            deployment_id: DeploymentId::new(),
+            project_id: proj_id,
+            release: release.clone(),
+            previous_release: None,
+            health_target: Some("127.0.0.1:8080".to_string()),
+        };
+
+        let rolling_outcome = rolling.execute(&ctx, None).await.unwrap();
+        assert_eq!(rolling_outcome, DeploymentOutcome::Success);
+
+        let checker = MockFailedChecker;
+        let immediate = ImmediateStrategy;
+        let imm_outcome = immediate.execute(&ctx, Some(&checker)).await.unwrap();
+        assert!(matches!(imm_outcome, DeploymentOutcome::RollbackRequired { .. }));
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let graceful = GracefulSwitchStrategy::new(temp_dir.path().to_path_buf());
+        let graceful_outcome = graceful.execute(&ctx, Some(&checker)).await.unwrap();
+        assert!(matches!(graceful_outcome, DeploymentOutcome::RollbackRequired { .. }));
+    }
 }
