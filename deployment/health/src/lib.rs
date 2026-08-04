@@ -54,14 +54,19 @@ impl HealthChecker for HttpHealthChecker {
 
     async fn check_health(&self, target: &str) -> Result<bool, anyhow::Error> {
         let connect_fut = async {
-            let mut stream = TcpStream::connect(target).await?;
+            let mut stream = match TcpStream::connect(target).await {
+                Ok(s) => s,
+                Err(_) => return Ok(false),
+            };
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
             let req = format!(
                 "GET /health HTTP/1.1\r\nHost: {}\r\nUser-Agent: AegisHealthChecker/1.0\r\nConnection: close\r\n\r\n",
                 target
             );
-            stream.write_all(req.as_bytes()).await?;
+            if stream.write_all(req.as_bytes()).await.is_err() {
+                return Ok(false);
+            }
 
             let mut buf = [0u8; 512];
             let n = stream.read(&mut buf).await.unwrap_or(0);
