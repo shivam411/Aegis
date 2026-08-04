@@ -152,52 +152,63 @@ impl ProcessSupervisor {
         process_id: &ProcessId,
         drain_timeout_secs: u64,
     ) -> Result<(), anyhow::Error> {
-        if let Some(proc) = self.processes.write().unwrap().get_mut(process_id) {
-            if !proc.is_running {
+        let pid = {
+            let lock = self.processes.read().unwrap();
+            if let Some(proc) = lock.get(process_id) {
+                if !proc.is_running {
+                    return Ok(());
+                }
+                proc.pid
+            } else {
                 return Ok(());
             }
-            if let Some(pid) = proc.pid {
-                tracing::info!(
-                    process_id = %process_id,
-                    pid = pid,
-                    timeout_secs = drain_timeout_secs,
-                    "Gracefully terminating old process"
-                );
+        };
 
-                #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/PID", &pid.to_string()])
-                        .output();
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-15")
-                        .arg(pid.to_string())
-                        .output();
-                }
+        if let Some(pid) = pid {
+            tracing::info!(
+                process_id = %process_id,
+                pid = pid,
+                timeout_secs = drain_timeout_secs,
+                "Gracefully terminating old process"
+            );
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(drain_timeout_secs)).await;
-
-                // Force kill if process is still marked running
-                #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/PID", &pid.to_string()])
-                        .output();
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-9")
-                        .arg(pid.to_string())
-                        .output();
-                }
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string()])
+                    .output();
             }
+            #[cfg(not(windows))]
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg("-15")
+                    .arg(pid.to_string())
+                    .output();
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(drain_timeout_secs)).await;
+
+            // Force kill if process is still marked running
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .output();
+            }
+        }
+
+        if let Some(proc) = self.processes.write().unwrap().get_mut(process_id) {
             proc.is_running = false;
             proc.pid = None;
         }
+
         Ok(())
     }
 
