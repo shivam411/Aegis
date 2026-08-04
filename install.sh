@@ -120,11 +120,10 @@ main() {
 
     # Download
     info "Downloading ${archive_name}..."
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "${tmp_dir}"' EXIT
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "${TMP_DIR:-}"' EXIT
 
-    curl -fsSL -o "${tmp_dir}/${archive_name}" "${download_url}" \
+    curl -fsSL -o "${TMP_DIR}/${archive_name}" "${download_url}" \
         || err "Download failed. Check that release ${version} has asset ${archive_name}."
 
     ok "Downloaded ${archive_name}"
@@ -132,11 +131,11 @@ main() {
     # Extract
     info "Extracting..."
     if [ "${os}" = "windows" ]; then
-        unzip -qo "${tmp_dir}/${archive_name}" -d "${tmp_dir}/aegis" 2>/dev/null \
+        unzip -qo "${TMP_DIR}/${archive_name}" -d "${TMP_DIR}/aegis" 2>/dev/null \
             || err "Extraction failed. Is 'unzip' installed?"
     else
-        mkdir -p "${tmp_dir}/aegis"
-        tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}/aegis" \
+        mkdir -p "${TMP_DIR}/aegis"
+        tar -xzf "${TMP_DIR}/${archive_name}" -C "${TMP_DIR}/aegis" \
             || err "Extraction failed."
     fi
 
@@ -144,8 +143,8 @@ main() {
     info "Installing to ${INSTALL_DIR}/"
     local found=0
     for bin in aegis-daemon aegis-cli aegis-tui; do
-        if [ -f "${tmp_dir}/aegis/${bin}" ]; then
-            mv "${tmp_dir}/aegis/${bin}" "${INSTALL_DIR}/${bin}"
+        if [ -f "${TMP_DIR}/aegis/${bin}" ]; then
+            mv "${TMP_DIR}/aegis/${bin}" "${INSTALL_DIR}/${bin}"
             chmod +x "${INSTALL_DIR}/${bin}"
             found=$((found + 1))
         fi

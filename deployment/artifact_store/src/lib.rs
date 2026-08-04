@@ -1,5 +1,6 @@
 use aegis_types::{ArtifactId, ReleaseId};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -40,20 +41,28 @@ impl ArtifactStore {
             .to_string();
 
         let target_path = release_dir.join(&artifact_name);
+        let mut hasher = Sha256::new();
+        let mut size_bytes: u64 = 0;
 
         if source_path.is_file() {
-            fs::copy(source_path, &target_path).await?;
+            let bytes = fs::read(source_path).await?;
+            size_bytes = bytes.len() as u64;
+            hasher.update(&bytes);
+            fs::write(&target_path, bytes).await?;
         } else if source_path.is_dir() {
             fs::create_dir_all(&target_path).await?;
+            hasher.update(source_path.to_string_lossy().as_bytes());
         }
+
+        let sha256_checksum = format!("{:x}", hasher.finalize());
 
         let metadata = StoredArtifact {
             id: artifact_id,
             release_id: *release_id,
             name: artifact_name,
             path: target_path,
-            sha256_checksum: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(), // sha256 mock/computed
-            size_bytes: 1024,
+            sha256_checksum,
+            size_bytes,
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 

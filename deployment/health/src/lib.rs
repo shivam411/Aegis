@@ -53,10 +53,36 @@ impl HealthChecker for HttpHealthChecker {
     }
 
     async fn check_health(&self, target: &str) -> Result<bool, anyhow::Error> {
-        // TCP check fallback for zero-dependency health monitoring
-        match tokio::time::timeout(self.timeout, TcpStream::connect(target)).await {
-            Ok(Ok(_)) => Ok(true),
-            _ => Ok(false),
+        let connect_fut = async {
+            let mut stream = TcpStream::connect(target).await?;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let req = format!(
+                "GET /health HTTP/1.1\r\nHost: {}\r\nUser-Agent: AegisHealthChecker/1.0\r\nConnection: close\r\n\r\n",
+                target
+            );
+            stream.write_all(req.as_bytes()).await?;
+
+            let mut buf = [0u8; 512];
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            if n > 0 {
+                let resp_str = String::from_utf8_lossy(&buf[..n]);
+                // Check if response status is HTTP 2xx or 3xx or 404/fallback
+                if resp_str.starts_with("HTTP/") {
+                    let parts: Vec<&str> = resp_str.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        if let Ok(code) = parts[1].parse::<u16>() {
+                            return Ok(code < 500);
+                        }
+                    }
+                }
+            }
+            Ok(true)
+        };
+
+        match tokio::time::timeout(self.timeout, connect_fut).await {
+            Ok(res) => res,
+            Err(_) => Ok(false),
         }
     }
 }
@@ -80,9 +106,16 @@ mod tests {
         let unreach_http = http_checker.check_health("127.0.0.1:59999").await.unwrap();
         assert!(!unreach_http);
 
-        // 2. Bound local listener -> true
+        // 2. Bound local listener with mock HTTP server -> true
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap().to_string();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                use tokio::io::AsyncWriteExt;
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK").await;
+            }
+        });
 
         let reach_tcp = tcp_checker.check_health(&local_addr).await.unwrap();
         assert!(reach_tcp);

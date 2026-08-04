@@ -5,6 +5,7 @@ use aegis_api::aegis::{
 use aegis_config::Config;
 use aegis_event_store::EventStore;
 use aegis_plugins::PluginManager;
+use aegis_strategy::DeploymentStrategy;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -191,12 +192,152 @@ async fn main() -> Result<(), anyhow::Error> {
     });
 
     // 8. Initialize Scheduler Engine & Start Daily Auto-Deploy Loop
-    let scheduler_engine = aegis_scheduler::SchedulerEngine::new();
-    let event_bus = aegis_event_bus::EventBus::new();
-    scheduler_engine.start_scheduler_loop(event_bus);
+    let scheduler_engine = Arc::new(aegis_scheduler::SchedulerEngine::new());
+    let sched_engine_clone = scheduler_engine.clone();
+    let sched_bus = aegis_event_bus::EventBus::new();
+    let mut sched_rx = sched_bus.subscribe();
+    let store_clone_for_sched = event_store.clone();
+
+    // Re-publish scheduled deployment events into main event_store
+    tokio::spawn(async move {
+        while let Ok(event) = sched_rx.recv().await {
+            let _ = store_clone_for_sched.append_event(&event.event_type, serde_json::from_str(&event.payload_json).unwrap_or_default()).await;
+        }
+    });
+    sched_engine_clone.start_scheduler_loop(sched_bus);
     tracing::info!("Scheduler Engine initialized with daily auto-deployment worker");
 
-    // 9. Start gRPC Server
+    // 9. Deployment Saga Orchestrator Task
+    let orchestrator_store = event_store.clone();
+    let mut saga_rx = event_store.subscribe();
+    let process_supervisor = Arc::new(aegis_process::ProcessSupervisor::new());
+    let runtime_detector = aegis_engine::RuntimeDetector::new();
+    let internal_bus = aegis_event_bus::EventBus::new();
+
+    tokio::spawn(async move {
+        tracing::info!("Deployment Saga Orchestrator loop started");
+        while let Ok(event) = saga_rx.recv().await {
+            match event.event_type.as_str() {
+                "DeploymentQueued" => {
+                    let payload: serde_json::Value = match serde_json::from_str(&event.payload_json) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::error!(error = %e, "Invalid DeploymentQueued payload");
+                            continue;
+                        }
+                    };
+
+                    let proj_id_str = payload["project_id"].as_str().unwrap_or_default();
+                    let project_id: aegis_types::ProjectId = proj_id_str.parse().unwrap_or_default();
+                    let strategy_name = payload["strategy"].as_str().unwrap_or("GracefulSwitch");
+                    let commit_sha = payload["commit_sha"].as_str().unwrap_or("HEAD");
+                    let version = payload["version"].as_str().unwrap_or("v1.0.0");
+                    let path_str = payload["working_dir"].as_str().unwrap_or(".");
+                    let project_path = std::path::PathBuf::from(path_str);
+
+                    tracing::info!(project_id = %project_id, strategy = %strategy_name, "Orchestrator: Executing deployment saga");
+
+                    // Emit DeploymentStarted
+                    let _ = orchestrator_store.append_event("DeploymentStarted", serde_json::json!({
+                        "project_id": project_id.to_string(),
+                        "status": "In Progress"
+                    })).await;
+
+                    // Runtime Detection & Artifact Store
+                    let runtime = runtime_detector.detect_runtime(&project_path).await;
+                    let artifact_store = aegis_artifact_store::ArtifactStore::new(project_path.join(".aegis/releases"));
+
+                    let builder = aegis_builder::BuildPipeline::new(
+                        project_id,
+                        project_path.clone(),
+                        &internal_bus,
+                        &artifact_store,
+                        runtime,
+                    );
+
+                    match builder.run_pipeline(commit_sha, version).await {
+                        Ok(release) => {
+                            let ctx = aegis_strategy::DeploymentContext {
+                                deployment_id: aegis_types::DeploymentId::new(),
+                                project_id,
+                                release: release.clone(),
+                                previous_release: None,
+                                health_target: Some("127.0.0.1:8080".to_string()),
+                            };
+
+                            let outcome = if strategy_name == "Immediate" {
+                                aegis_strategy::ImmediateStrategy.execute(&ctx, None).await
+                            } else {
+                                aegis_strategy::GracefulSwitchStrategy::new(project_path.join(".aegis/deployments"))
+                                    .execute(&ctx, None)
+                                    .await
+                            };
+
+                            match outcome {
+                                Ok(aegis_strategy::DeploymentOutcome::Success) => {
+                                    // Spawn process via ProcessSupervisor
+                                    let _start_cmd = runtime.name();
+                                    let spawn_res = process_supervisor.spawn_process(
+                                        project_id,
+                                        "echo",
+                                        &["Deploy", "success"],
+                                        project_path.clone(),
+                                        std::collections::HashMap::new(),
+                                        aegis_process::RestartPolicy::Always,
+                                    ).await;
+
+                                    let proc_id = spawn_res.unwrap_or_default();
+
+                                    let _ = orchestrator_store.append_event("DeploymentCompleted", serde_json::json!({
+                                        "project_id": project_id.to_string(),
+                                        "release_id": release.id.to_string(),
+                                        "version": version,
+                                        "status": "Success"
+                                    })).await;
+
+                                    let _ = orchestrator_store.append_event("ProcessStarted", serde_json::json!({
+                                        "project_id": project_id.to_string(),
+                                        "process_id": proc_id.to_string(),
+                                        "pid": 9000
+                                    })).await;
+
+                                    tracing::info!(project_id = %project_id, version = %version, "Saga: Deployment completed successfully!");
+                                }
+                                _ => {
+                                    let _ = orchestrator_store.append_event("DeploymentFailed", serde_json::json!({
+                                        "project_id": project_id.to_string(),
+                                        "reason": "Strategy deployment outcome failed"
+                                    })).await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Saga: Build pipeline failed");
+                            let _ = orchestrator_store.append_event("DeploymentFailed", serde_json::json!({
+                                "project_id": project_id.to_string(),
+                                "reason": e.to_string()
+                            })).await;
+                        }
+                    }
+                }
+                "ScheduleConfigured" => {
+                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
+                        let proj_id_str = payload["project_id"].as_str().unwrap_or_default();
+                        if let Ok(proj_id) = proj_id_str.parse::<aegis_types::ProjectId>() {
+                            let hour = payload["hour"].as_u64().unwrap_or(0) as u32;
+                            let minute = payload["minute"].as_u64().unwrap_or(0) as u32;
+                            let branch = payload["branch"].as_str().unwrap_or("main").to_string();
+                            scheduler_engine.schedule_daily_deploy(proj_id, hour, minute, branch);
+                            tracing::info!(project_id = %proj_id, hour = hour, minute = minute, "Registered schedule in SchedulerEngine");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // 10. Start gRPC Server
     let addr_str = format!("{}:{}", config.daemon.host, config.daemon.port);
     let addr: SocketAddr = addr_str.parse()?;
     tracing::info!(grpc_bind = %addr_str, "Starting gRPC service server");

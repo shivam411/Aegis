@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 aegis-types = { path = "../../core/types" }
 aegis-release = { path = "../release" }
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = { workspace = true }

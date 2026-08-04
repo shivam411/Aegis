@@ -24,3 +24,11 @@ aegis-plugins = { path = "../plugin" }
 aegis-projection = { path = "../projection" }
 aegis-scheduler = { path = "../scheduler" }
 aegis-types = { path = "../types" }
+aegis-builder = { path = "../../deployment/builder" }
+aegis-artifact-store = { path = "../../deployment/artifact_store" }
+aegis-strategy = { path = "../../deployment/strategy" }
+aegis-release = { path = "../../deployment/release" }
+aegis-rollback = { path = "../../deployment/rollback" }
+aegis-health = { path = "../../deployment/health" }
+aegis-engine = { path = "../../runtime/engine" }
+aegis-process = { path = "../../runtime/process" }
