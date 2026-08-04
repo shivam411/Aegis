@@ -130,7 +130,9 @@ mod tests {
         let release_id = ReleaseId::new();
 
         let sample_file = temp.path().join("dist.tar.gz");
-        fs::write(&sample_file, "sample binary content").await.unwrap();
+        fs::write(&sample_file, "sample binary content")
+            .await
+            .unwrap();
 
         let artifact = store.store(&release_id, &sample_file).await.unwrap();
         assert_eq!(artifact.release_id, release_id);

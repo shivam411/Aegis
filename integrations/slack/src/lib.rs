@@ -25,7 +25,11 @@ impl Plugin for SlackPlugin {
 
     async fn on_event(&self, event: &Event) -> Result<(), anyhow::Error> {
         match event.event_type.as_str() {
-            "DeploymentQueued" | "DeploymentStarted" | "DeploymentCompleted" | "DeploymentFailed" | "RollbackTriggered" => {
+            "DeploymentQueued"
+            | "DeploymentStarted"
+            | "DeploymentCompleted"
+            | "DeploymentFailed"
+            | "RollbackTriggered" => {
                 tracing::info!(
                     event_type = %event.event_type,
                     event_id = %event.id,

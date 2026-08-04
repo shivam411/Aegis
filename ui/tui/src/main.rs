@@ -37,7 +37,10 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
         Err(e) => {
-            println!("[ERROR] Could not connect to Aegis daemon at {}: {}", addr, e);
+            println!(
+                "[ERROR] Could not connect to Aegis daemon at {}: {}",
+                addr, e
+            );
             println!("Please ensure 'aegis-daemon' is running.");
         }
     }

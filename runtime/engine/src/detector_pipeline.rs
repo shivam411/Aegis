@@ -25,21 +25,59 @@ impl DetectorPipeline {
             .unwrap_or("app")
             .to_string();
 
-        let (runtime, build, start, health, port) = if project_path.join("pom.xml").exists() || project_path.join("build.gradle").exists() {
-            let build_cmd = if project_path.join("build.gradle").exists() { "./gradlew build" } else { "mvn package" };
-            ("Java", build_cmd, "java -jar build/libs/app.jar", "/health", 8080)
+        let (runtime, build, start, health, port) = if project_path.join("pom.xml").exists()
+            || project_path.join("build.gradle").exists()
+        {
+            let build_cmd = if project_path.join("build.gradle").exists() {
+                "./gradlew build"
+            } else {
+                "mvn package"
+            };
+            (
+                "Java",
+                build_cmd,
+                "java -jar build/libs/app.jar",
+                "/health",
+                8080,
+            )
         } else if project_path.join("package.json").exists() {
             ("Node.js", "npm run build", "npm start", "/health", 3000)
         } else if project_path.join("Cargo.toml").exists() {
-            ("Rust", "cargo build --release", "./target/release/app", "/health", 8080)
+            (
+                "Rust",
+                "cargo build --release",
+                "./target/release/app",
+                "/health",
+                8080,
+            )
         } else if project_path.join("go.mod").exists() {
             ("Go", "go build -o app", "./app", "/health", 8080)
-        } else if project_path.join("requirements.txt").exists() || project_path.join("pyproject.toml").exists() {
-            ("Python", "pip install -r requirements.txt", "python app.py", "/health", 5000)
+        } else if project_path.join("requirements.txt").exists()
+            || project_path.join("pyproject.toml").exists()
+        {
+            (
+                "Python",
+                "pip install -r requirements.txt",
+                "python app.py",
+                "/health",
+                5000,
+            )
         } else if project_path.join("Dockerfile").exists() {
-            ("Docker", "docker build -t app .", "docker run -p 8080:8080 app", "/health", 8080)
+            (
+                "Docker",
+                "docker build -t app .",
+                "docker run -p 8080:8080 app",
+                "/health",
+                8080,
+            )
         } else {
-            ("Generic", "echo 'Build complete'", "./run.sh", "/health", 8080)
+            (
+                "Generic",
+                "echo 'Build complete'",
+                "./run.sh",
+                "/health",
+                8080,
+            )
         };
 
         DetectedConfig {

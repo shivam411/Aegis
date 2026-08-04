@@ -43,5 +43,9 @@ fn benchmark_projection_folding(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, benchmark_event_bus_publish, benchmark_projection_folding);
+criterion_group!(
+    benches,
+    benchmark_event_bus_publish,
+    benchmark_projection_folding
+);
 criterion_main!(benches);

@@ -21,7 +21,11 @@ impl<'a> WebhookHandler<'a> {
     }
 
     /// Processes an incoming Git push webhook payload and enqueues a deployment event.
-    pub fn handle_push(&self, project_id: ProjectId, payload: GitHubPushPayload) -> Result<Event, anyhow::Error> {
+    pub fn handle_push(
+        &self,
+        project_id: ProjectId,
+        payload: GitHubPushPayload,
+    ) -> Result<Event, anyhow::Error> {
         let deployment_id = DeploymentId::new();
         let release_id = ReleaseId::new();
 

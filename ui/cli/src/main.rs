@@ -192,10 +192,14 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             println!("  Total Events: {}", response.event_count);
         }
-        Commands::Init { name, repo, template } => {
+        Commands::Init {
+            name,
+            repo,
+            template,
+        } => {
             let project_id = aegis_types::ProjectId::new();
             let current_dir = std::env::current_dir()?;
-            
+
             // Execute Detector Pipeline
             let pipeline = aegis_engine::DetectorPipeline::new();
             let mut detected_config = pipeline.detect_all(&current_dir);
@@ -225,7 +229,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                     "python" => {
                         detected_config.runtime_engine = "Python".to_string();
-                        detected_config.build_command = "pip install -r requirements.txt".to_string();
+                        detected_config.build_command =
+                            "pip install -r requirements.txt".to_string();
                         detected_config.start_command = "python app.py".to_string();
                     }
                     _ => println!("Custom template '{}' applied", tmpl),
@@ -236,7 +241,10 @@ async fn main() -> Result<(), anyhow::Error> {
             detected_config.project_name = proj_name.clone();
             let repo_url = repo.unwrap_or_else(|| "https://github.com/aegis/project".to_string());
 
-            println!("Initializing Aegis Project '{}' ({})", proj_name, project_id);
+            println!(
+                "Initializing Aegis Project '{}' ({})",
+                proj_name, project_id
+            );
             println!("Runtime Engine: {}", detected_config.runtime_engine);
             println!("Build Command:  {}", detected_config.build_command);
             println!("Start Command:  {}", detected_config.start_command);
@@ -244,7 +252,8 @@ async fn main() -> Result<(), anyhow::Error> {
             // Generate zero-boilerplate aegis.toml if not present
             let local_toml_path = current_dir.join("aegis.toml");
             if !local_toml_path.exists() {
-                let toml_content = pipeline.generate_toml(&detected_config, &project_id.to_string());
+                let toml_content =
+                    pipeline.generate_toml(&detected_config, &project_id.to_string());
                 let _ = std::fs::write(&local_toml_path, toml_content);
                 println!("Generated zero-boilerplate config: aegis.toml");
             }
@@ -265,7 +274,10 @@ async fn main() -> Result<(), anyhow::Error> {
                 .into_inner();
 
             if response.success {
-                println!("Project created successfully! (Event ID: {})", response.event_id);
+                println!(
+                    "Project created successfully! (Event ID: {})",
+                    response.event_id
+                );
                 println!("\n  💡 Next step: Run 'aegis validate' to verify configuration and build readiness");
             }
         }
@@ -290,11 +302,20 @@ async fn main() -> Result<(), anyhow::Error> {
                 .into_inner();
 
             if response.success {
-                println!("Deployment queued successfully! (Deployment ID: {})", deployment_id);
+                println!(
+                    "Deployment queued successfully! (Deployment ID: {})",
+                    deployment_id
+                );
             }
         }
-        Commands::Rollback { project_id, version } => {
-            println!("Triggering rollback for project {} to version {}", project_id, version);
+        Commands::Rollback {
+            project_id,
+            version,
+        } => {
+            println!(
+                "Triggering rollback for project {} to version {}",
+                project_id, version
+            );
             let response = client
                 .emit_event(EmitEventRequest {
                     event_type: "RollbackTriggered".to_string(),
@@ -323,9 +344,15 @@ async fn main() -> Result<(), anyhow::Error> {
             } else {
                 println!("Streaming all system operational logs...");
             }
-            let mut stream = client.stream_events(StreamEventsRequest {}).await?.into_inner();
+            let mut stream = client
+                .stream_events(StreamEventsRequest {})
+                .await?
+                .into_inner();
             while let Some(event) = stream.message().await? {
-                println!("[{}] TYPE: {} | PAYLOAD: {}", event.created_at, event.event_type, event.payload_json);
+                println!(
+                    "[{}] TYPE: {} | PAYLOAD: {}",
+                    event.created_at, event.event_type, event.payload_json
+                );
             }
         }
         Commands::Stop { process_id } => {
@@ -400,20 +427,29 @@ async fn main() -> Result<(), anyhow::Error> {
                 .into_inner();
 
             if response.success {
-                println!("Successfully emitted event '{}' (ID: {})", event_type, response.event_id);
+                println!(
+                    "Successfully emitted event '{}' (ID: {})",
+                    event_type, response.event_id
+                );
             } else {
                 println!("Failed to emit event");
             }
         }
         Commands::StreamEvents | Commands::Events => {
-            println!("Listening for operational events from daemon at {}...", addr);
+            println!(
+                "Listening for operational events from daemon at {}...",
+                addr
+            );
             let mut stream = client
                 .stream_events(StreamEventsRequest {})
                 .await?
                 .into_inner();
 
             while let Some(event) = stream.message().await? {
-                println!("[{}] TYPE: {} | PAYLOAD: {}", event.created_at, event.event_type, event.payload_json);
+                println!(
+                    "[{}] TYPE: {} | PAYLOAD: {}",
+                    event.created_at, event.event_type, event.payload_json
+                );
             }
         }
         Commands::Doctor { fix } => {
@@ -435,14 +471,20 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         Commands::Inspect { project_id, at } => {
             if let Some(ts) = at {
-                println!("Time-Travel Historical State Inspection for Project '{}' at {}:", project_id, ts);
+                println!(
+                    "Time-Travel Historical State Inspection for Project '{}' at {}:",
+                    project_id, ts
+                );
                 println!("  [State Snapshot at {}]", ts);
                 println!("  ├── Id: {}", project_id);
                 println!("  ├── Active Release: v1.0.0 (SHA: 91ab32)");
                 println!("  ├── Health Status: Healthy (2/2 probes passed)");
                 println!("  └── Supervised PIDs: [PID: 4018, CPU: 0.4%, RSS: 112 MB]");
             } else {
-                println!("Inspecting Project {} state and resource hierarchy...", project_id);
+                println!(
+                    "Inspecting Project {} state and resource hierarchy...",
+                    project_id
+                );
                 println!("Project Resource Tree:");
                 println!("  ├── Id: {}", project_id);
                 println!("  ├── Releases: [Active: v1.0.0]");
@@ -469,11 +511,17 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         Commands::Releases { project_id } => {
             let pid = project_id.unwrap_or_else(|| "current-project".to_string());
-            println!("Querying Immutable Release History for Project '{}'...", pid);
+            println!(
+                "Querying Immutable Release History for Project '{}'...",
+                pid
+            );
             println!("  VERSION   STATUS      STRATEGY        CREATED AT           ROLLBACK");
             println!("  v1.1.0    Active      GracefulSwitch  2 hours ago          Available");
             println!("  v1.0.0    Retained    GracefulSwitch  1 day ago            Available");
-            println!("\n  💡 Next step: Run 'aegis rollback {} --version v1.0.0'", pid);
+            println!(
+                "\n  💡 Next step: Run 'aegis rollback {} --version v1.0.0'",
+                pid
+            );
         }
         Commands::Timeline { project_id } => {
             let pid = project_id.unwrap_or_else(|| "current-project".to_string());
@@ -486,33 +534,59 @@ async fn main() -> Result<(), anyhow::Error> {
             println!("\n  💡 Next step: Run 'aegis events' for live event streaming");
         }
         Commands::Replay { release } => {
-            println!("▶ Executing Operational Deployment Replay for Release '{}':", release);
+            println!(
+                "▶ Executing Operational Deployment Replay for Release '{}':",
+                release
+            );
             println!("  [09:14:02] ─── Step 1: BuildStarted      (Compiling release binary)");
             println!("  [09:14:45] ─── Step 2: BuildFinished     (Artifact sha256 verified)");
-            println!("  [09:15:00] ─── Step 3: DeploymentStarted (GracefulSwitch strategy initialized)");
+            println!(
+                "  [09:15:00] ─── Step 3: DeploymentStarted (GracefulSwitch strategy initialized)"
+            );
             println!("  [09:15:05] ─── Step 4: HealthCheckPassed (HTTP 200 OK on target port)");
             println!("  [09:15:06] ─── Step 5: ReleaseActivated  (Pointer swapped atomically)");
-            println!("\n  [✓] Deployment Replay Complete for Release '{}'", release);
+            println!(
+                "\n  [✓] Deployment Replay Complete for Release '{}'",
+                release
+            );
         }
         Commands::Incident { project_id } => {
             let pid = project_id.unwrap_or_else(|| "current-project".to_string());
-            println!("Aegis Incident Response & Root Cause Diagnostics for Project '{}':", pid);
+            println!(
+                "Aegis Incident Response & Root Cause Diagnostics for Project '{}':",
+                pid
+            );
             println!("  [!] Health Status:       DEGRADED (HTTP 500 internal server errors)");
             println!("  [!] Memory Trend:        Elevated (284 MB -> 912 MB)");
             println!("  [!] Crash Count:         3 restarts in last 10 minutes");
-            println!("  [!] Suspect Release:     v1.5.2 (Commit 91ab32 - 'Upgrade dependency bundle')");
-            println!("\n  🚨 Recommended Action:   Execute automatic rollback to stable Release v1.5.1");
-            println!("\n  💡 Next step: Run 'aegis rollback {} --version v1.5.1'", pid);
+            println!(
+                "  [!] Suspect Release:     v1.5.2 (Commit 91ab32 - 'Upgrade dependency bundle')"
+            );
+            println!(
+                "\n  🚨 Recommended Action:   Execute automatic rollback to stable Release v1.5.1"
+            );
+            println!(
+                "\n  💡 Next step: Run 'aegis rollback {} --version v1.5.1'",
+                pid
+            );
         }
         Commands::Investigate { project_id } => {
             let pid = project_id.unwrap_or_else(|| "current-project".to_string());
-            println!("🔎 Aegis Operational Outage Investigation for Project '{}':", pid);
+            println!(
+                "🔎 Aegis Operational Outage Investigation for Project '{}':",
+                pid
+            );
             println!("  ├── 1. Deployment Replay: Active release v1.5.2 (Deployed 12m ago)");
-            println!("  ├── 2. Health Telemetry:  500 Internal Server Error spikes detected at 09:14:22");
+            println!(
+                "  ├── 2. Health Telemetry:  500 Internal Server Error spikes detected at 09:14:22"
+            );
             println!("  ├── 3. Memory & CPU:      RSS spike to 912 MB, CPU utilization 94%");
             println!("  ├── 4. Log Trace Snippet: [ERROR] OutOfMemoryError in worker thread pool");
             println!("  └── 5. Root Cause:        Commit 91ab32 memory leak in v1.5.2");
-            println!("\n  🚨 Recommended Action:   Execute 'aegis rollback {} --version v1.5.1'", pid);
+            println!(
+                "\n  🚨 Recommended Action:   Execute 'aegis rollback {} --version v1.5.1'",
+                pid
+            );
             println!("  💡 Next step: Run 'aegis replay v1.5.2' to inspect full event stream");
         }
         Commands::Migrate { target } => match target {
@@ -522,7 +596,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!("  [✓] Environment variables mapped");
                 println!("  [✓] Restart policy mapped to 'Always'");
                 println!("Successfully generated aegis.toml from PM2 ecosystem!");
-                println!("\n  💡 Next step: Run 'aegis validate' to verify converted configuration");
+                println!(
+                    "\n  💡 Next step: Run 'aegis validate' to verify converted configuration"
+                );
             }
             MigrateSubcommand::Systemd { service } => {
                 println!("Parsing systemd service unit file '{}'...", service);
@@ -530,7 +606,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!("  [✓] WorkingDirectory mapped");
                 println!("  [✓] Restart policy mapped to 'Always'");
                 println!("Successfully generated aegis.toml from systemd unit!");
-                println!("\n  💡 Next step: Run 'aegis validate' to verify converted configuration");
+                println!(
+                    "\n  💡 Next step: Run 'aegis validate' to verify converted configuration"
+                );
             }
         },
         Commands::Upgrade { check, force } => {

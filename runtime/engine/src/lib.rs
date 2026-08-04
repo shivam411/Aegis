@@ -85,7 +85,10 @@ impl Runtime for NodeRuntime {
     async fn start(&self, _ctx: &RuntimeContext) -> Result<ProcessHandle, anyhow::Error> {
         let process_id = ProcessId::new();
         tracing::info!(process_id = %process_id, "NodeRuntime: Starting Node process");
-        Ok(ProcessHandle { process_id, pid: Some(1001) })
+        Ok(ProcessHandle {
+            process_id,
+            pid: Some(1001),
+        })
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<(), anyhow::Error> {
@@ -139,7 +142,10 @@ impl Runtime for RustRuntime {
     async fn start(&self, _ctx: &RuntimeContext) -> Result<ProcessHandle, anyhow::Error> {
         let process_id = ProcessId::new();
         tracing::info!(process_id = %process_id, "RustRuntime: Starting Rust executable");
-        Ok(ProcessHandle { process_id, pid: Some(1002) })
+        Ok(ProcessHandle {
+            process_id,
+            pid: Some(1002),
+        })
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<(), anyhow::Error> {
@@ -197,7 +203,10 @@ impl Runtime for GoRuntime {
     async fn start(&self, _ctx: &RuntimeContext) -> Result<ProcessHandle, anyhow::Error> {
         let process_id = ProcessId::new();
         tracing::info!(process_id = %process_id, "GoRuntime: Starting Go binary");
-        Ok(ProcessHandle { process_id, pid: Some(1003) })
+        Ok(ProcessHandle {
+            process_id,
+            pid: Some(1003),
+        })
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<(), anyhow::Error> {
@@ -248,7 +257,10 @@ impl Runtime for PythonRuntime {
     async fn start(&self, _ctx: &RuntimeContext) -> Result<ProcessHandle, anyhow::Error> {
         let process_id = ProcessId::new();
         tracing::info!(process_id = %process_id, "PythonRuntime: Starting Python process");
-        Ok(ProcessHandle { process_id, pid: Some(1004) })
+        Ok(ProcessHandle {
+            process_id,
+            pid: Some(1004),
+        })
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<(), anyhow::Error> {
@@ -291,7 +303,10 @@ impl Runtime for GenericRuntime {
     async fn start(&self, _ctx: &RuntimeContext) -> Result<ProcessHandle, anyhow::Error> {
         let process_id = ProcessId::new();
         tracing::info!(process_id = %process_id, "GenericRuntime: Starting generic command process");
-        Ok(ProcessHandle { process_id, pid: Some(1005) })
+        Ok(ProcessHandle {
+            process_id,
+            pid: Some(1005),
+        })
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<(), anyhow::Error> {
@@ -365,11 +380,17 @@ mod tests {
         // 3. Python detection
         let temp_py = tempfile::TempDir::new().unwrap();
         std::fs::write(temp_py.path().join("requirements.txt"), "").unwrap();
-        assert_eq!(detector.detect_runtime(temp_py.path()).await.name(), "Python");
+        assert_eq!(
+            detector.detect_runtime(temp_py.path()).await.name(),
+            "Python"
+        );
 
         // 4. Generic fallback
         let temp_gen = tempfile::TempDir::new().unwrap();
-        assert_eq!(detector.detect_runtime(temp_gen.path()).await.name(), "Generic");
+        assert_eq!(
+            detector.detect_runtime(temp_gen.path()).await.name(),
+            "Generic"
+        );
     }
 
     #[tokio::test]
@@ -397,7 +418,10 @@ mod tests {
         rust_rt.prepare(&ctx).await.unwrap();
         rust_rt.install(&ctx).await.unwrap();
         let handle = rust_rt.start(&ctx).await.unwrap();
-        assert_eq!(rust_rt.health(&handle).await.unwrap(), HealthStatus::Healthy);
+        assert_eq!(
+            rust_rt.health(&handle).await.unwrap(),
+            HealthStatus::Healthy
+        );
         rust_rt.stop(&handle).await.unwrap();
 
         // GoRuntime

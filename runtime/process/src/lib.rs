@@ -217,4 +217,3 @@ mod tests {
         assert!(!procs_after[0].is_running);
     }
 }
-

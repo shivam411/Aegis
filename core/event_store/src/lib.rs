@@ -1,6 +1,6 @@
+use aegis_types::{Event, EventId};
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
-use aegis_types::{Event, EventId};
 
 #[derive(Clone)]
 pub struct EventStore {
@@ -17,9 +17,7 @@ impl EventStore {
     /// Performs SQLite database migrations.
     pub async fn initialize_db(pool: &SqlitePool) -> Result<(), anyhow::Error> {
         tracing::info!("Running database migrations...");
-        sqlx::migrate!("./migrations")
-            .run(pool)
-            .await?;
+        sqlx::migrate!("./migrations").run(pool).await?;
         tracing::info!("Database migrations complete.");
         Ok(())
     }
@@ -36,7 +34,7 @@ impl EventStore {
 
         let id_str = event.id.to_string();
         sqlx::query(
-            "INSERT INTO events (id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)"
+            "INSERT INTO events (id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)",
         )
         .bind(&id_str)
         .bind(&event.event_type)
@@ -54,15 +52,19 @@ impl EventStore {
 
     /// Fetches all stored events.
     pub async fn get_events(&self) -> Result<Vec<Event>, anyhow::Error> {
-        let rows = sqlx::query("SELECT id, event_type, payload_json, created_at FROM events ORDER BY created_at ASC")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT id, event_type, payload_json, created_at FROM events ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut events = Vec::new();
         for row in rows {
             use sqlx::Row;
             let id_str: String = row.try_get(0)?;
-            let id: EventId = id_str.parse().map_err(|e| anyhow::anyhow!("Failed to parse EventId: {}", e))?;
+            let id: EventId = id_str
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Failed to parse EventId: {}", e))?;
             let mut ev = Event::new(row.try_get::<String, _>(1)?, row.try_get::<String, _>(2)?);
             ev.id = id;
             ev.created_at = row.try_get(3)?;
@@ -97,7 +99,10 @@ mod tests {
         let mut rx = store.subscribe();
 
         let payload = serde_json::json!({ "repo_url": "https://github.com/shivam411/Aegis" });
-        let event = store.append_event("RepositoryAdded", payload.clone()).await.unwrap();
+        let event = store
+            .append_event("RepositoryAdded", payload.clone())
+            .await
+            .unwrap();
 
         assert_eq!(event.event_type, "RepositoryAdded");
         assert!(event.payload_json.contains("shivam411/Aegis"));

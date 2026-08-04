@@ -97,7 +97,11 @@ impl ProjectionEngine {
                     payload.get("repository_url").and_then(|v| v.as_str()),
                 ) {
                     if let Ok(id) = id_str.parse::<ProjectId>() {
-                        let branch = payload.get("branch").and_then(|v| v.as_str()).unwrap_or("main").to_string();
+                        let branch = payload
+                            .get("branch")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("main")
+                            .to_string();
                         let state = ProjectState {
                             id,
                             name: name.to_string(),
@@ -121,8 +125,16 @@ impl ProjectionEngine {
                         proj_id_str.parse::<ProjectId>(),
                         rel_id_str.parse::<ReleaseId>(),
                     ) {
-                        let strategy = payload.get("strategy").and_then(|v| v.as_str()).unwrap_or("Immediate").to_string();
-                        let status = if event.event_type == "DeploymentQueued" { "Queued" } else { "InProgress" };
+                        let strategy = payload
+                            .get("strategy")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Immediate")
+                            .to_string();
+                        let status = if event.event_type == "DeploymentQueued" {
+                            "Queued"
+                        } else {
+                            "InProgress"
+                        };
                         let state = DeploymentState {
                             id: dep_id,
                             project_id: proj_id,
@@ -140,7 +152,11 @@ impl ProjectionEngine {
                 if let Some(dep_id_str) = payload.get("deployment_id").and_then(|v| v.as_str()) {
                     if let Ok(dep_id) = dep_id_str.parse::<DeploymentId>() {
                         if let Some(dep) = self.deployments.write().unwrap().get_mut(&dep_id) {
-                            dep.status = if event.event_type == "DeploymentCompleted" { "Success".to_string() } else { "Failed".to_string() };
+                            dep.status = if event.event_type == "DeploymentCompleted" {
+                                "Success".to_string()
+                            } else {
+                                "Failed".to_string()
+                            };
                             dep.completed_at = Some(event.created_at.clone());
                         }
                     }
@@ -222,7 +238,8 @@ mod tests {
             "name": "aegis-app",
             "repository_url": "https://github.com/aegis/app",
             "branch": "main"
-        }).to_string();
+        })
+        .to_string();
         let mut event = Event::new("ProjectCreated", payload);
         event.created_at = "2026-08-02T12:00:00Z".to_string();
 
@@ -252,7 +269,8 @@ mod tests {
             "project_id": proj_id.to_string(),
             "release_id": rel_id.to_string(),
             "strategy": "GracefulSwitch"
-        }).to_string();
+        })
+        .to_string();
         let event1 = Event::new("DeploymentQueued", payload1);
         engine.apply_event(&event1);
 
@@ -263,7 +281,8 @@ mod tests {
         // 2. DeploymentCompleted
         let payload2 = serde_json::json!({
             "deployment_id": dep_id.to_string(),
-        }).to_string();
+        })
+        .to_string();
         let event2 = Event::new("DeploymentCompleted", payload2);
         engine.apply_event(&event2);
 
@@ -276,7 +295,8 @@ mod tests {
             "process_id": proc_id.to_string(),
             "project_id": proj_id.to_string(),
             "pid": 1234
-        }).to_string();
+        })
+        .to_string();
         let event3 = Event::new("ProcessStarted", payload3);
         engine.apply_event(&event3);
 
@@ -288,7 +308,8 @@ mod tests {
         // 4. ProcessStopped
         let payload4 = serde_json::json!({
             "process_id": proc_id.to_string(),
-        }).to_string();
+        })
+        .to_string();
         let event4 = Event::new("ProcessStopped", payload4);
         engine.apply_event(&event4);
 
@@ -313,7 +334,8 @@ mod tests {
             "project_id": proj_id.to_string(),
             "name": "replayed-app",
             "repository_url": "https://github.com/aegis/replayed"
-        }).to_string();
+        })
+        .to_string();
         let event = Event::new("ProjectCreated", payload);
 
         engine.replay_from_store(&[event]);

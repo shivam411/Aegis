@@ -61,7 +61,10 @@ impl AegisDaemon for DaemonService {
         })?;
 
         let projected_projects = self.projection_engine.get_projects();
-        tracing::debug!(project_count = projected_projects.len(), "Retrieved projected state");
+        tracing::debug!(
+            project_count = projected_projects.len(),
+            "Retrieved projected state"
+        );
 
         let response = StatusResponse {
             initialized: true,
@@ -181,7 +184,10 @@ async fn main() -> Result<(), anyhow::Error> {
     let projection_engine = aegis_projection::ProjectionEngine::new();
     let initial_events = event_store.get_events().await?;
     projection_engine.replay_from_store(&initial_events);
-    tracing::info!(replayed = initial_events.len(), "Projection Engine state replayed");
+    tracing::info!(
+        replayed = initial_events.len(),
+        "Projection Engine state replayed"
+    );
 
     let proj_engine_clone = projection_engine.clone();
     let mut proj_rx = event_store.subscribe();
@@ -201,7 +207,12 @@ async fn main() -> Result<(), anyhow::Error> {
     // Re-publish scheduled deployment events into main event_store
     tokio::spawn(async move {
         while let Ok(event) = sched_rx.recv().await {
-            let _ = store_clone_for_sched.append_event(&event.event_type, serde_json::from_str(&event.payload_json).unwrap_or_default()).await;
+            let _ = store_clone_for_sched
+                .append_event(
+                    &event.event_type,
+                    serde_json::from_str(&event.payload_json).unwrap_or_default(),
+                )
+                .await;
         }
     });
     sched_engine_clone.start_scheduler_loop(sched_bus);
@@ -219,7 +230,8 @@ async fn main() -> Result<(), anyhow::Error> {
         while let Ok(event) = saga_rx.recv().await {
             match event.event_type.as_str() {
                 "DeploymentQueued" => {
-                    let payload: serde_json::Value = match serde_json::from_str(&event.payload_json) {
+                    let payload: serde_json::Value = match serde_json::from_str(&event.payload_json)
+                    {
                         Ok(p) => p,
                         Err(e) => {
                             tracing::error!(error = %e, "Invalid DeploymentQueued payload");
@@ -228,7 +240,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     };
 
                     let proj_id_str = payload["project_id"].as_str().unwrap_or_default();
-                    let project_id: aegis_types::ProjectId = proj_id_str.parse().unwrap_or_default();
+                    let project_id: aegis_types::ProjectId =
+                        proj_id_str.parse().unwrap_or_default();
                     let strategy_name = payload["strategy"].as_str().unwrap_or("GracefulSwitch");
                     let commit_sha = payload["commit_sha"].as_str().unwrap_or("HEAD");
                     let version = payload["version"].as_str().unwrap_or("v1.0.0");
@@ -238,14 +251,21 @@ async fn main() -> Result<(), anyhow::Error> {
                     tracing::info!(project_id = %project_id, strategy = %strategy_name, "Orchestrator: Executing deployment saga");
 
                     // Emit DeploymentStarted
-                    let _ = orchestrator_store.append_event("DeploymentStarted", serde_json::json!({
-                        "project_id": project_id.to_string(),
-                        "status": "In Progress"
-                    })).await;
+                    let _ = orchestrator_store
+                        .append_event(
+                            "DeploymentStarted",
+                            serde_json::json!({
+                                "project_id": project_id.to_string(),
+                                "status": "In Progress"
+                            }),
+                        )
+                        .await;
 
                     // Runtime Detection & Artifact Store
                     let runtime = runtime_detector.detect_runtime(&project_path).await;
-                    let artifact_store = aegis_artifact_store::ArtifactStore::new(project_path.join(".aegis/releases"));
+                    let artifact_store = aegis_artifact_store::ArtifactStore::new(
+                        project_path.join(".aegis/releases"),
+                    );
 
                     let builder = aegis_builder::BuildPipeline::new(
                         project_id,
@@ -268,60 +288,86 @@ async fn main() -> Result<(), anyhow::Error> {
                             let outcome = if strategy_name == "Immediate" {
                                 aegis_strategy::ImmediateStrategy.execute(&ctx, None).await
                             } else {
-                                aegis_strategy::GracefulSwitchStrategy::new(project_path.join(".aegis/deployments"))
-                                    .execute(&ctx, None)
-                                    .await
+                                aegis_strategy::GracefulSwitchStrategy::new(
+                                    project_path.join(".aegis/deployments"),
+                                )
+                                .execute(&ctx, None)
+                                .await
                             };
 
                             match outcome {
                                 Ok(aegis_strategy::DeploymentOutcome::Success) => {
                                     // Spawn process via ProcessSupervisor
                                     let _start_cmd = runtime.name();
-                                    let spawn_res = process_supervisor.spawn_process(
-                                        project_id,
-                                        "echo",
-                                        &["Deploy", "success"],
-                                        project_path.clone(),
-                                        std::collections::HashMap::new(),
-                                        aegis_process::RestartPolicy::Always,
-                                    ).await;
+                                    let spawn_res = process_supervisor
+                                        .spawn_process(
+                                            project_id,
+                                            "echo",
+                                            &["Deploy", "success"],
+                                            project_path.clone(),
+                                            std::collections::HashMap::new(),
+                                            aegis_process::RestartPolicy::Always,
+                                        )
+                                        .await;
 
                                     let proc_id = spawn_res.unwrap_or_default();
 
-                                    let _ = orchestrator_store.append_event("DeploymentCompleted", serde_json::json!({
-                                        "project_id": project_id.to_string(),
-                                        "release_id": release.id.to_string(),
-                                        "version": version,
-                                        "status": "Success"
-                                    })).await;
+                                    let _ = orchestrator_store
+                                        .append_event(
+                                            "DeploymentCompleted",
+                                            serde_json::json!({
+                                                "project_id": project_id.to_string(),
+                                                "release_id": release.id.to_string(),
+                                                "version": version,
+                                                "status": "Success"
+                                            }),
+                                        )
+                                        .await;
 
-                                    let _ = orchestrator_store.append_event("ProcessStarted", serde_json::json!({
-                                        "project_id": project_id.to_string(),
-                                        "process_id": proc_id.to_string(),
-                                        "pid": 9000
-                                    })).await;
+                                    let _ = orchestrator_store
+                                        .append_event(
+                                            "ProcessStarted",
+                                            serde_json::json!({
+                                                "project_id": project_id.to_string(),
+                                                "process_id": proc_id.to_string(),
+                                                "pid": 9000
+                                            }),
+                                        )
+                                        .await;
 
                                     tracing::info!(project_id = %project_id, version = %version, "Saga: Deployment completed successfully!");
                                 }
                                 _ => {
-                                    let _ = orchestrator_store.append_event("DeploymentFailed", serde_json::json!({
-                                        "project_id": project_id.to_string(),
-                                        "reason": "Strategy deployment outcome failed"
-                                    })).await;
+                                    let _ = orchestrator_store
+                                        .append_event(
+                                            "DeploymentFailed",
+                                            serde_json::json!({
+                                                "project_id": project_id.to_string(),
+                                                "reason": "Strategy deployment outcome failed"
+                                            }),
+                                        )
+                                        .await;
                                 }
                             }
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Saga: Build pipeline failed");
-                            let _ = orchestrator_store.append_event("DeploymentFailed", serde_json::json!({
-                                "project_id": project_id.to_string(),
-                                "reason": e.to_string()
-                            })).await;
+                            let _ = orchestrator_store
+                                .append_event(
+                                    "DeploymentFailed",
+                                    serde_json::json!({
+                                        "project_id": project_id.to_string(),
+                                        "reason": e.to_string()
+                                    }),
+                                )
+                                .await;
                         }
                     }
                 }
                 "ScheduleConfigured" => {
-                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload_json) {
+                    if let Ok(payload) =
+                        serde_json::from_str::<serde_json::Value>(&event.payload_json)
+                    {
                         let proj_id_str = payload["project_id"].as_str().unwrap_or_default();
                         if let Ok(proj_id) = proj_id_str.parse::<aegis_types::ProjectId>() {
                             let hour = payload["hour"].as_u64().unwrap_or(0) as u32;
@@ -389,7 +435,11 @@ mod tests {
         let service = create_test_service().await;
 
         // 1. Test get_status
-        let status_res = service.get_status(Request::new(StatusRequest {})).await.unwrap().into_inner();
+        let status_res = service
+            .get_status(Request::new(StatusRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(status_res.initialized);
         assert_eq!(status_res.event_count, 0);
         assert_eq!(status_res.loaded_plugins, vec!["demo-system-plugin"]);
@@ -411,7 +461,11 @@ mod tests {
         assert!(!emit_res.event_id.is_empty());
 
         // 4. Verify event count updated
-        let status_res2 = service.get_status(Request::new(StatusRequest {})).await.unwrap().into_inner();
+        let status_res2 = service
+            .get_status(Request::new(StatusRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(status_res2.event_count, 1);
 
         // 5. Test stream_events

@@ -1,6 +1,6 @@
+use aegis_types::Event;
 use async_trait::async_trait;
 use std::sync::Arc;
-use aegis_types::Event;
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -15,7 +15,9 @@ pub struct PluginManager {
 
 impl PluginManager {
     pub fn new() -> Self {
-        Self { plugins: Vec::new() }
+        Self {
+            plugins: Vec::new(),
+        }
     }
 }
 
@@ -120,7 +122,10 @@ mod tests {
 
         manager.register(plugin);
 
-        assert_eq!(manager.get_loaded_plugins(), vec!["test-plugin".to_string()]);
+        assert_eq!(
+            manager.get_loaded_plugins(),
+            vec!["test-plugin".to_string()]
+        );
 
         manager.initialize_all().await.unwrap();
         assert!(initialized.load(Ordering::SeqCst));

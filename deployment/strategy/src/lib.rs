@@ -125,10 +125,8 @@ impl DeploymentStrategy for GracefulSwitchStrategy {
             "Executing Zero-Downtime GracefulSwitch strategy"
         );
 
-        let switcher = aegis_release::ReleaseSwitcher::new(
-            self.base_storage_dir.clone(),
-            ctx.project_id,
-        );
+        let switcher =
+            aegis_release::ReleaseSwitcher::new(self.base_storage_dir.clone(), ctx.project_id);
 
         // 1. Prepare version directory in isolation
         switcher.prepare_version_dir(&ctx.release.version).await?;
@@ -148,7 +146,9 @@ impl DeploymentStrategy for GracefulSwitchStrategy {
         switcher.switch_to_version(&ctx.release.version).await?;
 
         // 4. Auto-prune old versions exceeding max retention limit
-        let purged = switcher.cleanup_old_versions(self.max_retained_versions).await?;
+        let purged = switcher
+            .cleanup_old_versions(self.max_retained_versions)
+            .await?;
         if purged > 0 {
             tracing::info!(
                 purged_count = purged,
@@ -260,8 +260,12 @@ mod tests {
     struct MockFailedChecker;
     #[async_trait::async_trait]
     impl aegis_health::HealthChecker for MockFailedChecker {
-        fn name(&self) -> &str { "MockFailed" }
-        async fn check_health(&self, _target: &str) -> Result<bool, anyhow::Error> { Ok(false) }
+        fn name(&self) -> &str {
+            "MockFailed"
+        }
+        async fn check_health(&self, _target: &str) -> Result<bool, anyhow::Error> {
+            Ok(false)
+        }
     }
 
     #[tokio::test]
@@ -294,11 +298,17 @@ mod tests {
         let checker = MockFailedChecker;
         let immediate = ImmediateStrategy;
         let imm_outcome = immediate.execute(&ctx, Some(&checker)).await.unwrap();
-        assert!(matches!(imm_outcome, DeploymentOutcome::RollbackRequired { .. }));
+        assert!(matches!(
+            imm_outcome,
+            DeploymentOutcome::RollbackRequired { .. }
+        ));
 
         let temp_dir = tempfile::TempDir::new().unwrap();
         let graceful = GracefulSwitchStrategy::new(temp_dir.path().to_path_buf());
         let graceful_outcome = graceful.execute(&ctx, Some(&checker)).await.unwrap();
-        assert!(matches!(graceful_outcome, DeploymentOutcome::RollbackRequired { .. }));
+        assert!(matches!(
+            graceful_outcome,
+            DeploymentOutcome::RollbackRequired { .. }
+        ));
     }
 }

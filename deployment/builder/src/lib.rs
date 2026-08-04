@@ -110,9 +110,14 @@ impl<'a> BuildPipeline<'a> {
             self.runtime.name().to_string(),
         );
 
-        let stored_artifact = self.artifact_store.store(&release.id, &self.working_dir).await?;
+        let stored_artifact = self
+            .artifact_store
+            .store(&release.id, &self.working_dir)
+            .await?;
         release.artifacts.push(stored_artifact.id);
-        release.checksums.insert(stored_artifact.name, stored_artifact.sha256_checksum);
+        release
+            .checksums
+            .insert(stored_artifact.name, stored_artifact.sha256_checksum);
         self.emit_stage_event(PipelineStage::Package, "Success");
 
         // Stage 6: Verify
@@ -234,6 +239,9 @@ mod tests {
 
         let result = pipeline.run_pipeline("sha123", "v1.0.0").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Install step mock error"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Install step mock error"));
     }
 }

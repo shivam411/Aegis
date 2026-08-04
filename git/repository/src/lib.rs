@@ -16,7 +16,13 @@ impl GitRepository {
         if !self.path.exists() {
             tracing::info!(url = %self.url, path = %self.path.display(), "Cloning repository");
             let status = Command::new("git")
-                .args(["clone", "--branch", branch, &self.url, self.path.to_str().unwrap()])
+                .args([
+                    "clone",
+                    "--branch",
+                    branch,
+                    &self.url,
+                    self.path.to_str().unwrap(),
+                ])
                 .status()
                 .await?;
             if !status.success() {
@@ -55,7 +61,10 @@ mod tests {
     #[tokio::test]
     async fn test_git_repository_struct_and_head_commit() {
         let current_dir = std::env::current_dir().unwrap();
-        let repo = GitRepository::new("https://github.com/shivam411/Aegis.git".to_string(), current_dir.clone());
+        let repo = GitRepository::new(
+            "https://github.com/shivam411/Aegis.git".to_string(),
+            current_dir.clone(),
+        );
 
         assert_eq!(repo.url, "https://github.com/shivam411/Aegis.git");
         assert_eq!(repo.path, current_dir);
@@ -70,7 +79,8 @@ mod tests {
 
         // Test get_head_commit failure on invalid directory
         let temp = tempfile::TempDir::new().unwrap();
-        let invalid_repo = GitRepository::new("https://invalid.url".to_string(), temp.path().to_path_buf());
+        let invalid_repo =
+            GitRepository::new("https://invalid.url".to_string(), temp.path().to_path_buf());
         assert!(invalid_repo.get_head_commit().await.is_err());
     }
 }

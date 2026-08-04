@@ -79,7 +79,10 @@ impl ReleaseSwitcher {
         }
         let content = fs::read_to_string(pointer_path).await?;
         let json: serde_json::Value = serde_json::from_str(&content)?;
-        Ok(json.get("active_version").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        Ok(json
+            .get("active_version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()))
     }
 
     /// Automatically prunes old release version directories exceeding the retention limit (default: 2).
@@ -156,11 +159,17 @@ mod tests {
 
         // Switch to v1.0.0
         switcher.switch_to_version("v1.0.0").await.unwrap();
-        assert_eq!(switcher.get_active_version().await.unwrap(), Some("v1.0.0".to_string()));
+        assert_eq!(
+            switcher.get_active_version().await.unwrap(),
+            Some("v1.0.0".to_string())
+        );
 
         // Gracefully switch to v2.0.0
         switcher.switch_to_version("v2.0.0").await.unwrap();
-        assert_eq!(switcher.get_active_version().await.unwrap(), Some("v2.0.0".to_string()));
+        assert_eq!(
+            switcher.get_active_version().await.unwrap(),
+            Some("v2.0.0".to_string())
+        );
     }
 
     #[tokio::test]

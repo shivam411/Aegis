@@ -1,10 +1,13 @@
-name: Aegis CI
+name: Aegis CI & Automated Deployment
 
 on:
   push:
     branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   check-and-test:
@@ -38,13 +41,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run unit and integration tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets
 
       - name: Check performance benchmark compilation
         run: cargo check --benches
 
   cross-platform-build:
     name: Build (${{ matrix.target.os }})
+    needs: check-and-test
     runs-on: ${{ matrix.target.os }}
     strategy:
       matrix:
@@ -70,3 +74,33 @@ jobs:
         shell: bash
         run: |
           ls -la target/release/aegis* || true
+
+  auto-deploy-test:
+    name: Automated Deployment Validation
+    needs: [check-and-test, cross-platform-build]
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Aegis Daemon & CLI
+        run: cargo build --release -p aegis-daemon -p aegis-cli
+
+      - name: Test Aegis Deployment Orchestration
+        run: |
+          # Start Aegis Daemon in background
+          ./target/release/aegis-daemon &
+          DAEMON_PID=$!
+          sleep 2
+
+          # Initialize Aegis application and trigger GracefulSwitch deployment saga
+          ./target/release/aegis-cli init --name aegis-ci-app --repo https://github.com/shivam411/Aegis.git
+          ./target/release/aegis-cli deploy --strategy GracefulSwitch
+          ./target/release/aegis-cli status
+
+          kill $DAEMON_PID || true

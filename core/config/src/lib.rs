@@ -81,4 +81,3 @@ log_level = "debug"
         assert_eq!(config.daemon.log_level, "debug");
     }
 }
-
