@@ -33,17 +33,21 @@ enum Commands {
     },
     /// Trigger build and deployment for a project
     Deploy {
-        /// Project ID
-        project_id: String,
+        /// Project ID (reads from aegis.toml if omitted)
+        project_id: Option<String>,
         /// Target Git branch
         #[arg(short, long, default_value = "main")]
         branch: String,
+        /// Deployment strategy (GracefulSwitch, Immediate)
+        #[arg(short, long)]
+        strategy: Option<String>,
     },
     /// Rollback a project to a previous release version
     Rollback {
-        /// Project ID
-        project_id: String,
+        /// Target project ID (reads from aegis.toml if omitted)
+        project_id: Option<String>,
         /// Release version to roll back to
+        #[arg(short, long, default_value = "v1.0.0")]
         version: String,
     },
     /// List all active projects and running processes
@@ -60,8 +64,8 @@ enum Commands {
     },
     /// Configure a daily auto-deployment schedule at specific hours
     Schedule {
-        /// Target project ID
-        project_id: String,
+        /// Target project ID (reads from aegis.toml if omitted)
+        project_id: Option<String>,
         /// Target deployment hour (0-23)
         #[arg(short, long)]
         hour: u32,
@@ -98,8 +102,8 @@ enum Commands {
     Validate,
     /// Detailed diagnostic inspect of project resources and releases [STABLE]
     Inspect {
-        /// Project ID to inspect
-        project_id: String,
+        /// Project ID to inspect (reads from aegis.toml if omitted)
+        project_id: Option<String>,
         /// Time-travel historical timestamp (RFC-3339 format, e.g. 2026-08-03T09:15:00Z)
         #[arg(short, long)]
         at: Option<String>,
@@ -163,6 +167,31 @@ enum MigrateSubcommand {
         #[arg(short, long)]
         service: String,
     },
+}
+
+fn resolve_project_id(explicit_id: Option<String>) -> String {
+    if let Some(id) = explicit_id {
+        return id;
+    }
+    let current_dir = std::env::current_dir().unwrap_or_default();
+    let local_toml = current_dir.join("aegis.toml");
+    if local_toml.exists() {
+        if let Ok(content) = std::fs::read_to_string(&local_toml) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("id =") || trimmed.starts_with("id=") {
+                    let parts: Vec<&str> = trimmed.split('=').collect();
+                    if parts.len() >= 2 {
+                        let val = parts[1].trim().trim_matches('"').to_string();
+                        if !val.is_empty() {
+                            return val;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    aegis_types::ProjectId::new().to_string()
 }
 
 #[tokio::main]
@@ -297,35 +326,40 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             println!("\n  💡 Next step: Run 'aegis validate' to verify configuration");
         }
-        Commands::Deploy { project_id, branch } => {
+        Commands::Deploy {
+            project_id,
+            branch,
+            strategy,
+        } => {
+            let pid = resolve_project_id(project_id);
             let deployment_id = aegis_types::DeploymentId::new();
             let release_id = aegis_types::ReleaseId::new();
             let current_dir = std::env::current_dir().unwrap_or_default();
 
-            // Read strategy from aegis.toml if available
-            let mut strategy = "GracefulSwitch".to_string();
+            // Read strategy from CLI option or aegis.toml
+            let mut strat = strategy.unwrap_or_else(|| "GracefulSwitch".to_string());
             let local_toml = current_dir.join("aegis.toml");
-            if local_toml.exists() {
+            if local_toml.exists() && strat == "GracefulSwitch" {
                 if let Ok(content) = std::fs::read_to_string(&local_toml) {
                     if content.contains("strategy = \"Immediate\"") {
-                        strategy = "Immediate".to_string();
+                        strat = "Immediate".to_string();
                     }
                 }
             }
 
             println!(
                 "Deploying project {} (Branch: {}, Strategy: {})",
-                project_id, branch, strategy
+                pid, branch, strat
             );
             let response = client
                 .emit_event(EmitEventRequest {
                     event_type: "DeploymentQueued".to_string(),
                     payload_json: serde_json::json!({
                         "deployment_id": deployment_id.to_string(),
-                        "project_id": project_id,
+                        "project_id": pid,
                         "release_id": release_id.to_string(),
                         "branch": branch,
-                        "strategy": strategy,
+                        "strategy": strat,
                         "working_dir": current_dir.to_string_lossy(),
                     })
                     .to_string(),
@@ -344,15 +378,16 @@ async fn main() -> Result<(), anyhow::Error> {
             project_id,
             version,
         } => {
+            let pid = resolve_project_id(project_id);
             println!(
                 "Triggering rollback for project {} to version {}",
-                project_id, version
+                pid, version
             );
             let response = client
                 .emit_event(EmitEventRequest {
                     event_type: "RollbackTriggered".to_string(),
                     payload_json: serde_json::json!({
-                        "project_id": project_id,
+                        "project_id": pid,
                         "target_version": version,
                     })
                     .to_string(),
@@ -416,15 +451,16 @@ async fn main() -> Result<(), anyhow::Error> {
             minute,
             branch,
         } => {
+            let pid = resolve_project_id(project_id);
             println!(
                 "Configuring daily auto-deploy for project {} at {:02}:{:02} (Branch: {})",
-                project_id, hour, minute, branch
+                pid, hour, minute, branch
             );
             let response = client
                 .emit_event(EmitEventRequest {
                     event_type: "ScheduleConfigured".to_string(),
                     payload_json: serde_json::json!({
-                        "project_id": project_id,
+                        "project_id": pid,
                         "hour": hour,
                         "minute": minute,
                         "branch": branch,
@@ -554,25 +590,22 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
         Commands::Inspect { project_id, at } => {
+            let pid = resolve_project_id(project_id);
             if let Some(ts) = at {
                 println!(
                     "Time-Travel Historical State Inspection for Project '{}' at {}:",
-                    project_id, ts
+                    pid, ts
                 );
-                println!("  ├── Id: {}", project_id);
+                println!("  ├── Id: {}", pid);
                 println!("  ├── Historical Snapshot Query: Replayed from EventStore");
             } else {
-                println!(
-                    "Inspecting Project {} state and resource hierarchy...",
-                    project_id
-                );
                 let status = client
                     .get_status(StatusRequest {})
                     .await
                     .map(|r| r.into_inner())
                     .ok();
                 println!("Project Resource Tree:");
-                println!("  ├── Id: {}", project_id);
+                println!("  ├── Id: {}", pid);
                 println!(
                     "  ├── Daemon Version: {}",
                     status
