@@ -577,21 +577,21 @@ async fn main() -> Result<(), anyhow::Error> {
             let toml_path = current_dir.join("aegis.toml");
 
             if !toml_path.exists() {
-                println!(
-                    "  [✗] Error: aegis.toml not found in {}. Run 'aegis init' first.",
+                anyhow::bail!(
+                    "aegis.toml not found in {}. Run 'aegis init' first.",
                     current_dir.display()
                 );
-            } else {
-                let content = std::fs::read_to_string(&toml_path)?;
-                println!("  [✓] Configuration file: aegis.toml found");
-                if content.contains("strategy =") {
-                    println!("  [✓] Deployment strategy configured");
-                }
-                if content.contains("runtime =") {
-                    println!("  [✓] Runtime engine specified");
-                }
-                println!("Project configuration is valid!");
             }
+
+            let content = std::fs::read_to_string(&toml_path)?;
+            println!("  [✓] Configuration file: aegis.toml found");
+            if content.contains("strategy =") {
+                println!("  [✓] Deployment strategy configured");
+            }
+            if content.contains("runtime =") {
+                println!("  [✓] Runtime engine specified");
+            }
+            println!("Project configuration is valid!");
         }
         Commands::Inspect { project_id, at } => {
             let pid = resolve_project_id(project_id);
