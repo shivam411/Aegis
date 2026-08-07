@@ -338,7 +338,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let pid = resolve_project_id(project_id);
             let deployment_id = aegis_types::DeploymentId::new();
             let release_id = aegis_types::ReleaseId::new();
-            let current_dir = std::env::current_dir().unwrap_or_default();
+            let current_dir = std::env::current_dir()?;
 
             // Read strategy from CLI option or aegis.toml
             let mut strat = strategy.unwrap_or_else(|| "GracefulSwitch".to_string());
