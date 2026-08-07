@@ -57,7 +57,9 @@ impl EventStore {
             .fetch_one(&self.pool)
             .await?;
         let count: i64 = row.try_get(0)?;
-        Ok(count as u64)
+        let count = u64::try_from(count)
+            .map_err(|_| anyhow::anyhow!("Event count from DB was negative: {}", count))?;
+        Ok(count)
     }
 
     /// Fetches all stored events.
