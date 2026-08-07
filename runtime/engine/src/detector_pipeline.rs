@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_detector_pipeline_other_runtimes_and_toml() {
-        let pipeline = DetectorPipeline::default();
+        let pipeline = DetectorPipeline::new();
 
         // Java
         let temp_java = TempDir::new().unwrap();

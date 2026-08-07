@@ -50,7 +50,7 @@ impl ProcessSupervisor {
         let mut cmd = Command::new(command);
         cmd.args(args);
         cmd.current_dir(&cwd);
-        cmd.envs(env);
+        cmd.envs(env.clone());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
@@ -58,6 +58,9 @@ impl ProcessSupervisor {
 
         let mut child = cmd.spawn()?;
         let pid = child.id();
+
+        let cwd_buf = cwd.clone();
+        let env_map = env;
 
         let info = ManagedProcessInfo {
             id: process_id,
@@ -95,11 +98,40 @@ impl ProcessSupervisor {
         }
 
         let procs = self.processes.clone();
+        let policy = _policy;
+        let cmd_str = command.to_string();
+        let args_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+
         tokio::spawn(async move {
             let status = child.wait().await;
+            let success = status.as_ref().map(|s| s.success()).unwrap_or(false);
             if let Ok(st) = status {
                 tracing::info!(process_id = %process_id, status = %st, "Process exited");
             }
+
+            let should_restart = match policy {
+                RestartPolicy::Always => true,
+                RestartPolicy::OnFailure => !success,
+                RestartPolicy::Never => false,
+            };
+
+            if should_restart {
+                tracing::info!(process_id = %process_id, "RestartPolicy active: Respawning process");
+                let mut cmd = Command::new(&cmd_str);
+                cmd.args(&args_vec);
+                cmd.current_dir(&cwd_buf);
+                cmd.envs(&env_map);
+                if let Ok(mut new_child) = cmd.spawn() {
+                    let new_pid = new_child.id();
+                    if let Some(proc) = procs.write().unwrap().get_mut(&process_id) {
+                        proc.is_running = true;
+                        proc.pid = new_pid;
+                        proc.restart_count += 1;
+                    }
+                    let _ = new_child.wait().await;
+                }
+            }
+
             if let Some(proc) = procs.write().unwrap().get_mut(&process_id) {
                 proc.is_running = false;
                 proc.pid = None;
@@ -120,52 +152,63 @@ impl ProcessSupervisor {
         process_id: &ProcessId,
         drain_timeout_secs: u64,
     ) -> Result<(), anyhow::Error> {
-        if let Some(proc) = self.processes.write().unwrap().get_mut(process_id) {
-            if !proc.is_running {
+        let pid = {
+            let lock = self.processes.read().unwrap();
+            if let Some(proc) = lock.get(process_id) {
+                if !proc.is_running {
+                    return Ok(());
+                }
+                proc.pid
+            } else {
                 return Ok(());
             }
-            if let Some(pid) = proc.pid {
-                tracing::info!(
-                    process_id = %process_id,
-                    pid = pid,
-                    timeout_secs = drain_timeout_secs,
-                    "Gracefully terminating old process"
-                );
+        };
 
-                #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/PID", &pid.to_string()])
-                        .output();
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-15")
-                        .arg(pid.to_string())
-                        .output();
-                }
+        if let Some(pid) = pid {
+            tracing::info!(
+                process_id = %process_id,
+                pid = pid,
+                timeout_secs = drain_timeout_secs,
+                "Gracefully terminating old process"
+            );
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(drain_timeout_secs)).await;
-
-                // Force kill if process is still marked running
-                #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/PID", &pid.to_string()])
-                        .output();
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-9")
-                        .arg(pid.to_string())
-                        .output();
-                }
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string()])
+                    .output();
             }
+            #[cfg(not(windows))]
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg("-15")
+                    .arg(pid.to_string())
+                    .output();
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(drain_timeout_secs)).await;
+
+            // Force kill if process is still marked running
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .output();
+            }
+        }
+
+        if let Some(proc) = self.processes.write().unwrap().get_mut(process_id) {
             proc.is_running = false;
             proc.pid = None;
         }
+
         Ok(())
     }
 

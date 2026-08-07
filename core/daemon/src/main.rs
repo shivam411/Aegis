@@ -56,8 +56,8 @@ impl AegisDaemon for DaemonService {
         _request: Request<StatusRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
         tracing::debug!("Handling get_status gRPC request");
-        let events = self.event_store.get_events().await.map_err(|e| {
-            Status::internal(format!("Failed to retrieve events from store: {}", e))
+        let event_count = self.event_store.get_event_count().await.map_err(|e| {
+            Status::internal(format!("Failed to retrieve event count from store: {}", e))
         })?;
 
         let projected_projects = self.projection_engine.get_projects();
@@ -70,7 +70,7 @@ impl AegisDaemon for DaemonService {
             initialized: true,
             version: "0.1.0".to_string(),
             loaded_plugins: self.plugin_manager.get_loaded_plugins(),
-            event_count: events.len() as u64,
+            event_count,
         };
 
         Ok(Response::new(response))
@@ -396,7 +396,10 @@ async fn main() -> Result<(), anyhow::Error> {
 
     Server::builder()
         .add_service(AegisDaemonServer::new(service))
-        .serve(addr)
+        .serve_with_shutdown(addr, async {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("Received shutdown signal. Gracefully shutting down Aegis Daemon...");
+        })
         .await?;
 
     Ok(())

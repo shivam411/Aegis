@@ -50,6 +50,18 @@ impl EventStore {
         Ok(event)
     }
 
+    /// Gets the total count of events directly via SQL COUNT query.
+    pub async fn get_event_count(&self) -> Result<u64, anyhow::Error> {
+        use sqlx::Row;
+        let row = sqlx::query("SELECT COUNT(*) FROM events")
+            .fetch_one(&self.pool)
+            .await?;
+        let count: i64 = row.try_get(0)?;
+        let count = u64::try_from(count)
+            .map_err(|_| anyhow::anyhow!("Event count from DB was negative: {}", count))?;
+        Ok(count)
+    }
+
     /// Fetches all stored events.
     pub async fn get_events(&self) -> Result<Vec<Event>, anyhow::Error> {
         let rows = sqlx::query(
