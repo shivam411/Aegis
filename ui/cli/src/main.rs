@@ -269,14 +269,18 @@ async fn main() -> Result<(), anyhow::Error> {
             let proj_name = name.unwrap_or(detected_config.project_name.clone());
             detected_config.project_name = proj_name.clone();
 
-            // Try detecting real git remote URL
-            let git_repo_url = std::process::Command::new("git")
-                .args(["remote", "get-url", "origin"])
-                .output()
-                .ok()
-                .and_then(|out| String::from_utf8(out.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
+            // Try detecting real git remote URL (avoid blocking the async runtime)
+            let git_repo_url = tokio::task::spawn_blocking(|| {
+                std::process::Command::new("git")
+                    .args(["remote", "get-url", "origin"])
+                    .output()
+            })
+            .await
+            .ok()
+            .and_then(|res| res.ok())
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
             let repo_url = repo
                 .or(git_repo_url)
