@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Proposed · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phase 0 complete · Phase 1 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
 
 ---
 
@@ -28,26 +28,33 @@ The foundation is sound and worth building on: the event store, event bus, proje
 | `ProcessStarted` always recorded `"pid": 9000` | Wrong PID in the audit trail and projections | Records the real OS PID |
 | The daemon reported a hardcoded version `"0.1.0"` | Version drifts from the release | Uses `CARGO_PKG_VERSION` |
 
-### Simulated or stubbed behaviour (must be made real before a web UI is useful)
+### Simulated or stubbed behaviour found in the audit
 
-These pass tests but don't do what the docs and CLI claim. A dashboard that shows these states would be showing fiction, so **Phase 0 comes first**.
+These passed tests but didn't do what the docs and CLI claimed. Phase 0 fixed them; each row says how.
 
-| Area | Current behaviour | Location |
+| Area | Before | After Phase 0 |
 | :--- | :--- | :--- |
-| Deploy saga starts the app | Spawns `echo Deploy success` instead of the project's `start_command` | `core/daemon/src/main.rs` (saga, `"echo"`) |
-| Health checks | Never run: strategies receive `None` for the checker, and the target is hardcoded to `127.0.0.1:8080` | `core/daemon/src/main.rs` (`execute(&ctx, None)`) |
-| Previous release / graceful drain | `previous_release` is always `None`, so the old process is never drained | `core/daemon/src/main.rs`, `deployment/strategy/src/lib.rs` |
-| Release versions | Every deploy is `v1.0.0`, so release directories collide and retention never prunes | `core/daemon/src/main.rs` (`unwrap_or("v1.0.0")`) |
-| Build pipeline stages | Clone and Test only log; they don't run anything | `deployment/builder/src/lib.rs` |
-| Artifact store | "SHA-256" hashes the *path string*, and directories are not copied | `deployment/artifact_store/src/lib.rs` |
-| `aegis stop` / `restart` / `rollback` | Append `ProcessStopped` / `ProcessRestarted` / `RollbackTriggered`, but **nothing in the daemon acts on them**. `stop` records a stop that never happened. | `ui/cli/src/main.rs`, `core/daemon/src/main.rs` |
-| Restart policy | `Always` restarts only once, then gives up; no backoff | `runtime/process/src/lib.rs` |
-| Process logs | Only go to the daemon's tracing output; not stored or queryable per process | `runtime/process/src/lib.rs` |
-| Rolling strategy | Returns `Success` without doing anything | `deployment/strategy/src/lib.rs` |
-| Webhook | Publishes to an `EventBus` but there is no HTTP endpoint to receive webhooks | `git/webhook/src/lib.rs` |
-| Stub crates (1-line) | `metrics`, `auth`, `secrets`, `ssh`, `state`, `analytics`, `action`, `docker`, `github` | various |
-| TUI | Prints a status line and an event stream; not the `ratatui` dashboard the README describes | `ui/tui/src/main.rs` |
-| Event ordering | Replays by `created_at` text instead of an insertion sequence | `core/event_store/src/lib.rs` |
+| Deploy saga starts the app | Spawned `echo Deploy success` | Runs `build.start_command` from the release's `aegis.toml`, supervised, with `PORT` and `[env]` set |
+| Health checks | Never ran; the target was hardcoded to `127.0.0.1:8080` | `deploy.health_check_url` (HTTP path, `tcp://`, or "stays up") is polled until `health_check_timeout_secs` |
+| Previous release / drain | `previous_release` was always `None` | The old process is stopped with SIGTERM and a drain timeout; if the new release is unhealthy, the old one is started again |
+| Release versions | Every deploy was `v1.0.0` | Unique, sortable versions (`20260928-051203`) or `--release <name>`; names are validated so they can't escape the releases directory |
+| Build stages | Clone and Test only logged | Git clone or git-aware copy; install/build/test commands with timeouts and a build log per deployment |
+| Artifact store | Hashed the path string and didn't copy directories | Hashes file contents; copies directory trees; checksum verification detects tampering |
+| `stop` / `restart` / `rollback` | Appended events nothing acted on | Typed commands that the daemon executes, recording both the request and the outcome |
+| Restart policy | Restarted once, then gave up | Exponential backoff (1 s → 30 s); crash-loop detection marks the process `Failed` |
+| Process logs | Only in the daemon's tracing output | Per-process log files (rotated at 10 MiB), `aegis logs [-f]` |
+| Event ordering | Replayed by `created_at` text | Explicit `seq` column (migrated); the projection is updated synchronously in `seq` order |
+| Daemon restart | Apps were orphaned (SIGTERM wasn't handled) and never restarted | SIGTERM/SIGINT stop apps cleanly; on boot, apps the operator didn't stop are restarted; interrupted deployments are marked failed |
+| Runtime trait | `start`/`stop`/`health` returned fake PIDs | Reduced to runtime detection; the supervisor owns process lifecycle |
+| CLI | Required the daemon even for `init`/`doctor`; `list`, `releases` and `timeline` showed only event counts | Offline commands work without the daemon; the list/query commands show real data |
+
+### Still open after Phase 0 (tracked in later phases)
+
+- **Cutover has a brief gap.** Without a reverse proxy, the old and new process can't share a port, so there is a gap between stopping the old process and the new one accepting connections. The gap lasts as long as the app takes to start listening: about 0.5 s for `examples/node-app`, and several seconds for slow-starting apps such as JVM services. It will be removed by the Phase 5 proxy, which also enables `Rolling`/`BlueGreen`.
+- **Superseded crates.** `deployment/strategy` and `deployment/rollback` are no longer used by the daemon; `core/control` replaced them. They will be removed or folded in during Phase 1.
+- **Stub crates.** `metrics`, `auth`, `secrets`, `ssh`, `state`, `analytics`, `action`, `docker` and `github` are still stubs; they are scheduled in Phases 2, 4 and 5.
+- **Experimental CLI commands.** `replay`, `incident`, `investigate`, `inspect --at` and `upgrade` still print placeholder output.
+- **No webhook endpoint yet.** A webhook HTTP endpoint needs the Phase 1 HTTP server.
 
 ---
 
@@ -101,21 +108,24 @@ The web control plane lives **inside the existing daemon** as a second listener.
 
 Each phase ends in a shippable, tested state. Acceptance criteria are what CI or a manual VPS test must show.
 
-### Phase 0 — Make the core real *(prerequisite, ~2–3 weeks)*
+### Phase 0 — Make the core real ✅ *done*
 
-The web UI will expose these operations directly, so they must be correct first.
+Delivered:
 
-1. **Real app start:** the saga reads `[build].start_command` and the health URL from the project's `aegis.toml` and supervises the real process, not `echo`.
-2. **Real health checks:** wire `TcpHealthChecker` / `HttpHealthChecker` into the strategies with the configured target and timeout. A failed check stops the switch and records `DeploymentFailed`.
-3. **Release lineage:** unique version per deploy (timestamp or commit SHA), `previous_release` from projections, and graceful drain of the old process after a successful switch.
-4. **Command handlers in the daemon:** turn `stop`, `restart` and `rollback` into *requests* (`ProcessStopRequested`, `ProcessRestartRequested`, `RollbackRequested`). The daemon executes them and then emits the fact (`ProcessStopped`, …). Stop recording a fact before it has happened.
-5. **Supervisor:** restart loop with exponential backoff and a crash-loop limit; stdout/stderr go to per-process rotating log files plus an in-memory tail buffer.
-6. **Builder:** real `git clone`/`fetch` into an isolated build directory; run the configured test command. The artifact store copies the build output and hashes the file contents.
-7. **Event store:** add an autoincrement `seq` column and replay in `seq` order (migration).
-8. **Read API:** gRPC queries for projects, deployments, releases, processes and logs, so the CLI `list` shows real data. These same queries back the web API.
-9. **Refactor:** move the saga out of `main.rs` into a `ControlPlane` crate (`core/control`) with unit tests.
+1. **Real app start:** the saga reads `build.start_command`, the port, the health URL and `[env]` from the release's own `aegis.toml`.
+2. **Real health checks,** with automatic rollback to the previous release when the new one isn't healthy in time.
+3. **Release lineage:** unique versions, previous release tracked through `ReleasePromoted`, graceful drain, and retention pruning driven by release history.
+4. **Daemon-executed commands:** `stop`, `start`, `restart` and `rollback` are typed gRPC commands. Requests (`Process*Requested`, `RollbackRequested`) and outcomes (`ProcessStopped`, `RollbackCompleted`, …) are both recorded.
+5. **Supervisor:** process groups, backoff, crash-loop limit, SIGKILL escalation, and per-process rotating logs with live streaming.
+6. **Builder:** git clone or git-aware copy, install/build/test commands with timeouts and logs, and content-hashed artifacts.
+7. **Event store:** `seq` column with migration; ordered, synchronous projection updates.
+8. **Read API:** `ListProjects`, `ListReleases`, `ListDeployments`, `GetDeployment`, `ListProcesses`, `GetLogs`, `StreamLogs` and `ListEvents`. These back the CLI now and will back the web API later.
+9. **Refactor:** the saga moved to `core/control` (`ControlPlane`), which Phase 1 exposes over HTTP.
 
-**Done when:** on a clean Ubuntu VPS, `aegis init && aegis deploy` on `examples/node-app` serves HTTP on its port, `aegis stop`/`restart` really stop and restart it, a broken build leaves the old version serving, and `aegis rollback` switches back. An integration test in CI covers this flow with `examples/node-app` or a tiny Rust fixture.
+Evidence:
+
+- 64 unit and integration tests. They include control-plane tests with real HTTP processes covering deploy, redeploy, failed build, unhealthy release, rollback, retention and daemon restart.
+- [`scripts/e2e-smoke.sh`](../scripts/e2e-smoke.sh), run in CI, drives the real binaries through the same scenarios with `examples/node-app`.
 
 ### Phase 1 — HTTP API in the daemon *(~1–2 weeks)*
 
@@ -253,7 +263,7 @@ memory_mb = 512
 
 | Milestone | Phases | Outcome |
 | :--- | :--- | :--- |
-| **M-Core** | 0 | Deploy/stop/restart/rollback do real work |
+| **M-Core** ✅ | 0 | Deploy/stop/restart/rollback do real work |
 | **M-API** | 1 + 2 | Secure HTTP API reachable on the VPS |
 | **v0.5.0 — Web MVP** | 3 | Manage all apps from the browser |
 | **v0.6.0 — Resource Control** | 4 | Live CPU/memory monitoring and slider limits |

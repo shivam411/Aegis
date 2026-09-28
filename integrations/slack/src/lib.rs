@@ -29,7 +29,10 @@ impl Plugin for SlackPlugin {
             | "DeploymentStarted"
             | "DeploymentCompleted"
             | "DeploymentFailed"
-            | "RollbackTriggered" => {
+            | "DeploymentRolledBack"
+            | "RollbackCompleted"
+            | "RollbackFailed"
+            | "ProcessFailed" => {
                 tracing::info!(
                     event_type = %event.event_type,
                     event_id = %event.id,

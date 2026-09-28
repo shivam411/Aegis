@@ -18,13 +18,13 @@ curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | b
 | Feature | Description |
 | :--- | :--- |
 | ⚡ **Zero-Dependency** | Single daemon binary with embedded SQLite. No PostgreSQL, Redis, or Docker required. |
-| 🚀 **Zero-Downtime Deployments** | Build in isolation, health-check, atomically switch. Live traffic is never interrupted. |
+| 🚀 **Safe Deployments** | Build in isolation (a failed build never touches the live app), health-check the new release, and roll back automatically if it doesn't come up. Fully zero-downtime cutover needs the planned reverse proxy ([roadmap](docs/roadmap_web_control_plane.md)). |
 | 🧹 **Automated Version Retention** | Keeps the last N releases on disk (default: 2). Older versions auto-pruned after each deploy. |
 | ⏰ **Scheduled Auto-Deployments** | Background scheduler triggers builds at specific daily hours (e.g. `02:00 AM`). |
 | 🛠️ **Polyglot Runtime Detection** | Auto-detects Node.js, Rust, Go, Python, Bun, Deno from project files. |
 | 🖥️ **Terminal UI (TUI)** | Real-time interactive dashboard powered by `ratatui` + `crossterm`. |
 | 🔒 **Event-Sourced Audit Trail** | Every mutation is an immutable domain event. Full replay on startup. |
-| 🔄 **Instant Rollbacks** | Roll back to any previous release without rebuilding from source. |
+| 🔄 **Instant Rollbacks** | Roll back to any retained release without rebuilding from source. |
 | 🔌 **Plugin System** | Extensible event bus with Slack, GitHub, and webhook integrations. |
 
 ---
@@ -78,7 +78,7 @@ aegis init
 # 2. Verify project configuration
 aegis validate
 
-# 3. Trigger zero-downtime deployment
+# 3. Build, health-check and deploy (rolls back automatically on failure)
 aegis deploy
 
 # 4. Investigate outages & root cause
@@ -150,17 +150,22 @@ For a deep dive, see the [**Architecture Documentation**](https://shivam411.gith
 
 | Command | Description |
 | :--- | :--- |
-| `aegis-cli status` | Query daemon health and version |
-| `aegis-cli init` | Initialize a project with runtime auto-detection |
-| `aegis-cli deploy` | Trigger a zero-downtime deployment |
+| `aegis-cli status` | Daemon version, project count, running apps |
+| `aegis-cli init` | Detect the runtime, write `aegis.toml`, register the project |
+| `aegis-cli validate` | Check `aegis.toml` and show the effective settings |
+| `aegis-cli deploy [project]` | Build and deploy, showing each stage; `--release`, `--repo`, `--commit`, `--detach` |
+| `aegis-cli rollback [project]` | Switch back to the previous (or `--version`) release without rebuilding |
+| `aegis-cli list` | Projects with status, live release, PID and restart count |
+| `aegis-cli logs [target] [-n N] [-f]` | App output (stdout, stderr and supervisor messages) |
+| `aegis-cli start` / `stop` / `restart [target]` | Control an app's process; a stopped app stays stopped across daemon restarts |
+| `aegis-cli releases [project]` | Release history with status and commit |
+| `aegis-cli deployments [project]` | Deployment history with status, failing stage and reason |
+| `aegis-cli timeline [project]` | The project's recent events |
 | `aegis-cli schedule` | Configure daily auto-deployment (`--hour 0-23`) |
-| `aegis-cli rollback` | Roll back to a previous release version |
-| `aegis-cli list` | List active projects and running processes |
-| `aegis-cli logs` | Tail real-time process logs |
-| `aegis-cli stop` | Gracefully stop a process |
-| `aegis-cli restart` | Restart a monitored process |
 | `aegis-cli emit-event` | Emit a custom event to the event store |
 | `aegis-cli stream-events` | Stream live event bus notifications |
+
+`target` is a process id or a project id/name; without it, commands use the project in `./aegis.toml`.
 
 ---
 

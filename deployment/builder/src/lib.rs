@@ -626,6 +626,12 @@ async fn run_argv(
                 if let Some(pid) = pid {
                     unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
                 }
+                #[cfg(not(unix))]
+                if let Some(pid) = pid {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/T", "/F", "/PID", &pid.to_string()])
+                        .output();
+                }
                 let _ = child.kill().await;
                 anyhow::bail!("Timed out after {}s", timeout.as_secs());
             }

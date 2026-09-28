@@ -52,44 +52,56 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `ReleaseCreated` | Versioned build package registered | `release_id`, `project_id`, `version`, `commit_sha`, `artifacts` |
-| `ReleasePromoted` | Set as active live version | `release_id`, `project_id`, `previous_version`, `promoted_at` |
-| `ReleaseArchived` | Cleaned up from retention disk | `release_id`, `project_id`, `archived_at` |
+| `ReleaseCreated` | A build finished and the release is ready to start | `release_id`, `project_id`, `deployment_id`, `version`, `commit_sha`, `commit_message`, `checksum`, `path` |
+| `ReleasePromoted` | The release passed its health check and is now live | `release_id`, `project_id`, `version`, `previous_version` |
+| `ReleaseArchived` | The release directory was removed by retention | `project_id`, `version` |
 
 ### Deployment Aggregate
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `DeploymentQueued` | Scheduled or manual deploy enqueued | `deployment_id`, `project_id`, `release_id`, `strategy`, `trigger_source` |
-| `DeploymentStarted` | Active strategy execution initiated | `deployment_id`, `project_id`, `strategy` |
-| `DeploymentSucceeded`| Deployment finished & health verified | `deployment_id`, `project_id`, `duration_ms` |
-| `DeploymentFailed` | Build or health check failed | `deployment_id`, `project_id`, `reason` |
-| `DeploymentRolledBack`| Reverted to prior stable release | `deployment_id`, `project_id`, `target_version`, `reason` |
+| `DeploymentQueued` | A deployment was requested (CLI, schedule or webhook) | `deployment_id`, `project_id`, `strategy`, `branch`, `source_dir` or `repository_url`, `commit_sha`, `version`, `trigger_source` |
+| `DeploymentStarted` | The daemon began building | `deployment_id`, `project_id`, `version`, `strategy` |
+| `DeploymentCompleted` | The new release is live and healthy | `deployment_id`, `project_id`, `release_id`, `version` |
+| `DeploymentFailed` | A build stage or the health check failed | `deployment_id`, `project_id`, `stage`, `reason`, `log_tail`, `rolled_back_to` |
+| `DeploymentRolledBack` | After a failed health check, the previous release was started again | `deployment_id`, `project_id`, `target_version`, `reason` |
+| `RollbackRequested` | An operator asked to switch to an earlier release | `project_id`, `from_version`, `target_version` |
+| `RollbackCompleted` | The earlier release is live | `project_id`, `from_version`, `to_version` |
+| `RollbackFailed` | The earlier release did not become healthy | `project_id`, `target_version`, `reason`, `restored` |
+
+`DeploymentSucceeded` is accepted as a synonym for `DeploymentCompleted` when replaying history.
 
 ### Build Pipeline Aggregate
 
+Each stage reports `Started`, then `Success`, `Skipped` (no command configured) or `Failed`.
+
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `BuildStageClone` | Git checkout stage status | `project_id`, `stage: "Clone"`, `status` |
-| `BuildStageInstall` | Dependency installation status | `project_id`, `stage: "Install"`, `status` |
-| `BuildStageBuild` | Artifact compilation status | `project_id`, `stage: "Build"`, `status` |
-| `BuildStageTest` | Verification test suite status | `project_id`, `stage: "Test"`, `status` |
-| `BuildStagePackage` | Artifact packaging status | `project_id`, `stage: "Package"`, `status` |
-| `BuildStageVerify` | Checksum & artifact verify status| `project_id`, `stage: "Verify"`, `status` |
-| `BuildStagePromote` | Final promotion status | `project_id`, `stage: "Promote"`, `status` |
+| `BuildStageClone` | Source copied or cloned into the release directory | `deployment_id`, `project_id`, `stage`, `status`, `detail` (commit) |
+| `BuildStageInstall` | `build.install_command` | `deployment_id`, `project_id`, `stage`, `status`, `detail` |
+| `BuildStageBuild` | `build.build_command` | `deployment_id`, `project_id`, `stage`, `status`, `detail` |
+| `BuildStageTest` | `build.test_command` | `deployment_id`, `project_id`, `stage`, `status`, `detail` |
+| `BuildStagePackage` | Content checksum of the release recorded | `deployment_id`, `project_id`, `stage`, `status`, `detail` (sha256) |
+| `BuildStageVerify` | Artifact metadata and files present | `deployment_id`, `project_id`, `stage`, `status` |
+| `BuildStagePromote` | Cutover: old process stopped, new process started and health-checked | `deployment_id`, `project_id`, `stage`, `status`, `detail` |
 
 ### Process Aggregate
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `ProcessStarted` | Managed runtime process spawned | `process_id`, `project_id`, `pid`, `runtime` |
-| `ProcessStopped` | Gracefully stopped by supervisor | `process_id`, `project_id`, `exit_code` |
-| `ProcessCrashed` | Unexpected process termination | `process_id`, `project_id`, `exit_code`, `restart_count` |
-| `ProcessRestarted` | Restart policy triggered | `process_id`, `project_id`, `pid` |
+| `ProcessStartRequested` / `ProcessStopRequested` / `ProcessRestartRequested` | An operator action (audit record) | `process_id`, `project_id` |
+| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd` |
+| `ProcessCrashed` | The process exited without being asked to | `process_id`, `project_id`, `exit_code`, `will_restart`, `restart_delay_ms` |
+| `ProcessFailed` | Crash loop or spawn failure; the supervisor stopped restarting it | `process_id`, `project_id`, `reason` |
+| `ProcessStopped` | The process was stopped | `process_id`, `project_id`, `reason` (`requested`, `replaced`, `restart`, `shutdown`), `exit_code` |
+
+A `ProcessStopped` with reason `requested` or `replaced` marks the process as wanted-down, so it is not restarted when the daemon boots. With reason `shutdown` it is started again on the next boot.
 
 ---
 
 ## 3. Projection Invalidation Rules
-1. `ProjectCreated` / `ProjectDeleted` update the `ProjectState` store.
-2. `DeploymentQueued` / `DeploymentStarted` / `DeploymentSucceeded` / `DeploymentFailed` transition `DeploymentState.status`.
-3. `ProcessStarted` / `ProcessStopped` mutate PID handles in `ProcessState`.
+1. `ProjectCreated` creates or updates `ProjectState`.
+2. `DeploymentQueued` → `Queued`, `DeploymentStarted` → `InProgress`, `DeploymentCompleted` → `Success`, `DeploymentFailed` → `Failed`, `DeploymentRolledBack` → `RolledBack`. `BuildStage*` events update the deployment's current stage.
+3. `ReleaseCreated` → release `Built`. `ReleasePromoted` makes the release `Active`, marks the project's previously active release `Inactive`, and sets the project's current release. A built release whose deployment fails becomes `Failed`. `ReleaseArchived` → `Archived`.
+4. `ProcessStarted` sets the project's current process. Process events update status, PID, exit code and desired state.
+5. Events are applied in insertion order (`seq`), synchronously as they are stored, and replayed in the same order on startup.

@@ -88,19 +88,16 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Node.js (for examples/node-app)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Build Aegis Daemon & CLI
         run: cargo build --release -p aegis-daemon -p aegis-cli
 
-      - name: Test Aegis Deployment Orchestration
-        run: |
-          # Start Aegis Daemon in background
-          ./target/release/aegis-daemon &
-          DAEMON_PID=$!
-          sleep 2
-
-          # Initialize Aegis application and trigger GracefulSwitch deployment saga
-          ./target/release/aegis-cli init --name aegis-ci-app --repo https://github.com/shivam411/Aegis.git
-          ./target/release/aegis-cli deploy --strategy GracefulSwitch
-          ./target/release/aegis-cli status
-
-          kill $DAEMON_PID || true
+      - name: End-to-end deployment scenarios
+        # Deploys examples/node-app and checks redeploy, stop/start/restart,
+        # failed builds, auto-rollback of unhealthy releases, manual rollback
+        # and daemon restarts against the real binaries.
+        run: BIN_DIR=target/release scripts/e2e-smoke.sh
