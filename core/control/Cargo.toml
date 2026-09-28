@@ -1,0 +1,29 @@
+[package]
+name = "aegis-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+aegis-types = { path = "../types" }
+aegis-config = { path = "../config" }
+aegis-event-store = { path = "../event_store" }
+aegis-projection = { path = "../projection" }
+aegis-builder = { path = "../../deployment/builder" }
+aegis-artifact-store = { path = "../../deployment/artifact_store" }
+aegis-release = { path = "../../deployment/release" }
+aegis-health = { path = "../../deployment/health" }
+aegis-engine = { path = "../../runtime/engine" }
+aegis-process = { path = "../../runtime/process" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+sqlx = { workspace = true }
+tempfile = { workspace = true }

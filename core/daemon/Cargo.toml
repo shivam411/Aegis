@@ -12,23 +12,19 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait = { workspace = true }
-toml = { workspace = true }
 futures-core = { workspace = true }
 
 aegis-config = { path = "../config" }
 aegis-logs = { path = "../../runtime/logs" }
 aegis-api = { path = "../api" }
+aegis-control = { path = "../control" }
 aegis-event-bus = { path = "../event_bus" }
 aegis-event-store = { path = "../event_store" }
 aegis-plugins = { path = "../plugin" }
 aegis-projection = { path = "../projection" }
 aegis-scheduler = { path = "../scheduler" }
 aegis-types = { path = "../types" }
-aegis-builder = { path = "../../deployment/builder" }
-aegis-artifact-store = { path = "../../deployment/artifact_store" }
-aegis-strategy = { path = "../../deployment/strategy" }
-aegis-release = { path = "../../deployment/release" }
-aegis-rollback = { path = "../../deployment/rollback" }
-aegis-health = { path = "../../deployment/health" }
-aegis-engine = { path = "../../runtime/engine" }
 aegis-process = { path = "../../runtime/process" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

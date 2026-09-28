@@ -1,8 +1,17 @@
 use aegis_api::aegis::aegis_daemon_client::AegisDaemonClient;
-use aegis_api::aegis::{EmitEventRequest, StatusRequest, StreamEventsRequest};
-use aegis_config::Config;
+use aegis_api::aegis::{
+    ControlProcessRequest, DeployRequest, EmitEventRequest, GetLogsRequest, ListDeploymentsRequest,
+    ListEventsRequest, ListProjectsRequest, ListReleasesRequest, LogLine, ProcessAction,
+    ProcessInfo, RegisterProjectRequest, RollbackRequest, StatusRequest, StatusResponse,
+    StreamEventsRequest, StreamLogsRequest,
+};
+use aegis_config::{Config, ProjectFile};
+use aegis_engine::ResolvedProjectConfig;
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
+use tonic::transport::Channel;
 
 #[derive(Parser)]
 #[command(name = "aegis")]
@@ -31,36 +40,59 @@ enum Commands {
         #[arg(short, long)]
         template: Option<String>,
     },
-    /// Trigger build and deployment for a project
+    /// Build and deploy a project, following progress until it is live
     Deploy {
-        /// Project ID (reads from aegis.toml if omitted)
-        project_id: Option<String>,
-        /// Target Git branch
-        #[arg(short, long, default_value = "main")]
-        branch: String,
+        /// Project id or name (defaults to the project in ./aegis.toml)
+        project: Option<String>,
+        /// Branch to deploy when cloning from a repository
+        #[arg(short, long)]
+        branch: Option<String>,
         /// Deployment strategy (GracefulSwitch, Immediate)
         #[arg(short, long)]
         strategy: Option<String>,
+        /// Release name (defaults to a timestamp)
+        #[arg(long = "release")]
+        version: Option<String>,
+        /// Clone this repository instead of copying the local directory
+        #[arg(long)]
+        repo: Option<String>,
+        /// Commit to deploy when cloning
+        #[arg(long)]
+        commit: Option<String>,
+        /// Queue the deployment and return without waiting
+        #[arg(short, long)]
+        detach: bool,
     },
-    /// Rollback a project to a previous release version
+    /// Switch back to an earlier release without rebuilding
     Rollback {
-        /// Target project ID (reads from aegis.toml if omitted)
-        project_id: Option<String>,
-        /// Release version to roll back to
-        #[arg(short, long, default_value = "v1.0.0")]
-        version: String,
+        /// Project id or name (defaults to the project in ./aegis.toml)
+        project: Option<String>,
+        /// Release to roll back to (defaults to the previous release)
+        #[arg(short, long)]
+        version: Option<String>,
     },
-    /// List all active projects and running processes
+    /// List projects and the state of their processes
     List,
-    /// Stream logs for a process or system
+    /// Show an app's logs
     Logs {
-        /// Target process ID
-        process_id: Option<String>,
+        /// Process id, or project id/name (defaults to ./aegis.toml)
+        target: Option<String>,
+        /// Number of lines to show
+        #[arg(short = 'n', long, default_value = "100")]
+        lines: u32,
+        /// Keep streaming new lines
+        #[arg(short, long)]
+        follow: bool,
     },
-    /// Stop a running process
+    /// Start an app's process
+    Start {
+        /// Process id, or project id/name (defaults to ./aegis.toml)
+        target: Option<String>,
+    },
+    /// Stop an app's process (it stays stopped across daemon restarts)
     Stop {
-        /// Process ID to stop
-        process_id: String,
+        /// Process id, or project id/name (defaults to ./aegis.toml)
+        target: Option<String>,
     },
     /// Configure a daily auto-deployment schedule at specific hours
     Schedule {
@@ -76,10 +108,10 @@ enum Commands {
         #[arg(short, long, default_value = "main")]
         branch: String,
     },
-    /// Restart a process
+    /// Restart an app's process
     Restart {
-        /// Process ID to restart
-        process_id: String,
+        /// Process id, or project id/name (defaults to ./aegis.toml)
+        target: Option<String>,
     },
     /// Manually emit an operational event to the daemon
     EmitEvent {
@@ -98,7 +130,7 @@ enum Commands {
         #[arg(short, long)]
         fix: bool,
     },
-    /// Validate project aegis.toml configuration and build pipeline readiness
+    /// Validate project aegis.toml configuration and show the effective settings
     Validate,
     /// Detailed diagnostic inspect of project resources and releases [STABLE]
     Inspect {
@@ -112,15 +144,23 @@ enum Commands {
     Explain,
     /// Run an interactive 2-minute feature demonstration tour (Milestone M2)
     Demo,
-    /// View immutable release history for a project (Milestone M2)
+    /// List a project's releases
     Releases {
-        /// Project ID
-        project_id: Option<String>,
+        /// Project id or name (defaults to ./aegis.toml)
+        project: Option<String>,
     },
-    /// View event-sourced execution timeline for a project (Milestone M2) [STABLE]
+    /// List deployments, newest last
+    Deployments {
+        /// Project id or name (all projects when omitted)
+        project: Option<String>,
+    },
+    /// Show a project's recent events
     Timeline {
-        /// Project ID
-        project_id: Option<String>,
+        /// Project id or name (defaults to ./aegis.toml)
+        project: Option<String>,
+        /// Number of events to show
+        #[arg(short = 'n', long, default_value = "50")]
+        limit: u32,
     },
     /// Step-by-step event-sourced deployment replay signature feature [STABLE]
     Replay {
@@ -169,37 +209,203 @@ enum MigrateSubcommand {
     },
 }
 
+/// Connects to the daemon on first use, so commands that work offline
+/// (init, validate, doctor, migrate) don't need it running.
+struct Daemon {
+    addr: String,
+    client: Option<AegisDaemonClient<Channel>>,
+}
+
+impl Daemon {
+    async fn client(&mut self) -> anyhow::Result<&mut AegisDaemonClient<Channel>> {
+        if self.client.is_none() {
+            let client = AegisDaemonClient::connect(self.addr.clone())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Cannot reach the Aegis daemon at {}. Start it with 'aegis-daemon'.",
+                        self.addr
+                    )
+                })?;
+            self.client = Some(client);
+        }
+        Ok(self.client.as_mut().unwrap())
+    }
+
+    async fn status(&mut self) -> Option<StatusResponse> {
+        let client = self.client().await.ok()?;
+        client
+            .get_status(StatusRequest {})
+            .await
+            .ok()
+            .map(|r| r.into_inner())
+    }
+}
+
+/// Turns a gRPC error into a plain message (no "status: ..., metadata: ..." noise).
+fn rpc<T>(result: Result<tonic::Response<T>, tonic::Status>) -> anyhow::Result<T> {
+    result
+        .map(|r| r.into_inner())
+        .map_err(|s| anyhow::anyhow!("{}", s.message()))
+}
+
 fn has_project_section(toml_content: &str) -> bool {
     toml_content.lines().any(|line| line.trim() == "[project]")
 }
 
-fn resolve_project_id(explicit_id: Option<String>) -> String {
-    if let Some(id) = explicit_id {
-        return id;
+/// The project id from ./aegis.toml, if there is one.
+fn local_project_id() -> Option<String> {
+    let dir = std::env::current_dir().ok()?;
+    ProjectFile::load_from_dir(&dir).ok()??.project.id
+}
+
+/// An explicit project/process key, or the project in ./aegis.toml.
+fn target_or_local(explicit: Option<String>) -> anyhow::Result<String> {
+    explicit.or_else(local_project_id).ok_or_else(|| {
+        anyhow::anyhow!("No project given and no [project] id in ./aegis.toml. Pass a project name or run 'aegis init'.")
+    })
+}
+
+/// A short, still-distinctive form of an id. UUIDv7 ids start with a
+/// timestamp, so the prefix is shared by everything created around the same
+/// time; the random tail is what tells them apart.
+fn short(id: &str) -> &str {
+    if id.len() == 36 && id.as_bytes()[8] == b'-' {
+        &id[28..]
+    } else {
+        id.get(..8).unwrap_or(id)
     }
-    let current_dir = std::env::current_dir().unwrap_or_default();
-    let local_toml = current_dir.join("aegis.toml");
-    if local_toml.exists() {
-        if let Ok(content) = std::fs::read_to_string(&local_toml) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("id =") || trimmed.starts_with("id=") {
-                    let parts: Vec<&str> = trimmed.split('=').collect();
-                    if parts.len() >= 2 {
-                        let val = parts[1].trim().trim_matches('"').to_string();
-                        if !val.is_empty() {
-                            return val;
-                        }
+}
+
+/// "2026-09-28T05:12:03.123+00:00" -> "2026-09-28 05:12:03"
+fn short_time(ts: &str) -> String {
+    ts.get(..19).unwrap_or(ts).replace('T', " ")
+}
+
+fn print_log_line(line: &LogLine) {
+    println!(
+        "{} [{}] {}",
+        short_time(&line.timestamp),
+        line.stream,
+        line.line
+    );
+}
+
+fn describe_process(p: &ProcessInfo) -> String {
+    let pid = p.pid.map_or("-".to_string(), |pid| pid.to_string());
+    format!(
+        "{} (pid {}, release {}, restarts {})",
+        p.status,
+        pid,
+        if p.release_version.is_empty() {
+            "-"
+        } else {
+            &p.release_version
+        },
+        p.restart_count
+    )
+}
+
+fn json_str<'a>(payload: &'a serde_json::Value, key: &str) -> &'a str {
+    payload.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// Follows a deployment's events and prints stage progress. Returns an error
+/// if the deployment fails.
+async fn follow_deployment(
+    events: &mut tonic::Streaming<aegis_api::aegis::EventResponse>,
+    deployment_id: &str,
+) -> anyhow::Result<()> {
+    let started = Instant::now();
+    let mut stage_started: HashMap<String, Instant> = HashMap::new();
+    while let Some(event) = events.message().await? {
+        let payload: serde_json::Value =
+            serde_json::from_str(&event.payload_json).unwrap_or_default();
+        if json_str(&payload, "deployment_id") != deployment_id {
+            continue;
+        }
+        match event.event_type.as_str() {
+            "DeploymentStarted" => {
+                println!("  Release {}", json_str(&payload, "version"));
+            }
+            t if t.starts_with("BuildStage") => {
+                let stage = json_str(&payload, "stage").to_string();
+                let detail = json_str(&payload, "detail");
+                match json_str(&payload, "status") {
+                    "Started" => {
+                        stage_started.insert(stage, Instant::now());
                     }
+                    "Success" => {
+                        let secs = stage_started
+                            .get(&stage)
+                            .map(|t| t.elapsed().as_secs_f64())
+                            .unwrap_or(0.0);
+                        let detail = if stage == "Clone" && detail.len() >= 7 {
+                            format!("  {}", short(detail))
+                        } else {
+                            String::new()
+                        };
+                        println!("  ✓ {:<8} {:>6.1}s{}", stage, secs, detail);
+                    }
+                    "Skipped" => println!("  - {:<8}  skipped: {}", stage, detail),
+                    "Failed" => println!("  ✗ {:<8}  {}", stage, detail),
+                    _ => {}
                 }
             }
+            "DeploymentCompleted" => {
+                println!(
+                    "Deployed release {} in {:.1}s",
+                    json_str(&payload, "version"),
+                    started.elapsed().as_secs_f64()
+                );
+                return Ok(());
+            }
+            "DeploymentFailed" => {
+                let tail: Vec<&str> = payload
+                    .get("log_tail")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|l| l.as_str()).collect())
+                    .unwrap_or_default();
+                if !tail.is_empty() {
+                    println!("  Last output:");
+                    for line in tail {
+                        println!("    | {}", line);
+                    }
+                }
+                let log_path = json_str(&payload, "log_path");
+                if !log_path.is_empty() {
+                    println!("  Full build log: {}", log_path);
+                }
+                let restored = json_str(&payload, "rolled_back_to");
+                let outcome = if !restored.is_empty() {
+                    format!("Rolled back: release {} is serving again.", restored)
+                } else if json_str(&payload, "stage") == "Promote" {
+                    "The previous release was not running, so nothing was restored.".to_string()
+                } else {
+                    "The live release was not changed.".to_string()
+                };
+                anyhow::bail!(
+                    "Deployment failed: {}\n{}",
+                    json_str(&payload, "reason"),
+                    outcome
+                );
+            }
+            _ => {}
         }
     }
-    aegis_types::ProjectId::new().to_string()
+    anyhow::bail!("Lost connection to the daemon; the deployment continues in the background (see 'aegis deployments')")
 }
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() {
+    // Print errors as messages, not as Debug output with a backtrace.
+    if let Err(e) = run().await {
+        eprintln!("Error: {:#}", e);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
 
     // Load configuration to find daemon port
@@ -207,18 +413,20 @@ async fn main() -> Result<(), anyhow::Error> {
     let config = Config::load_or_default(Path::new(&config_path));
 
     let addr = format!("http://{}:{}", config.daemon.host, config.daemon.port);
-
-    // Connect to gRPC client
-    let mut client = AegisDaemonClient::connect(addr.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to Aegis daemon at {}: {}", addr, e))?;
+    let mut daemon = Daemon {
+        addr: addr.clone(),
+        client: None,
+    };
 
     match cli.command {
         Commands::Status => {
-            let response = client.get_status(StatusRequest {}).await?.into_inner();
+            let response = rpc(daemon.client().await?.get_status(StatusRequest {}).await)?;
             println!("Aegis Daemon Status:");
             println!("  Initialized: {}", response.initialized);
             println!("  Version:     {}", response.version);
+            println!("  Projects:    {}", response.project_count);
+            println!("  Running:     {}", response.running_processes);
+            println!("  Data dir:    {}", response.data_dir);
             println!("  Plugins ({}):", response.loaded_plugins.len());
             for plugin in response.loaded_plugins {
                 println!("    - {}", plugin);
@@ -230,8 +438,12 @@ async fn main() -> Result<(), anyhow::Error> {
             repo,
             template,
         } => {
-            let project_id = aegis_types::ProjectId::new();
             let current_dir = std::env::current_dir()?;
+            let local_toml_path = current_dir.join("aegis.toml");
+            // Re-running init keeps the project's identity.
+            let project_id = local_project_id()
+                .and_then(|id| id.parse::<aegis_types::ProjectId>().ok())
+                .unwrap_or_default();
 
             // Execute Detector Pipeline
             let pipeline = aegis_engine::DetectorPipeline::new();
@@ -273,22 +485,22 @@ async fn main() -> Result<(), anyhow::Error> {
             let proj_name = name.unwrap_or(detected_config.project_name.clone());
             detected_config.project_name = proj_name.clone();
 
-            // Try detecting real git remote URL (avoid blocking the async runtime)
-            let git_repo_url = tokio::task::spawn_blocking(|| {
+            let git = |args: &'static [&'static str]| {
                 std::process::Command::new("git")
-                    .args(["remote", "get-url", "origin"])
+                    .args(args)
                     .output()
-            })
-            .await
-            .ok()
-            .and_then(|res| res.ok())
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            };
             let repo_url = repo
-                .or(git_repo_url)
-                .unwrap_or_else(|| format!("https://github.com/aegis/{}", proj_name));
+                .or_else(|| git(&["remote", "get-url", "origin"]))
+                .unwrap_or_default();
+            let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])
+                .filter(|b| b != "HEAD")
+                .unwrap_or_else(|| "main".to_string());
 
             println!(
                 "Initializing Aegis Project '{}' ({})",
@@ -299,7 +511,6 @@ async fn main() -> Result<(), anyhow::Error> {
             println!("Start Command:  {}", detected_config.start_command);
 
             // Generate zero-boilerplate aegis.toml FIRST locally
-            let local_toml_path = current_dir.join("aegis.toml");
             let toml_content = pipeline.generate_toml(&detected_config, &project_id.to_string());
             if !local_toml_path.exists() {
                 std::fs::write(&local_toml_path, toml_content)?;
@@ -309,156 +520,179 @@ async fn main() -> Result<(), anyhow::Error> {
                 if has_project_section(&existing) {
                     println!("Found existing aegis.toml config file.");
                 } else {
-                    // Without [project], `deploy` would invent a new project ID on every run.
+                    // Without [project], `deploy` would have no project to deploy.
                     let merged = format!("{}\n{}", existing.trim_end(), toml_content);
                     std::fs::write(&local_toml_path, merged)?;
                     println!("Added [project] section to existing aegis.toml");
                 }
             }
 
-            // Sync with Aegis daemon if available
-            let emit_res = client
-                .emit_event(EmitEventRequest {
-                    event_type: "ProjectCreated".to_string(),
-                    payload_json: serde_json::json!({
-                        "project_id": project_id.to_string(),
-                        "name": proj_name,
-                        "repository_url": repo_url,
-                        "branch": "main",
-                        "runtime": detected_config.runtime_engine,
+            let registered = match daemon.client().await {
+                Ok(client) => rpc(client
+                    .register_project(RegisterProjectRequest {
+                        project_id: project_id.to_string(),
+                        name: proj_name,
+                        repository_url: repo_url,
+                        branch,
+                        runtime: detected_config.runtime_engine.clone(),
+                        source_dir: current_dir.to_string_lossy().to_string(),
                     })
-                    .to_string(),
-                })
-                .await;
-
-            match emit_res {
-                Ok(ref resp) if resp.get_ref().success => {
-                    println!("Project registered with Aegis Daemon successfully!");
-                }
-                _ => {
-                    println!("  [i] aegis.toml generated locally (Daemon unavailable; project will sync on next daemon connection).");
-                }
+                    .await)
+                .map(|_| ()),
+                Err(e) => Err(e),
+            };
+            match registered {
+                Ok(()) => println!("Project registered with Aegis Daemon successfully!"),
+                Err(e) => println!(
+                    "  [i] {} The project will be registered on the first 'aegis deploy'.",
+                    e
+                ),
             }
-            println!("\n  💡 Next step: Run 'aegis validate' to verify configuration");
+            println!("\n  💡 Next step: Run 'aegis validate', then 'aegis deploy'");
         }
         Commands::Deploy {
-            project_id,
+            project,
             branch,
             strategy,
+            version,
+            repo,
+            commit,
+            detach,
         } => {
-            let pid = resolve_project_id(project_id);
-            let deployment_id = aegis_types::DeploymentId::new();
-            let release_id = aegis_types::ReleaseId::new();
             let current_dir = std::env::current_dir()?;
+            let local_id = local_project_id();
+            let key = target_or_local(project)?;
+            // Copy the local directory when deploying the project that lives here.
+            let from_here = repo.is_none() && local_id.as_deref() == Some(key.as_str());
+            let strategy = strategy.or_else(|| {
+                from_here
+                    .then(|| ResolvedProjectConfig::load(&current_dir).ok())
+                    .flatten()
+                    .map(|c| c.strategy)
+            });
 
-            // Read strategy from CLI option or aegis.toml
-            let mut strat = strategy.unwrap_or_else(|| "GracefulSwitch".to_string());
-            let local_toml = current_dir.join("aegis.toml");
-            if local_toml.exists() && strat == "GracefulSwitch" {
-                if let Ok(content) = std::fs::read_to_string(&local_toml) {
-                    if content.contains("strategy = \"Immediate\"") {
-                        strat = "Immediate".to_string();
-                    }
-                }
-            }
-
-            println!(
-                "Deploying project {} (Branch: {}, Strategy: {})",
-                pid, branch, strat
-            );
-            let response = client
-                .emit_event(EmitEventRequest {
-                    event_type: "DeploymentQueued".to_string(),
-                    payload_json: serde_json::json!({
-                        "deployment_id": deployment_id.to_string(),
-                        "project_id": pid,
-                        "release_id": release_id.to_string(),
-                        "branch": branch,
-                        "strategy": strat,
-                        "working_dir": current_dir.to_string_lossy(),
-                    })
-                    .to_string(),
+            let client = daemon.client().await?;
+            // Subscribe before queueing so no progress event is missed.
+            let mut events = if detach {
+                None
+            } else {
+                Some(rpc(client.stream_events(StreamEventsRequest {}).await)?)
+            };
+            let response = rpc(client
+                .deploy(DeployRequest {
+                    project: key,
+                    branch: branch.unwrap_or_default(),
+                    strategy: strategy.clone().unwrap_or_default(),
+                    source_dir: if from_here {
+                        current_dir.to_string_lossy().to_string()
+                    } else {
+                        String::new()
+                    },
+                    repository_url: repo.unwrap_or_default(),
+                    commit: commit.unwrap_or_default(),
+                    version: version.unwrap_or_default(),
                 })
-                .await?
-                .into_inner();
-
-            if response.success {
-                println!(
-                    "Deployment queued successfully! (Deployment ID: {})",
-                    deployment_id
-                );
+                .await)?;
+            println!(
+                "Deploying {} (deployment {}, strategy {})",
+                response.project_name,
+                short(&response.deployment_id),
+                strategy.as_deref().unwrap_or("GracefulSwitch")
+            );
+            match events.as_mut() {
+                Some(events) => follow_deployment(events, &response.deployment_id).await?,
+                None => println!(
+                    "Deployment queued. Follow it with 'aegis deployments' or 'aegis events'."
+                ),
             }
         }
-        Commands::Rollback {
-            project_id,
-            version,
-        } => {
-            let pid = resolve_project_id(project_id);
-            println!(
-                "Triggering rollback for project {} to version {}",
-                pid, version
-            );
-            let response = client
-                .emit_event(EmitEventRequest {
-                    event_type: "RollbackTriggered".to_string(),
-                    payload_json: serde_json::json!({
-                        "project_id": pid,
-                        "target_version": version,
-                    })
-                    .to_string(),
-                })
+        Commands::Rollback { project, version } => {
+            let key = target_or_local(project)?;
+            println!("Rolling back {}...", key);
+            let response = rpc(daemon
+                .client()
                 .await?
-                .into_inner();
-
-            if response.success {
-                println!("Rollback event dispatched successfully!");
-            }
+                .rollback(RollbackRequest {
+                    project: key,
+                    version: version.unwrap_or_default(),
+                })
+                .await)?;
+            println!("Rolled back: release {} is live.", response.version);
         }
         Commands::List => {
-            let status = client.get_status(StatusRequest {}).await?.into_inner();
-            println!("Aegis Active Projects & Platform Status:");
-            println!("  Daemon Version: {}", status.version);
-            println!("  Total Events:   {}", status.event_count);
-            println!("  Active Plugins: {:?}", status.loaded_plugins);
-        }
-        Commands::Logs { process_id } => {
-            if let Some(ref pid) = process_id {
-                println!(
-                    "Streaming logs filtered for process {} (Press Ctrl+C to exit)...",
-                    pid
-                );
+            let projects = rpc(daemon
+                .client()
+                .await?
+                .list_projects(ListProjectsRequest {})
+                .await)?
+            .projects;
+            if projects.is_empty() {
+                println!("No projects yet. Run 'aegis init' in a project directory.");
             } else {
-                println!("Streaming all system operational logs (Press Ctrl+C to exit)...");
-            }
-            let mut stream = client
-                .stream_events(StreamEventsRequest {})
-                .await?
-                .into_inner();
-            while let Some(event) = stream.message().await? {
-                if let Some(ref target_pid) = process_id {
-                    if !event.payload_json.contains(target_pid) {
-                        continue;
-                    }
-                }
                 println!(
-                    "[{}] TYPE: {} | PAYLOAD: {}",
-                    event.created_at, event.event_type, event.payload_json
+                    "{:<20} {:<9} {:<10} {:<22} {:>8} {:>8}",
+                    "NAME", "ID", "STATUS", "RELEASE", "PID", "RESTARTS"
                 );
+                for p in projects {
+                    let (status, pid, restarts) = match &p.process {
+                        Some(proc) => (
+                            proc.status.clone(),
+                            proc.pid.map_or("-".to_string(), |pid| pid.to_string()),
+                            proc.restart_count.to_string(),
+                        ),
+                        None => ("NotDeployed".to_string(), "-".to_string(), "-".to_string()),
+                    };
+                    println!(
+                        "{:<20} {:<9} {:<10} {:<22} {:>8} {:>8}",
+                        p.name,
+                        short(&p.id),
+                        status,
+                        if p.current_release.is_empty() {
+                            "-"
+                        } else {
+                            &p.current_release
+                        },
+                        pid,
+                        restarts
+                    );
+                }
             }
         }
-        Commands::Stop { process_id } => {
-            println!("Stopping process {}...", process_id);
-            let response = client
-                .emit_event(EmitEventRequest {
-                    event_type: "ProcessStopped".to_string(),
-                    payload_json: serde_json::json!({ "process_id": process_id }).to_string(),
-                })
-                .await?
-                .into_inner();
-
-            if response.success {
-                println!("Stop event emitted successfully for process {}", process_id);
+        Commands::Logs {
+            target,
+            lines,
+            follow,
+        } => {
+            let target = target_or_local(target)?;
+            let client = daemon.client().await?;
+            if follow {
+                let mut stream = rpc(client
+                    .stream_logs(StreamLogsRequest { target, lines })
+                    .await)?;
+                while let Some(line) = stream.message().await? {
+                    print_log_line(&line);
+                }
+            } else {
+                let response = rpc(client.get_logs(GetLogsRequest { target, lines }).await)?;
+                if response.lines.is_empty() {
+                    println!("No log output yet for process {}", response.process_id);
+                }
+                for line in &response.lines {
+                    print_log_line(line);
+                }
             }
+        }
+        Commands::Start { target } => {
+            let process = control_process(&mut daemon, target, ProcessAction::Start).await?;
+            println!("Started: {}", describe_process(&process));
+        }
+        Commands::Stop { target } => {
+            let process = control_process(&mut daemon, target, ProcessAction::Stop).await?;
+            println!("Stopped: {}", describe_process(&process));
+        }
+        Commands::Restart { target } => {
+            let process = control_process(&mut daemon, target, ProcessAction::Restart).await?;
+            println!("Restarted: {}", describe_process(&process));
         }
         Commands::Schedule {
             project_id,
@@ -466,12 +700,14 @@ async fn main() -> Result<(), anyhow::Error> {
             minute,
             branch,
         } => {
-            let pid = resolve_project_id(project_id);
+            let pid = target_or_local(project_id)?;
             println!(
                 "Configuring daily auto-deploy for project {} at {:02}:{:02} (Branch: {})",
                 pid, hour, minute, branch
             );
-            let response = client
+            let response = rpc(daemon
+                .client()
+                .await?
                 .emit_event(EmitEventRequest {
                     event_type: "ScheduleConfigured".to_string(),
                     payload_json: serde_json::json!({
@@ -482,38 +718,24 @@ async fn main() -> Result<(), anyhow::Error> {
                     })
                     .to_string(),
                 })
-                .await?
-                .into_inner();
+                .await)?;
 
             if response.success {
                 println!("Schedule configured and emitted to Aegis daemon!");
-            }
-        }
-        Commands::Restart { process_id } => {
-            println!("Restarting process {}...", process_id);
-            let response = client
-                .emit_event(EmitEventRequest {
-                    event_type: "ProcessRestarted".to_string(),
-                    payload_json: serde_json::json!({ "process_id": process_id }).to_string(),
-                })
-                .await?
-                .into_inner();
-
-            if response.success {
-                println!("Restart signal dispatched to process supervisor!");
             }
         }
         Commands::EmitEvent {
             event_type,
             payload_json,
         } => {
-            let response = client
+            let response = rpc(daemon
+                .client()
+                .await?
                 .emit_event(EmitEventRequest {
                     event_type: event_type.clone(),
                     payload_json,
                 })
-                .await?
-                .into_inner();
+                .await)?;
 
             if response.success {
                 println!(
@@ -529,15 +751,173 @@ async fn main() -> Result<(), anyhow::Error> {
                 "Listening for operational events from daemon at {}...",
                 addr
             );
-            let mut stream = client
-                .stream_events(StreamEventsRequest {})
+            let mut stream = rpc(daemon
+                .client()
                 .await?
-                .into_inner();
+                .stream_events(StreamEventsRequest {})
+                .await)?;
 
             while let Some(event) = stream.message().await? {
                 println!(
                     "[{}] TYPE: {} | PAYLOAD: {}",
                     event.created_at, event.event_type, event.payload_json
+                );
+            }
+        }
+        Commands::Validate => {
+            let current_dir = std::env::current_dir()?;
+            let toml_path = current_dir.join("aegis.toml");
+            if !toml_path.exists() {
+                anyhow::bail!(
+                    "aegis.toml not found in {}. Run 'aegis init' first.",
+                    current_dir.display()
+                );
+            }
+            let file = ProjectFile::load(&toml_path)
+                .map_err(|e| anyhow::anyhow!("aegis.toml is invalid: {}", e))?;
+            let cfg = ResolvedProjectConfig::resolve(&current_dir, Some(&file));
+            println!("aegis.toml is valid. Effective settings:");
+            println!(
+                "  Project:      {} ({})",
+                cfg.name,
+                cfg.project_id
+                    .as_deref()
+                    .unwrap_or("no id - run 'aegis init'")
+            );
+            println!("  Runtime:      {}", cfg.runtime);
+            let show = |c: &Option<String>| c.clone().unwrap_or_else(|| "(none)".to_string());
+            println!("  Install:      {}", show(&cfg.install_command));
+            println!("  Build:        {}", show(&cfg.build_command));
+            println!("  Test:         {}", show(&cfg.test_command));
+            println!("  Start:        {}", cfg.start_command);
+            println!("  Strategy:     {}", cfg.strategy);
+            println!(
+                "  Port:         {}",
+                cfg.port.map_or("(none)".to_string(), |p| p.to_string())
+            );
+            println!(
+                "  Health check: {} (timeout {}s)",
+                cfg.health_check_url
+                    .as_deref()
+                    .unwrap_or("process stays up"),
+                cfg.health_check_timeout.as_secs()
+            );
+            println!("  Keep releases: {}", cfg.max_retained_versions);
+            let mut problems = Vec::new();
+            if cfg.project_id.is_none() {
+                problems.push("no [project] id; run 'aegis init'".to_string());
+            }
+            if let Some(strategy) = &file.deploy.strategy {
+                if !["GracefulSwitch", "Immediate"].contains(&strategy.as_str()) {
+                    problems.push(format!(
+                        "strategy '{}' is not supported (use GracefulSwitch or Immediate)",
+                        strategy
+                    ));
+                }
+            }
+            if let Some(policy) = &file.deploy.restart_policy {
+                if !["always", "on-failure", "never"].contains(&policy.as_str()) {
+                    problems.push(format!("restart_policy '{}' is not supported", policy));
+                }
+            }
+            if !problems.is_empty() {
+                anyhow::bail!("Configuration problems:\n  - {}", problems.join("\n  - "));
+            }
+        }
+        Commands::Releases { project } => {
+            let key = target_or_local(project)?;
+            let releases = rpc(daemon
+                .client()
+                .await?
+                .list_releases(ListReleasesRequest { project: key })
+                .await)?
+            .releases;
+            if releases.is_empty() {
+                println!("No releases yet. Run 'aegis deploy'.");
+            } else {
+                println!(
+                    "{:<22} {:<9} {:<9} {:<20} MESSAGE",
+                    "VERSION", "STATUS", "COMMIT", "CREATED"
+                );
+                for r in releases.iter().rev() {
+                    println!(
+                        "{:<22} {:<9} {:<9} {:<20} {}",
+                        r.version,
+                        r.status,
+                        short(&r.commit_sha),
+                        short_time(&r.created_at),
+                        r.commit_message
+                    );
+                }
+            }
+        }
+        Commands::Deployments { project } => {
+            let deployments = rpc(daemon
+                .client()
+                .await?
+                .list_deployments(ListDeploymentsRequest {
+                    project: project.unwrap_or_default(),
+                })
+                .await)?
+            .deployments;
+            if deployments.is_empty() {
+                println!("No deployments yet.");
+            }
+            for d in deployments {
+                println!(
+                    "{}  {}  {:<22} {:<10} {:<8} {}",
+                    short_time(&d.created_at),
+                    short(&d.id),
+                    if d.version.is_empty() {
+                        "-"
+                    } else {
+                        &d.version
+                    },
+                    d.status,
+                    d.stage,
+                    d.error
+                );
+            }
+        }
+        Commands::Timeline { project, limit } => {
+            let key = target_or_local(project)?;
+            let events = rpc(daemon
+                .client()
+                .await?
+                .list_events(ListEventsRequest {
+                    project: key.clone(),
+                    limit,
+                })
+                .await)?
+            .events;
+            println!("Recent events for {}:", key);
+            for event in events {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&event.payload_json).unwrap_or_default();
+                let detail = [
+                    "version",
+                    "to_version",
+                    "status",
+                    "stage",
+                    "pid",
+                    "exit_code",
+                    "reason",
+                ]
+                .iter()
+                .filter_map(|k| match payload.get(*k) {
+                    Some(serde_json::Value::String(v)) if !v.is_empty() => {
+                        Some(format!("{}={}", k, v))
+                    }
+                    Some(v @ serde_json::Value::Number(_)) => Some(format!("{}={}", k, v)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+                println!(
+                    "  {}  {:<24} {}",
+                    short_time(&event.created_at),
+                    event.event_type,
+                    detail
                 );
             }
         }
@@ -557,7 +937,13 @@ async fn main() -> Result<(), anyhow::Error> {
                 toml_status
             );
 
-            let status_res = client.get_status(StatusRequest {}).await;
+            let status_res = match daemon.client().await {
+                Ok(c) => c
+                    .get_status(StatusRequest {})
+                    .await
+                    .map_err(|e| e.message().to_string()),
+                Err(e) => Err(e.to_string()),
+            };
             let is_connected = status_res.is_ok();
             let grpc_status = match status_res {
                 Ok(resp) => format!("Connected (v{})", resp.into_inner().version),
@@ -582,30 +968,10 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!("Auto-fix completed: Created aegis.toml config file!");
             }
         }
-        Commands::Validate => {
-            println!("Validating project configuration and build pipeline parameters...");
-            let current_dir = std::env::current_dir()?;
-            let toml_path = current_dir.join("aegis.toml");
-
-            if !toml_path.exists() {
-                anyhow::bail!(
-                    "aegis.toml not found in {}. Run 'aegis init' first.",
-                    current_dir.display()
-                );
-            }
-
-            let content = std::fs::read_to_string(&toml_path)?;
-            println!("  [✓] Configuration file: aegis.toml found");
-            if content.contains("strategy =") {
-                println!("  [✓] Deployment strategy configured");
-            }
-            if content.contains("runtime =") {
-                println!("  [✓] Runtime engine specified");
-            }
-            println!("Project configuration is valid!");
-        }
         Commands::Inspect { project_id, at } => {
-            let pid = resolve_project_id(project_id);
+            let pid = project_id
+                .or_else(local_project_id)
+                .unwrap_or_else(|| "(no project)".to_string());
             if let Some(ts) = at {
                 println!(
                     "Time-Travel Historical State Inspection for Project '{}' at {}:",
@@ -614,11 +980,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!("  ├── Id: {}", pid);
                 println!("  ├── Historical Snapshot Query: Replayed from EventStore");
             } else {
-                let status = client
-                    .get_status(StatusRequest {})
-                    .await
-                    .map(|r| r.into_inner())
-                    .ok();
+                let status = daemon.status().await;
                 println!("Project Resource Tree:");
                 println!("  ├── Id: {}", pid);
                 println!(
@@ -654,55 +1016,20 @@ async fn main() -> Result<(), anyhow::Error> {
                 "  [Step 2/3] Verifying gRPC Daemon connection at {}...",
                 addr
             );
-            let status = client.get_status(StatusRequest {}).await;
-            if status.is_ok() {
+            let status = daemon.status().await;
+            if status.is_some() {
                 println!("  [Step 3/3] Connected to Aegis Daemon (Status: Operational)");
             } else {
                 println!("  [Step 3/3] Aegis Daemon offline. Start daemon with 'aegis-daemon'");
             }
             println!("\n  [✓] Feature Tour Complete!");
         }
-        Commands::Releases { project_id } => {
-            let pid = project_id.unwrap_or_else(|| "current-project".to_string());
-            println!(
-                "Querying EventStore Release History for Project '{}'...",
-                pid
-            );
-            let status = client
-                .get_status(StatusRequest {})
-                .await
-                .map(|r| r.into_inner())
-                .ok();
-            println!(
-                "  System Total Events: {}",
-                status.as_ref().map(|s| s.event_count).unwrap_or(0)
-            );
-            println!("  💡 Run 'aegis events' to stream real-time events.");
-        }
-        Commands::Timeline { project_id } => {
-            let pid = project_id.unwrap_or_else(|| "current-project".to_string());
-            println!("Event-Sourced Execution Timeline for Project '{}':", pid);
-            let status = client
-                .get_status(StatusRequest {})
-                .await
-                .map(|r| r.into_inner())
-                .ok();
-            println!(
-                "  System Total Recorded Events: {}",
-                status.as_ref().map(|s| s.event_count).unwrap_or(0)
-            );
-            println!("  💡 Run 'aegis events' for live event stream.");
-        }
         Commands::Replay { release } => {
             println!(
                 "▶ Replaying Event History for Release / Target '{}'...",
                 release
             );
-            let status = client
-                .get_status(StatusRequest {})
-                .await
-                .map(|r| r.into_inner())
-                .ok();
+            let status = daemon.status().await;
             println!(
                 "  Replayed against EventStore with {} total events.",
                 status.as_ref().map(|s| s.event_count).unwrap_or(0)
@@ -714,11 +1041,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 "Aegis Incident Response & Root Cause Diagnostics for Project '{}':",
                 pid
             );
-            let status = client
-                .get_status(StatusRequest {})
-                .await
-                .map(|r| r.into_inner())
-                .ok();
+            let status = daemon.status().await;
             if status.is_some() {
                 println!("  [✓] Daemon Status: Operational");
                 println!("  [✓] EventStore: Connected");
@@ -732,11 +1055,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 "🔎 Aegis Operational Outage Investigation for Project '{}':",
                 pid
             );
-            let status = client
-                .get_status(StatusRequest {})
-                .await
-                .map(|r| r.into_inner())
-                .ok();
+            let status = daemon.status().await;
             println!(
                 "  Current System Event Log Size: {}",
                 status.as_ref().map(|s| s.event_count).unwrap_or(0)
@@ -798,11 +1117,7 @@ async fn main() -> Result<(), anyhow::Error> {
         },
         Commands::Upgrade { check, force } => {
             println!("Checking Aegis platform self-update status...");
-            let status = client
-                .get_status(StatusRequest {})
-                .await
-                .map(|r| r.into_inner())
-                .ok();
+            let status = daemon.status().await;
             let daemon_ver = status
                 .as_ref()
                 .map(|s| s.version.as_str())
@@ -826,6 +1141,22 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+async fn control_process(
+    daemon: &mut Daemon,
+    target: Option<String>,
+    action: ProcessAction,
+) -> anyhow::Result<ProcessInfo> {
+    let target = target_or_local(target)?;
+    rpc(daemon
+        .client()
+        .await?
+        .control_process(ControlProcessRequest {
+            target,
+            action: action as i32,
+        })
+        .await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,5 +1167,16 @@ mod tests {
         assert!(!has_project_section(
             "[daemon]\nhost = \"127.0.0.1\"\nport = 50051\n"
         ));
+    }
+
+    #[test]
+    fn test_formatting_helpers() {
+        assert_eq!(short("01a0e66a-2697-73c0-bff5-3346fccc6ad3"), "fccc6ad3");
+        assert_eq!(short("0123456789abcdef"), "01234567");
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(
+            short_time("2026-09-28T05:12:03.123+00:00"),
+            "2026-09-28 05:12:03"
+        );
     }
 }

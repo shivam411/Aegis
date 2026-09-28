@@ -1,9 +1,12 @@
+use aegis_config::{BuildSection, DeploySection, ProjectFile, ProjectSection};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedConfig {
     pub project_name: String,
     pub runtime_engine: String,
+    /// Dependency installation, run before `build_command`.
+    pub install_command: Option<String>,
     pub build_command: String,
     pub start_command: String,
     pub health_endpoint: String,
@@ -25,9 +28,14 @@ impl DetectorPipeline {
             .unwrap_or("app")
             .to_string();
 
-        let (runtime, build, start, health, port) = if project_path.join("pom.xml").exists()
-            || project_path.join("build.gradle").exists()
-        {
+        let (runtime, install, build, start, health, port): (
+            &str,
+            Option<&str>,
+            String,
+            String,
+            &str,
+            u16,
+        ) = if project_path.join("pom.xml").exists() || project_path.join("build.gradle").exists() {
             let build_cmd = if project_path.join("build.gradle").exists() {
                 "./gradlew build"
             } else {
@@ -35,46 +43,71 @@ impl DetectorPipeline {
             };
             (
                 "Java",
-                build_cmd,
-                "java -jar build/libs/app.jar",
+                None,
+                build_cmd.to_string(),
+                "java -jar build/libs/app.jar".to_string(),
                 "/health",
                 8080,
             )
         } else if project_path.join("package.json").exists() {
-            ("Node.js", "npm run build", "npm start", "/health", 3000)
+            let install = if project_path.join("package-lock.json").exists() {
+                "npm ci --no-audit --no-fund"
+            } else {
+                "npm install --no-audit --no-fund"
+            };
+            (
+                "Node.js",
+                Some(install),
+                "npm run build --if-present".to_string(),
+                "npm start".to_string(),
+                "/health",
+                3000,
+            )
         } else if project_path.join("Cargo.toml").exists() {
+            let bin = cargo_package_name(project_path).unwrap_or_else(|| "app".to_string());
             (
                 "Rust",
-                "cargo build --release",
-                "./target/release/app",
+                None,
+                "cargo build --release".to_string(),
+                format!("./target/release/{}", bin),
                 "/health",
                 8080,
             )
         } else if project_path.join("go.mod").exists() {
-            ("Go", "go build -o app", "./app", "/health", 8080)
+            (
+                "Go",
+                Some("go mod download"),
+                "go build -o app".to_string(),
+                "./app".to_string(),
+                "/health",
+                8080,
+            )
         } else if project_path.join("requirements.txt").exists()
             || project_path.join("pyproject.toml").exists()
         {
             (
                 "Python",
-                "pip install -r requirements.txt",
-                "python app.py",
+                None,
+                "pip install -r requirements.txt".to_string(),
+                "python app.py".to_string(),
                 "/health",
                 5000,
             )
         } else if project_path.join("Dockerfile").exists() {
             (
                 "Docker",
-                "docker build -t app .",
-                "docker run -p 8080:8080 app",
+                None,
+                "docker build -t app .".to_string(),
+                "docker run -p 8080:8080 app".to_string(),
                 "/health",
                 8080,
             )
         } else {
             (
                 "Generic",
-                "echo 'Build complete'",
-                "./run.sh",
+                None,
+                "echo 'Build complete'".to_string(),
+                "./run.sh".to_string(),
                 "/health",
                 8080,
             )
@@ -83,20 +116,64 @@ impl DetectorPipeline {
         DetectedConfig {
             project_name: name,
             runtime_engine: runtime.to_string(),
-            build_command: build.to_string(),
-            start_command: start.to_string(),
+            install_command: install.map(str::to_string),
+            build_command: build,
+            start_command: start,
             health_endpoint: health.to_string(),
             default_port: port,
         }
     }
 
+    /// Builds the project part of `aegis.toml` from detected settings.
+    pub fn to_project_file(&self, config: &DetectedConfig, project_id_str: &str) -> ProjectFile {
+        ProjectFile {
+            project: ProjectSection {
+                id: Some(project_id_str.to_string()),
+                name: Some(config.project_name.clone()),
+                runtime: Some(config.runtime_engine.clone()),
+            },
+            build: BuildSection {
+                install_command: config.install_command.clone(),
+                build_command: Some(config.build_command.clone()),
+                test_command: None,
+                start_command: Some(config.start_command.clone()),
+                timeout_secs: None,
+            },
+            deploy: DeploySection {
+                strategy: Some("GracefulSwitch".to_string()),
+                port: Some(config.default_port),
+                health_check_url: Some(format!(
+                    "http://127.0.0.1:{}{}",
+                    config.default_port, config.health_endpoint
+                )),
+                health_check_timeout_secs: Some(30),
+                max_retained_versions: Some(2),
+                drain_timeout_secs: None,
+                restart_policy: None,
+            },
+            env: Default::default(),
+        }
+    }
+
     /// Generates zero-boilerplate aegis.toml configuration content.
     pub fn generate_toml(&self, config: &DetectedConfig, project_id_str: &str) -> String {
+        let file = self.to_project_file(config, project_id_str);
         format!(
-            "# Generated automatically by Aegis Detector Pipeline\n[project]\nid = \"{}\"\nname = \"{}\"\nruntime = \"{}\"\n\n[build]\nbuild_command = \"{}\"\nstart_command = \"{}\"\n\n[deploy]\nstrategy = \"GracefulSwitch\"\nhealth_check_url = \"http://127.0.0.1:{}{}\"\nhealth_check_timeout_secs = 5\nmax_retained_versions = 2\n",
-            project_id_str, config.project_name, config.runtime_engine, config.build_command, config.start_command, config.default_port, config.health_endpoint
+            "# Generated automatically by Aegis Detector Pipeline\n{}",
+            toml::to_string_pretty(&file).unwrap_or_default()
         )
     }
+}
+
+/// Reads `[package].name` from Cargo.toml, which is the default binary name.
+fn cargo_package_name(project_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(project_path.join("Cargo.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&content).ok()?;
+    value
+        .get("package")?
+        .get("name")?
+        .as_str()
+        .map(str::to_string)
 }
 
 impl Default for DetectorPipeline {
@@ -120,6 +197,7 @@ mod tests {
 
         assert_eq!(config.runtime_engine, "Rust");
         assert_eq!(config.build_command, "cargo build --release");
+        assert_eq!(config.start_command, "./target/release/test");
     }
 
     #[test]
@@ -131,7 +209,11 @@ mod tests {
         let config = pipeline.detect_all(temp.path());
 
         assert_eq!(config.runtime_engine, "Node.js");
-        assert_eq!(config.build_command, "npm run build");
+        assert_eq!(config.build_command, "npm run build --if-present");
+        assert_eq!(
+            config.install_command.as_deref(),
+            Some("npm install --no-audit --no-fund")
+        );
     }
 
     #[test]
@@ -173,5 +255,16 @@ mod tests {
         assert!(toml_str.contains("proj-1234"));
         assert!(toml_str.contains("runtime = \"Go\""));
         assert!(toml_str.contains("strategy = \"GracefulSwitch\""));
+
+        // Round-trips through the typed parser, including awkward names.
+        let mut odd = cfg_go.clone();
+        odd.project_name = "my \"quoted\" app".to_string();
+        let parsed = ProjectFile::parse(&pipeline.generate_toml(&odd, "proj-1")).unwrap();
+        assert_eq!(parsed.project.name.as_deref(), Some("my \"quoted\" app"));
+        assert_eq!(
+            parsed.build.install_command.as_deref(),
+            Some("go mod download")
+        );
+        assert_eq!(parsed.deploy.port, Some(8080));
     }
 }

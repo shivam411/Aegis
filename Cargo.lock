@@ -58,14 +58,11 @@ version = "0.1.0"
 dependencies = [
  "aegis-artifact-store",
  "aegis-engine",
- "aegis-event-bus",
  "aegis-release",
  "aegis-types",
  "anyhow",
  "async-trait",
- "chrono",
- "serde",
- "serde_json",
+ "libc",
  "tempfile",
  "tokio",
  "tracing",
@@ -98,34 +95,53 @@ dependencies = [
 ]
 
 [[package]]
-name = "aegis-daemon"
+name = "aegis-control"
 version = "0.1.0"
 dependencies = [
- "aegis-api",
  "aegis-artifact-store",
  "aegis-builder",
  "aegis-config",
  "aegis-engine",
- "aegis-event-bus",
  "aegis-event-store",
  "aegis-health",
+ "aegis-process",
+ "aegis-projection",
+ "aegis-release",
+ "aegis-types",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "libc",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "aegis-daemon"
+version = "0.1.0"
+dependencies = [
+ "aegis-api",
+ "aegis-config",
+ "aegis-control",
+ "aegis-event-bus",
+ "aegis-event-store",
  "aegis-logs",
  "aegis-plugins",
  "aegis-process",
  "aegis-projection",
- "aegis-release",
- "aegis-rollback",
  "aegis-scheduler",
- "aegis-strategy",
  "aegis-types",
  "anyhow",
  "async-trait",
  "futures-core",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
  "tokio-stream",
- "toml",
  "tonic",
  "tracing",
 ]
@@ -138,12 +154,12 @@ version = "0.1.0"
 name = "aegis-engine"
 version = "0.1.0"
 dependencies = [
- "aegis-process",
- "aegis-types",
+ "aegis-config",
  "anyhow",
  "async-trait",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -240,7 +256,9 @@ version = "0.1.0"
 dependencies = [
  "aegis-types",
  "anyhow",
- "async-trait",
+ "chrono",
+ "libc",
+ "tempfile",
  "tokio",
  "tracing",
 ]

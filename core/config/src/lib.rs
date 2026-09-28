@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn default_max_retained_versions() -> usize {
@@ -13,6 +14,22 @@ pub struct DaemonConfig {
     pub log_level: String,
     #[serde(default = "default_max_retained_versions")]
     pub max_retained_versions: usize,
+    /// Where releases, logs and build output live. Defaults to `~/.aegis`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<PathBuf>,
+}
+
+impl DaemonConfig {
+    /// The data directory, falling back to `$HOME/.aegis` (or `./.aegis` without a home).
+    pub fn resolved_data_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.data_dir {
+            return dir.clone();
+        }
+        match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            Some(home) => PathBuf::from(home).join(".aegis"),
+            None => PathBuf::from(".aegis"),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -31,6 +48,7 @@ impl Default for DaemonConfig {
             database_path: PathBuf::from("aegis.db"),
             log_level: "info".to_string(),
             max_retained_versions: 2,
+            data_dir: None,
         }
     }
 }
@@ -46,6 +64,76 @@ impl Config {
     /// Loads the configuration from the specified path or returns the default configuration if loading fails.
     pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
         Self::load_from_file(path).unwrap_or_default()
+    }
+}
+
+// ----------------------------------------------------
+// Project configuration (the [project]/[build]/[deploy]/[env] sections)
+// ----------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct ProjectSection {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub runtime: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct BuildSection {
+    pub install_command: Option<String>,
+    pub build_command: Option<String>,
+    pub test_command: Option<String>,
+    pub start_command: Option<String>,
+    /// Upper bound for each of install/build/test.
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct DeploySection {
+    pub strategy: Option<String>,
+    /// Port the app listens on; exported to the app as `PORT`.
+    pub port: Option<u16>,
+    /// `http://host:port/path` or `host:port`. Empty means "process stays up".
+    pub health_check_url: Option<String>,
+    /// How long a freshly started release may take to become healthy.
+    pub health_check_timeout_secs: Option<u64>,
+    pub max_retained_versions: Option<usize>,
+    /// Grace period between SIGTERM and SIGKILL when stopping the app.
+    pub drain_timeout_secs: Option<u64>,
+    /// `always` (default), `on-failure` or `never`.
+    pub restart_policy: Option<String>,
+}
+
+/// The per-project part of `aegis.toml`. Every field is optional so partial
+/// or hand-written files still parse; callers fill gaps from runtime detection.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct ProjectFile {
+    #[serde(default)]
+    pub project: ProjectSection,
+    #[serde(default)]
+    pub build: BuildSection,
+    #[serde(default)]
+    pub deploy: DeploySection,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+impl ProjectFile {
+    pub fn parse(content: &str) -> Result<Self, anyhow::Error> {
+        Ok(toml::from_str(content)?)
+    }
+
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, anyhow::Error> {
+        Self::parse(&std::fs::read_to_string(path)?)
+    }
+
+    /// Loads `aegis.toml` from a directory, returning `None` if it doesn't exist.
+    pub fn load_from_dir(dir: &Path) -> Result<Option<Self>, anyhow::Error> {
+        let path = dir.join("aegis.toml");
+        if !path.exists() {
+            return Ok(None);
+        }
+        Self::load(path).map(Some)
     }
 }
 
@@ -72,6 +160,7 @@ host = "0.0.0.0"
 port = 9000
 database_path = "test.db"
 log_level = "debug"
+data_dir = "/srv/aegis"
 "#;
         temp_file.write_all(toml_content.as_bytes()).unwrap();
 
@@ -80,6 +169,10 @@ log_level = "debug"
         assert_eq!(config.daemon.port, 9000);
         assert_eq!(config.daemon.database_path.to_str().unwrap(), "test.db");
         assert_eq!(config.daemon.log_level, "debug");
+        assert_eq!(
+            config.daemon.resolved_data_dir(),
+            PathBuf::from("/srv/aegis")
+        );
     }
 
     #[test]
@@ -98,5 +191,48 @@ strategy = "GracefulSwitch"
         let config = Config::load_from_file(temp_file.path()).unwrap();
         assert_eq!(config.daemon.port, 50051);
         assert_eq!(config.daemon.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_project_file_parsing() {
+        let file = ProjectFile::parse(
+            r#"
+# Generated automatically by Aegis Detector Pipeline
+[project]
+id = "01a0e66a-2697-73c0-bff5-3346fccc6ad3"
+name = "node-app"
+runtime = "Node.js"
+
+[build]
+build_command = "npm run build"
+start_command = "npm start"
+
+[deploy]
+strategy = "GracefulSwitch"
+port = 3000
+health_check_url = "http://127.0.0.1:3000/health"
+health_check_timeout_secs = 5
+
+[env]
+NODE_ENV = "production"
+
+[daemon]
+port = 50051
+host = "127.0.0.1"
+database_path = "aegis.db"
+log_level = "info"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.project.id.as_deref(),
+            Some("01a0e66a-2697-73c0-bff5-3346fccc6ad3")
+        );
+        assert_eq!(file.build.start_command.as_deref(), Some("npm start"));
+        assert_eq!(file.build.install_command, None);
+        assert_eq!(file.deploy.port, Some(3000));
+        assert_eq!(file.env.get("NODE_ENV").unwrap(), "production");
+
+        assert_eq!(ProjectFile::parse("").unwrap(), ProjectFile::default());
     }
 }

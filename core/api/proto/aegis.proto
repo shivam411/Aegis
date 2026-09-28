@@ -5,6 +5,24 @@ service AegisDaemon {
   rpc GetStatus(StatusRequest) returns (StatusResponse);
   rpc EmitEvent(EmitEventRequest) returns (EmitEventResponse);
   rpc StreamEvents(StreamEventsRequest) returns (stream EventResponse);
+
+  // Commands
+  rpc RegisterProject(RegisterProjectRequest) returns (ProjectInfo);
+  // Queues a deployment; follow it with StreamEvents or GetDeployment.
+  rpc Deploy(DeployRequest) returns (DeployResponse);
+  // Switches back to an earlier release; returns once it is live (or failed).
+  rpc Rollback(RollbackRequest) returns (RollbackResponse);
+  rpc ControlProcess(ControlProcessRequest) returns (ProcessInfo);
+
+  // Queries
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  rpc GetDeployment(GetDeploymentRequest) returns (DeploymentInfo);
+  rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
+  rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
+  rpc StreamLogs(StreamLogsRequest) returns (stream LogLine);
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
 }
 
 message StatusRequest {}
@@ -14,6 +32,9 @@ message StatusResponse {
   string version = 2;
   repeated string loaded_plugins = 3;
   uint64 event_count = 4;
+  uint32 project_count = 5;
+  uint32 running_processes = 6;
+  string data_dir = 7;
 }
 
 message EmitEventRequest {
@@ -33,4 +54,174 @@ message EventResponse {
   string event_type = 2;
   string payload_json = 3;
   string created_at = 4;
+}
+
+message RegisterProjectRequest {
+  // Reuse an existing id (e.g. from aegis.toml); a new one is generated when empty.
+  string project_id = 1;
+  string name = 2;
+  string repository_url = 3;
+  string branch = 4;
+  string runtime = 5;
+  // Directory deployments copy the code from.
+  string source_dir = 6;
+}
+
+message ProjectInfo {
+  string id = 1;
+  string name = 2;
+  string repository_url = 3;
+  string branch = 4;
+  string runtime = 5;
+  string source_dir = 6;
+  string current_release = 7;
+  string created_at = 8;
+  // Present once the project has been deployed.
+  optional ProcessInfo process = 9;
+}
+
+message DeployRequest {
+  // Project id or name.
+  string project = 1;
+  string branch = 2;
+  string strategy = 3;
+  // Copy code from this directory (takes precedence over repository_url).
+  string source_dir = 4;
+  string repository_url = 5;
+  string commit = 6;
+  // Release name; generated from the current time when empty.
+  string version = 7;
+}
+
+message DeployResponse {
+  string deployment_id = 1;
+  string project_id = 2;
+  string project_name = 3;
+}
+
+message RollbackRequest {
+  string project = 1;
+  // Defaults to the release that was live before the current one.
+  string version = 2;
+}
+
+message RollbackResponse {
+  string version = 1;
+}
+
+enum ProcessAction {
+  PROCESS_ACTION_UNSPECIFIED = 0;
+  PROCESS_ACTION_START = 1;
+  PROCESS_ACTION_STOP = 2;
+  PROCESS_ACTION_RESTART = 3;
+}
+
+message ControlProcessRequest {
+  // Process id, or a project id/name meaning its current process.
+  string target = 1;
+  ProcessAction action = 2;
+}
+
+message ProcessInfo {
+  string id = 1;
+  string project_id = 2;
+  optional uint32 pid = 3;
+  string status = 4;
+  string desired = 5;
+  uint32 restart_count = 6;
+  string release_version = 7;
+  string command = 8;
+  string last_start = 9;
+  optional int32 last_exit_code = 10;
+}
+
+message ListProjectsRequest {}
+
+message ListProjectsResponse {
+  repeated ProjectInfo projects = 1;
+}
+
+message ListReleasesRequest {
+  string project = 1;
+}
+
+message ReleaseInfo {
+  string id = 1;
+  string version = 2;
+  string status = 3;
+  string commit_sha = 4;
+  string commit_message = 5;
+  string checksum = 6;
+  string created_at = 7;
+}
+
+message ListReleasesResponse {
+  repeated ReleaseInfo releases = 1;
+}
+
+message ListDeploymentsRequest {
+  // Empty for all projects.
+  string project = 1;
+}
+
+message DeploymentInfo {
+  string id = 1;
+  string project_id = 2;
+  string version = 3;
+  string strategy = 4;
+  string status = 5;
+  string stage = 6;
+  string error = 7;
+  string trigger = 8;
+  string created_at = 9;
+  string completed_at = 10;
+}
+
+message ListDeploymentsResponse {
+  repeated DeploymentInfo deployments = 1;
+}
+
+message GetDeploymentRequest {
+  string deployment_id = 1;
+}
+
+message ListProcessesRequest {
+  string project = 1;
+}
+
+message ListProcessesResponse {
+  repeated ProcessInfo processes = 1;
+}
+
+message GetLogsRequest {
+  // Process id or project id/name.
+  string target = 1;
+  uint32 lines = 2;
+}
+
+message LogLine {
+  string timestamp = 1;
+  // "out", "err" or "sys" (messages from the supervisor).
+  string stream = 2;
+  string line = 3;
+}
+
+message GetLogsResponse {
+  string process_id = 1;
+  repeated LogLine lines = 2;
+}
+
+message StreamLogsRequest {
+  string target = 1;
+  // Lines of history to send before following.
+  uint32 lines = 2;
+}
+
+message ListEventsRequest {
+  string project = 1;
+  uint32 limit = 2;
+}
+
+message ListEventsResponse {
+  repeated EventResponse events = 1;
 }

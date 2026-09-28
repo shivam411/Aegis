@@ -8,8 +8,8 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-aegis-types = { path = "../../core/types" }
-aegis-process = { path = "../process" }
+toml = { workspace = true }
+aegis-config = { path = "../../core/config" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

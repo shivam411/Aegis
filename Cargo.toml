@@ -15,6 +15,7 @@ members = [
     "core/types",
     "core/event_bus",
     "core/projection",
+    "core/control",
 
     # Deployment
     "deployment/builder",
