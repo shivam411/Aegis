@@ -495,3 +495,31 @@ async fn rollback_and_retention_follow_live_order_not_build_order() {
     assert_eq!(serving(h.port).await.as_deref(), Some("r1"));
     h.control.shutdown().await;
 }
+
+#[tokio::test]
+async fn events_record_the_acting_principal() {
+    let h = harness().await;
+    aegis_control::with_actor("user:alice".into(), async {
+        h.control
+            .configure_schedule(h.project_id, 4, 0, None)
+            .await
+            .unwrap();
+    })
+    .await;
+    h.control
+        .configure_schedule(h.project_id, 5, 0, None)
+        .await
+        .unwrap();
+    let events = h
+        .control
+        .list_events(Some(&h.project_id), 10)
+        .await
+        .unwrap();
+    let schedules: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|e| e.event_type == "ScheduleConfigured")
+        .map(|e| serde_json::from_str(&e.payload_json).unwrap())
+        .collect();
+    assert_eq!(schedules[0]["actor"], "user:alice");
+    assert!(schedules[1].get("actor").is_none());
+}

@@ -81,16 +81,20 @@ stop_daemon() {
 # JSON field from stdin, e.g. `... | json '["status"]'`.
 json() { python3 -c "import sys, json; print(json.load(sys.stdin)$1)"; }
 
+# curl with the API token (created once the daemon is up).
+TOKEN=""
+acurl() { curl -H "Authorization: Bearer $TOKEN" "$@"; }
+
 api_post() {
   local body="${2:-}"
   [ -n "$body" ] || body='{}'
-  curl -sS -X POST -H 'Content-Type: application/json' -d "$body" "$API$1"
+  acurl -sS -X POST -H 'Content-Type: application/json' -d "$body" "$API$1"
 }
 
 wait_http_deployment() {
   local id="$1" status=""
   for _ in $(seq 1 300); do
-    status=$(curl -sS "$API/deployments/$id" | json '["status"]')
+    status=$(acurl -sS "$API/deployments/$id" | json '["status"]')
     case "$status" in Queued|InProgress) sleep 0.2 ;; *) echo "$status"; return 0 ;; esac
   done
   fail "deployment $id did not finish"
@@ -197,18 +201,39 @@ sleep 1
 aegis start
 expect_serving v1
 
+step "HTTP API: authentication"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/status")
+[ "$code" = 401 ] || fail "unauthenticated request allowed ($code)"
+[ "$(curl -s "http://127.0.0.1:$WEB_PORT/healthz")" = ok ] || fail "healthz"
+PASSWORD=$(cat "$WORK/data/initial-admin-password")
+[ "$(stat -c %a "$WORK/data/initial-admin-password" 2>/dev/null || stat -f %Lp "$WORK/data/initial-admin-password")" = 600 ] \
+  || fail "initial password file is not private"
+CSRF=$(curl -sS -c "$WORK/jar" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"admin\",\"password\":\"$PASSWORD\"}" "$API/auth/login" | json '["csrf_token"]')
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$WORK/jar" -X PUT -H 'Content-Type: application/json' \
+  -d '{"hour":1}' "$API/projects/smoke-app/schedule")
+[ "$code" = 403 ] || fail "session request without CSRF token allowed ($code)"
+TOKEN=$(curl -sS -b "$WORK/jar" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"name":"e2e","scope":"deploy"}' "$API/tokens" | json '["token"]')
+case "$TOKEN" in aegis_*) ;; *) fail "token creation failed" ;; esac
+READ_TOKEN=$(AEGIS_CONFIG="$WORK/daemon.toml" "$AEGIS_DAEMON" admin create-token --name e2e-read --scope read)
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $READ_TOKEN" \
+  -X POST -H 'Content-Type: application/json' -d '{}' "$API/processes/smoke-app/stop")
+[ "$code" = 403 ] || fail "read-only token could stop an app ($code)"
+expect_serving v1
+
 step "HTTP API: status, guard rules and OpenAPI"
-curl -sSf "$API/status" | json '["project_count"]' | grep -qx 1 || fail "status via HTTP"
+acurl -sSf "$API/status" | json '["project_count"]' | grep -qx 1 || fail "status via HTTP"
 aegis status | grep -q "HTTP API:    http://127.0.0.1:$WEB_PORT/api/v1" || fail "CLI status lacks the API URL"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$API/status")
 [ "$code" = 403 ] || fail "foreign Host header allowed ($code)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: text/plain' -d '{}' "$API/processes/smoke-app/stop")
+code=$(acurl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: text/plain' -d '{}' "$API/processes/smoke-app/stop")
 [ "$code" = 415 ] || fail "non-JSON POST allowed ($code)"
 expect_serving v1
-curl -sSf "$API/openapi.json" | json '["openapi"]' | grep -q '^3' || fail "openapi.json"
+acurl -sSf "$API/openapi.json" | json '["openapi"]' | grep -q '^3' || fail "openapi.json"
 
 step "HTTP API: deploy with live event stream"
-curl -sN --max-time 120 "$API/events/stream?project=smoke-app" >"$WORK/sse.txt" &
+acurl -sN --max-time 120 "$API/events/stream?project=smoke-app" >"$WORK/sse.txt" &
 SSE_PID=$!
 sleep 0.5
 set_version v5
@@ -222,10 +247,10 @@ grep -q "event: BuildStageInstall" "$WORK/sse.txt" || fail "SSE stream missed bu
 step "HTTP API: process control, logs and rollback"
 [ "$(api_post /processes/smoke-app/restart | json '["status"]')" = Running ] || fail "HTTP restart"
 expect_serving v5
-curl -sSf "$API/processes/smoke-app/logs?lines=20" | grep -q "running on port $APP_PORT" || fail "HTTP logs"
+acurl -sSf "$API/processes/smoke-app/logs?lines=20" | grep -q "running on port $APP_PORT" || fail "HTTP logs"
 [ "$(api_post /projects/smoke-app/rollback | json '["version"]')" = v1 ] || fail "HTTP rollback"
 expect_serving v1
-curl -sS -X PUT -H 'Content-Type: application/json' -d '{"hour":3,"minute":30}' "$API/projects/smoke-app/schedule" \
+acurl -sS -X PUT -H 'Content-Type: application/json' -d '{"hour":3,"minute":30}' "$API/projects/smoke-app/schedule" \
   | json '["schedule"]["hour"]' | grep -qx 3 || fail "HTTP schedule"
 
 step "Daemon shutdown is not held up by an open event stream"
@@ -236,5 +261,25 @@ ELAPSED=$(( $(date +%s) - START ))
 [ "$ELAPSED" -lt 20 ] || fail "shutdown took ${ELAPSED}s with an open stream"
 for _ in $(seq 1 25); do kill -0 "$SSE_PID" 2>/dev/null || break; sleep 0.2; done
 if kill -0 "$SSE_PID" 2>/dev/null; then fail "SSE stream still open after shutdown"; fi
+
+step "Unsafe configurations are refused"
+refuse() {
+  local name="$1" extra="$2"
+  printf '[daemon]\nhost = "%s"\nport = %s\ndatabase_path = "%s/refused.db"\ndata_dir = "%s/refused"\n[web]\nenabled = true\nport = 18499\n%b\n' \
+    "${3:-127.0.0.1}" "$GRPC_PORT" "$WORK" "$WORK" "$extra" >"$WORK/unsafe.toml"
+  if AEGIS_CONFIG="$WORK/unsafe.toml" "$AEGIS_DAEMON" check-config >/dev/null 2>&1; then
+    fail "check-config accepted: $name"
+  fi
+  if AEGIS_CONFIG="$WORK/unsafe.toml" timeout 10 "$AEGIS_DAEMON" run >/dev/null 2>&1; then
+    fail "daemon started with: $name"
+  fi
+}
+refuse "public HTTP bind without TLS" 'host = "0.0.0.0"\nallowed_hosts = ["a.example"]'
+refuse "proxy mode without allowed_hosts" 'behind_proxy = true'
+refuse "TLS with only a certificate" 'host = "0.0.0.0"\nallowed_hosts = ["a.example"]\n[web.tls]\ncert_path = "/x.pem"'
+refuse "gRPC on a public address" '' 0.0.0.0
+if curl -s --max-time 2 "http://127.0.0.1:18499/healthz" >/dev/null 2>&1; then
+  fail "something is listening on the refused port"
+fi
 
 printf '\nAll end-to-end checks passed.\n'

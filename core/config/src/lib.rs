@@ -42,6 +42,29 @@ pub struct Config {
     pub web: WebConfig,
 }
 
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// TLS certificate files for the HTTP API (PEM). Renewed files are picked up
+/// without a restart.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(default)]
+pub struct TlsConfig {
+    pub cert_path: Option<PathBuf>,
+    pub key_path: Option<PathBuf>,
+}
+
+impl TlsConfig {
+    pub fn enabled(&self) -> bool {
+        self.cert_path.is_some() || self.key_path.is_some()
+    }
+}
+
 /// The HTTP API (and, later, the dashboard) served by the daemon.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
@@ -49,6 +72,16 @@ pub struct WebConfig {
     pub enabled: bool,
     pub host: String,
     pub port: u16,
+    /// Public hostnames the API may be reached under (e.g. "aegis.example.com").
+    /// Loopback names are always allowed.
+    pub allowed_hosts: Vec<String>,
+    /// A reverse proxy on this machine terminates HTTPS and forwards to
+    /// Aegis on loopback. Enables Secure cookies and HSTS, and uses the
+    /// proxy's X-Forwarded-For for login throttling.
+    pub behind_proxy: bool,
+    pub session_idle_minutes: u64,
+    pub session_max_hours: u64,
+    pub tls: TlsConfig,
 }
 
 impl Default for WebConfig {
@@ -57,29 +90,62 @@ impl Default for WebConfig {
             enabled: false,
             host: "127.0.0.1".to_string(),
             port: 8420,
+            allowed_hosts: Vec::new(),
+            behind_proxy: false,
+            session_idle_minutes: 120,
+            session_max_hours: 24,
+            tls: TlsConfig::default(),
         }
     }
 }
 
 impl WebConfig {
-    /// The API has no authentication yet (roadmap Phase 2), and it can deploy
-    /// code, so it may only listen on a loopback address. Reach it remotely
-    /// through an SSH tunnel: `ssh -L 8420:127.0.0.1:8420 your-server`.
+    /// Whether clients reach the API over HTTPS (directly or via the proxy).
+    pub fn https(&self) -> bool {
+        self.tls.enabled() || self.behind_proxy
+    }
+
+    /// Refuses configurations that would expose the API unsafely:
+    /// - a non-loopback address without TLS (passwords and session cookies
+    ///   would cross the network in clear text);
+    /// - public access without `allowed_hosts` (needed for Host checks);
+    /// - half-configured TLS.
     pub fn validate(&self) -> Result<(), anyhow::Error> {
-        let loopback = self.host == "localhost"
-            || self
-                .host
-                .parse::<std::net::IpAddr>()
-                .map(|ip| ip.is_loopback())
-                .unwrap_or(false);
-        if !loopback {
+        if self.tls.cert_path.is_some() != self.tls.key_path.is_some() {
+            anyhow::bail!("web.tls needs both cert_path and key_path");
+        }
+        if !is_loopback_host(&self.host) && !self.tls.enabled() {
             anyhow::bail!(
-                "web.host = \"{}\" is not a loopback address. The HTTP API has no authentication yet, \
-                 so it only listens on 127.0.0.1/::1/localhost. Use an SSH tunnel for remote access \
-                 (ssh -L {}:127.0.0.1:{} <server>).",
-                self.host,
-                self.port,
-                self.port
+                "web.host = \"{}\" is not a loopback address, and web.tls is not configured. \
+                 Exposing the API without TLS would send passwords and session cookies in clear text. \
+                 Either set [web.tls] cert_path/key_path, or keep web.host = \"127.0.0.1\" and put a \
+                 reverse proxy such as Caddy in front with web.behind_proxy = true.",
+                self.host
+            );
+        }
+        if (self.behind_proxy || !is_loopback_host(&self.host)) && self.allowed_hosts.is_empty() {
+            anyhow::bail!(
+                "web.allowed_hosts must list the public hostname(s) of the API (e.g. [\"aegis.example.com\"]) \
+                 when it is reachable from outside this machine"
+            );
+        }
+        if self.session_idle_minutes == 0 || self.session_max_hours == 0 {
+            anyhow::bail!("web.session_idle_minutes and web.session_max_hours must be positive");
+        }
+        Ok(())
+    }
+}
+
+impl DaemonConfig {
+    /// The gRPC API has no authentication and is used by the local CLI, so
+    /// it must stay on loopback. Remote access goes through the HTTP API.
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if !is_loopback_host(&self.host) {
+            anyhow::bail!(
+                "daemon.host = \"{}\" is not a loopback address. The gRPC API is unauthenticated and \
+                 only serves the local CLI; use the HTTP API (with a login or API token) for remote access, \
+                 or an SSH tunnel.",
+                self.host
             );
         }
         Ok(())
@@ -105,6 +171,18 @@ impl Config {
         let content = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
+    }
+
+    /// Loads the file if it exists (defaults otherwise). Unlike
+    /// [`Config::load_or_default`], a file that exists but doesn't parse is
+    /// an error, so a typo can't silently disable settings.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, anyhow::Error> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        Self::load_from_file(path)
+            .map_err(|e| anyhow::anyhow!("Invalid configuration in {}: {}", path.display(), e))
     }
 
     /// Loads the configuration from the specified path or returns the default configuration if loading fails.
@@ -240,27 +318,63 @@ strategy = "GracefulSwitch"
     }
 
     #[test]
-    fn test_web_config_defaults_and_loopback_rule() {
+    fn test_web_config_exposure_rules() {
         let config: Config = toml::from_str("[web]\nenabled = true\n").unwrap();
         assert!(config.web.enabled);
         assert_eq!(config.web.port, 8420);
         assert!(config.web.validate().is_ok());
+        assert!(!config.web.https());
         assert!(!Config::default().web.enabled);
 
-        for ok in ["127.0.0.1", "::1", "localhost", "127.0.0.2"] {
-            let web = WebConfig {
+        let web = |toml_src: &str| toml::from_str::<Config>(toml_src).unwrap().web;
+
+        // Public bind without TLS: refused.
+        assert!(
+            web("[web]\nhost = \"0.0.0.0\"\nallowed_hosts = [\"a.example\"]\n")
+                .validate()
+                .is_err()
+        );
+        // Public bind with TLS but no allowed_hosts: refused.
+        let tls = "[web.tls]\ncert_path = \"c.pem\"\nkey_path = \"k.pem\"\n";
+        assert!(web(&format!("[web]\nhost = \"0.0.0.0\"\n{tls}"))
+            .validate()
+            .is_err());
+        // Public bind with TLS and allowed_hosts: fine.
+        let ok = web(&format!(
+            "[web]\nhost = \"0.0.0.0\"\nallowed_hosts = [\"a.example\"]\n{tls}"
+        ));
+        assert!(ok.validate().is_ok());
+        assert!(ok.https());
+        // Proxy mode requires allowed_hosts and implies HTTPS.
+        assert!(web("[web]\nbehind_proxy = true\n").validate().is_err());
+        let proxy = web("[web]\nbehind_proxy = true\nallowed_hosts = [\"a.example\"]\n");
+        assert!(proxy.validate().is_ok());
+        assert!(proxy.https());
+        // Half-configured TLS.
+        assert!(web("[web.tls]\ncert_path = \"c.pem\"\n")
+            .validate()
+            .is_err());
+
+        for ok in ["127.0.0.1", "::1", "localhost"] {
+            let d = DaemonConfig {
                 host: ok.to_string(),
-                ..WebConfig::default()
+                ..DaemonConfig::default()
             };
-            assert!(web.validate().is_ok(), "{ok}");
+            assert!(d.validate().is_ok());
         }
-        for bad in ["0.0.0.0", "::", "203.0.113.5", "example.com"] {
-            let web = WebConfig {
-                host: bad.to_string(),
-                ..WebConfig::default()
-            };
-            assert!(web.validate().is_err(), "{bad}");
-        }
+        let d = DaemonConfig {
+            host: "0.0.0.0".to_string(),
+            ..DaemonConfig::default()
+        };
+        assert!(d.validate().is_err(), "gRPC must stay on loopback");
+    }
+
+    #[test]
+    fn test_load_reports_parse_errors() {
+        let mut bad = NamedTempFile::new().unwrap();
+        bad.write_all(b"[web]\nenabled = \"yes please\"\n").unwrap();
+        assert!(Config::load(bad.path()).is_err());
+        assert!(Config::load("/definitely/missing.toml").is_ok());
     }
 
     #[test]

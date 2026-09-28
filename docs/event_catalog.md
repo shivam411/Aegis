@@ -100,6 +100,21 @@ A `ProcessStopped` with reason `requested` or `replaced` marks the process as wa
 
 ---
 
+### Access & Audit
+
+Every event recorded because of an API call carries `actor`: `user:<name>`, `token:<name>`, `webhook:github`, `cli` (gRPC from the local CLI) or `local-admin` (`aegis-daemon admin …`). Secrets never appear in payloads.
+
+| Event Type | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `UserLoggedIn` | Successful sign-in | `username`, `ip` |
+| `UserLoginFailed` | Wrong username or password (the attempted password is never recorded) | `username`, `ip` |
+| `UserLoggedOut` | Session ended by the user | `username` |
+| `PasswordChanged` / `PasswordReset` | Password changed in the API / reset on the server; all sessions end | `username` |
+| `ApiTokenCreated` / `ApiTokenRevoked` | API token lifecycle | `token_id`, `name`, `scope` |
+| `WebhookSecretRotated` | A project's webhook secret was created or replaced | `project_id` |
+
+---
+
 ## 3. Projection Invalidation Rules
 1. `ProjectCreated` creates or updates `ProjectState`.
 2. `DeploymentQueued` → `Queued`, `DeploymentStarted` → `InProgress`, `DeploymentCompleted` → `Success`, `DeploymentFailed` → `Failed`, `DeploymentRolledBack` → `RolledBack`. `BuildStage*` events update the deployment's current stage.

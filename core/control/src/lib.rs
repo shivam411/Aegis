@@ -26,6 +26,22 @@ use std::time::Duration;
 pub use deploy::DeployRequest;
 pub use process::ProcessAction;
 
+tokio::task_local! {
+    static ACTOR: String;
+}
+
+/// Runs `f` on behalf of `actor` (e.g. "user:admin", "token:ci", "cli").
+/// Events recorded inside get an `actor` field, which makes the event
+/// store an audit log of who did what.
+pub async fn with_actor<F: std::future::Future>(actor: String, f: F) -> F::Output {
+    ACTOR.scope(actor, f).await
+}
+
+/// The actor set by [`with_actor`] for the current task, if any.
+pub fn current_actor() -> Option<String> {
+    ACTOR.try_with(|a| a.clone()).ok()
+}
+
 /// Deployment strategies that work with a single instance per app.
 pub const SUPPORTED_STRATEGIES: &[&str] = &["GracefulSwitch", "Immediate"];
 
@@ -174,7 +190,10 @@ impl ControlPlane {
     }
 
     /// Persists an event; the projection is updated before this returns.
-    pub async fn record(&self, event_type: &str, payload: Value) -> ControlResult<Event> {
+    pub async fn record(&self, event_type: &str, mut payload: Value) -> ControlResult<Event> {
+        if let (Some(actor), Some(obj)) = (current_actor(), payload.as_object_mut()) {
+            obj.entry("actor").or_insert(Value::String(actor));
+        }
         Ok(self.inner.store.append_event(event_type, payload).await?)
     }
 
@@ -238,6 +257,14 @@ impl ControlPlane {
             ),
             None => None,
         };
+        if !req.repository_url.is_empty() {
+            aegis_builder::validate_repository_url(&req.repository_url)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
+        if !req.branch.is_empty() {
+            aegis_builder::validate_git_ref(&req.branch)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
         let branch = if req.branch.is_empty() {
             "main".to_string()
         } else {

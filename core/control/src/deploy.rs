@@ -113,6 +113,14 @@ impl ControlPlane {
             ReleaseSwitcher::validate_version(version)
                 .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
         }
+        if let Some(url) = &req.repository_url {
+            aegis_builder::validate_repository_url(url)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
+        for reference in [&req.branch, &req.commit].into_iter().flatten() {
+            aegis_builder::validate_git_ref(reference)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
         if let Some(dir) = &req.source_dir {
             if !dir.is_dir() {
                 return Err(ControlError::InvalidArgument(format!(

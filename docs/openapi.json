@@ -2,13 +2,163 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Aegis HTTP API",
-    "description": "Control Aegis deployments over HTTP. Loopback-only and unauthenticated until roadmap Phase 2; requests that change state must send `Content-Type: application/json`.",
+    "description": "Control Aegis deployments over HTTP. Authenticate with a session (POST /api/v1/auth/login; send X-CSRF-Token on changes) or an API token (Authorization: Bearer). Requests that change state must send `Content-Type: application/json`.",
     "license": {
       "name": ""
     },
     "version": "1"
   },
   "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; sets the aegis_session cookie",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong username or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts; see Retry-After",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "logout",
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Session ended; cookie cleared"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Changed; all sessions (including this one) are ended"
+          },
+          "400": {
+            "description": "New password too short",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current password is wrong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "session_info",
+        "responses": {
+          "200": {
+            "description": "Who is calling; includes the CSRF token for sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/deployments": {
       "get": {
         "tags": [
@@ -647,6 +797,48 @@
         }
       }
     },
+    "/api/v1/projects/{project}/webhook": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "rotate_webhook_secret",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "New secret, shown only in this response; the previous secret stops working",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSecretDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/status": {
       "get": {
         "tags": [
@@ -666,10 +858,197 @@
           }
         }
       }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "list_tokens",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TokenDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "create_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The token is shown only in this response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewTokenDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "revoke_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Token id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/hooks/github/{project}": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "github_webhook",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "GitHub webhook payload, signed with X-Hub-Signature-256",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ping, or a redelivery that was already handled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Push to the project's branch: deployment queued (or event ignored)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown project or no webhook configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "ChangePasswordRequest": {
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string",
+            "description": "At least 12 characters."
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateProjectRequest": {
         "type": "object",
         "properties": {
@@ -713,6 +1092,23 @@
             ],
             "description": "Directory on the server that deployments copy code from.",
             "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateTokenRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "scope"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "description": "\"read\" (GET requests only) or \"deploy\" (everything except managing tokens and passwords)."
           }
         },
         "additionalProperties": false
@@ -923,6 +1319,22 @@
           }
         }
       },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "LogsDto": {
         "type": "object",
         "required": [
@@ -938,6 +1350,22 @@
           },
           "process_id": {
             "type": "string"
+          }
+        }
+      },
+      "NewTokenDto": {
+        "type": "object",
+        "required": [
+          "token",
+          "info"
+        ],
+        "properties": {
+          "info": {
+            "$ref": "#/components/schemas/TokenDto"
+          },
+          "token": {
+            "type": "string",
+            "description": "Shown once. Send as `Authorization: Bearer <token>`."
           }
         }
       },
@@ -1191,6 +1619,45 @@
         },
         "additionalProperties": false
       },
+      "SessionDto": {
+        "type": "object",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "properties": {
+          "csrf_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Send as `X-CSRF-Token` on requests that change state (sessions only)."
+          },
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the session expires if left idle (unix seconds; sessions only)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "\"user\" (session cookie) or \"token\" (API token)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Username or token name."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "\"read\" or \"deploy\" (tokens only)."
+          }
+        }
+      },
       "StatusDto": {
         "type": "object",
         "required": [
@@ -1221,10 +1688,121 @@
             "type": "string"
           }
         }
+      },
+      "TokenDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "scope",
+          "created_at",
+          "revoked"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          }
+        }
+      },
+      "WebhookResult": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "deployment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "\"queued\", \"ignored\", \"duplicate\" or \"pong\"."
+          }
+        }
+      },
+      "WebhookSecretDto": {
+        "type": "object",
+        "required": [
+          "path",
+          "secret",
+          "content_type",
+          "events"
+        ],
+        "properties": {
+          "content_type": {
+            "type": "string",
+            "description": "\"application/json\""
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Events Aegis acts on (\"push\"; \"ping\" is acknowledged)."
+          },
+          "path": {
+            "type": "string",
+            "description": "Payload URL path; prefix it with the API's public base URL."
+          },
+          "secret": {
+            "type": "string",
+            "description": "Shown once. Paste into the GitHub webhook's \"Secret\" field."
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "aegis_session",
+        "description": "Session cookie from POST /api/v1/auth/login. Requests that change state also need the X-CSRF-Token header."
+      },
+      "token": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API token created with POST /api/v1/tokens"
       }
     }
   },
+  "security": [
+    {
+      "session": []
+    },
+    {
+      "token": []
+    }
+  ],
   "tags": [
+    {
+      "name": "auth"
+    },
     {
       "name": "system"
     },
@@ -1239,6 +1817,9 @@
     },
     {
       "name": "events"
+    },
+    {
+      "name": "webhooks"
     }
   ]
 }

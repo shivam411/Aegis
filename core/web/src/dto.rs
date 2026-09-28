@@ -280,3 +280,94 @@ impl From<aegis_process::LogLine> for LogLineDto {
         }
     }
 }
+
+// ----------------------------------------------------------------------
+// Authentication
+// ----------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SessionDto {
+    /// "user" (session cookie) or "token" (API token).
+    pub kind: String,
+    /// Username or token name.
+    pub name: String,
+    /// Send as `X-CSRF-Token` on requests that change state (sessions only).
+    pub csrf_token: Option<String>,
+    /// When the session expires if left idle (unix seconds; sessions only).
+    pub expires_at: Option<i64>,
+    /// "read" or "deploy" (tokens only).
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    /// At least 12 characters.
+    pub new_password: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateTokenRequest {
+    pub name: String,
+    /// "read" (GET requests only) or "deploy" (everything except managing tokens and passwords).
+    pub scope: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TokenDto {
+    pub id: String,
+    pub name: String,
+    pub scope: String,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct NewTokenDto {
+    /// Shown once. Send as `Authorization: Bearer <token>`.
+    pub token: String,
+    pub info: TokenDto,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WebhookSecretDto {
+    /// Payload URL path; prefix it with the API's public base URL.
+    pub path: String,
+    /// Shown once. Paste into the GitHub webhook's "Secret" field.
+    pub secret: String,
+    /// "application/json"
+    pub content_type: String,
+    /// Events Aegis acts on ("push"; "ping" is acknowledged).
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WebhookResult {
+    /// "queued", "ignored", "duplicate" or "pong".
+    pub status: String,
+    pub deployment_id: Option<String>,
+    pub reason: Option<String>,
+}
+
+impl From<aegis_auth::TokenInfo> for TokenDto {
+    fn from(t: aegis_auth::TokenInfo) -> Self {
+        Self {
+            id: t.id,
+            name: t.name,
+            scope: t.scope.as_str().to_string(),
+            created_at: t.created_at,
+            last_used_at: t.last_used_at,
+            revoked: t.revoked,
+        }
+    }
+}

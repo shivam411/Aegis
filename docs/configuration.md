@@ -64,7 +64,7 @@ Build commands also receive `AEGIS_RELEASE_VERSION`.
 
 ## 2. Daemon configuration
 
-The daemon reads `aegis.toml` from its working directory, or the file named by the `AEGIS_CONFIG` environment variable. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
+The daemon reads `aegis.toml` from its working directory, or the file named by the `AEGIS_CONFIG` environment variable. `install.sh --server` puts it in `/etc/aegis/aegis.toml`. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
 
 ```toml
 [daemon]
@@ -89,12 +89,20 @@ max_retained_versions = 2        # used when a project doesn't set its own
 
 ```toml
 [web]
-enabled = false        # off by default
-host = "127.0.0.1"     # must be a loopback address until authentication lands (Phase 2)
+enabled = false            # off by default
+host = "127.0.0.1"
 port = 8420
+allowed_hosts = []         # public hostnames, e.g. ["aegis.example.com"]
+behind_proxy = false       # HTTPS is terminated by a reverse proxy on this machine
+session_idle_minutes = 120
+session_max_hours = 24
+
+[web.tls]                  # serve HTTPS directly (PEM files; renewals picked up automatically)
+cert_path = "/etc/letsencrypt/live/aegis.example.com/fullchain.pem"
+key_path = "/etc/letsencrypt/live/aegis.example.com/privkey.pem"
 ```
 
-The daemon refuses to start if `web.enabled = true` and `web.host` isn't loopback. See [http_api.md](http_api.md).
+The daemon refuses to start if the API would be exposed unsafely: a non-loopback `host` without `[web.tls]`, public access without `allowed_hosts`, or half-configured TLS. `daemon.host` (gRPC) must be loopback. `aegis-daemon check-config` validates without starting. A configuration file that doesn't parse is an error, not silently ignored. See [security.md](security.md) and [http_api.md](http_api.md).
 
 ### Data directory layout
 
@@ -115,4 +123,4 @@ The daemon refuses to start if `web.enabled = true` and `web.host` isn't loopbac
 
 - `AEGIS_*` environment variable overrides for individual settings (only `AEGIS_CONFIG` exists today).
 - A global `~/.aegis/config.toml` merged underneath project settings.
-- Authentication and TLS settings for the HTTP API (`[web.tls]`, sessions, API tokens) arrive with roadmap Phase 2.
+- Built-in ACME (automatic Let's Encrypt). Use certbot with `[web.tls]`, or a reverse proxy.

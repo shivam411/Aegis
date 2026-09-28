@@ -10,7 +10,9 @@ use aegis_api::aegis::{
     ProcessInfo, ProjectInfo, RegisterProjectRequest, ReleaseInfo, RollbackRequest,
     RollbackResponse, StatusRequest, StatusResponse, StreamEventsRequest, StreamLogsRequest,
 };
-use aegis_control::{ControlError, ControlPlane, ProcessAction, ProjectView, RegisterProject};
+use aegis_control::{
+    with_actor, ControlError, ControlPlane, ProcessAction, ProjectView, RegisterProject,
+};
 use aegis_plugins::PluginManager;
 use aegis_projection::{DeploymentState, ProcessState, ReleaseState};
 use aegis_types::{DeploymentId, Event, ProjectId};
@@ -136,39 +138,11 @@ impl DaemonService {
     }
 }
 
-#[tonic::async_trait]
-impl AegisDaemon for DaemonService {
-    type StreamEventsStream = ResponseStream<EventResponse>;
-    type StreamLogsStream = ResponseStream<pb::LogLine>;
+/// Actor recorded for gRPC calls; the gRPC API only serves the local CLI.
+const CLI_ACTOR: &str = "cli";
 
-    async fn get_status(
-        &self,
-        _request: Request<StatusRequest>,
-    ) -> Result<Response<StatusResponse>, Status> {
-        let event_count = self
-            .control
-            .store()
-            .get_event_count()
-            .await
-            .map_err(|e| Status::internal(format!("Failed to count events: {}", e)))?;
-        let projects = self.control.list_projects();
-        let running = projects
-            .iter()
-            .filter(|p| p.process.as_ref().is_some_and(|pr| pr.status == "Running"))
-            .count();
-        Ok(Response::new(StatusResponse {
-            initialized: true,
-            version: DAEMON_VERSION.to_string(),
-            loaded_plugins: self.plugin_manager.get_loaded_plugins(),
-            event_count,
-            project_count: projects.len() as u32,
-            running_processes: running as u32,
-            data_dir: self.control.data_dir().to_string_lossy().to_string(),
-            web_url: self.web_url.clone().unwrap_or_default(),
-        }))
-    }
-
-    async fn emit_event(
+impl DaemonService {
+    async fn emit_event_impl(
         &self,
         request: Request<EmitEventRequest>,
     ) -> Result<Response<EmitEventResponse>, Status> {
@@ -188,31 +162,7 @@ impl AegisDaemon for DaemonService {
         }))
     }
 
-    async fn stream_events(
-        &self,
-        _request: Request<StreamEventsRequest>,
-    ) -> Result<Response<Self::StreamEventsStream>, Status> {
-        let mut rx = self.control.store().subscribe();
-        let (tx, response_rx) = tokio::sync::mpsc::channel(256);
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        if tx.send(Ok(event_response(event))).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped = %skipped, "Event stream lagged; some events skipped");
-                    }
-                }
-            }
-        });
-        Ok(Response::new(Box::pin(ReceiverStream::new(response_rx))))
-    }
-
-    async fn register_project(
+    async fn register_project_impl(
         &self,
         request: Request<RegisterProjectRequest>,
     ) -> Result<Response<ProjectInfo>, Status> {
@@ -242,7 +192,7 @@ impl AegisDaemon for DaemonService {
         })))
     }
 
-    async fn deploy(
+    async fn deploy_impl(
         &self,
         request: Request<DeployRequest>,
     ) -> Result<Response<DeployResponse>, Status> {
@@ -283,7 +233,7 @@ impl AegisDaemon for DaemonService {
         }))
     }
 
-    async fn rollback(
+    async fn rollback_impl(
         &self,
         request: Request<RollbackRequest>,
     ) -> Result<Response<RollbackResponse>, Status> {
@@ -297,7 +247,7 @@ impl AegisDaemon for DaemonService {
         Ok(Response::new(RollbackResponse { version }))
     }
 
-    async fn control_process(
+    async fn control_process_impl(
         &self,
         request: Request<ControlProcessRequest>,
     ) -> Result<Response<ProcessInfo>, Status> {
@@ -316,7 +266,7 @@ impl AegisDaemon for DaemonService {
         Ok(Response::new(process_info(process)))
     }
 
-    async fn configure_schedule(
+    async fn configure_schedule_impl(
         &self,
         request: Request<ConfigureScheduleRequest>,
     ) -> Result<Response<ProjectInfo>, Status> {
@@ -333,6 +283,105 @@ impl AegisDaemon for DaemonService {
             .find(|v| v.project.id == project_id)
             .ok_or_else(|| Status::not_found("Unknown project"))?;
         Ok(Response::new(project_info(view)))
+    }
+}
+
+#[tonic::async_trait]
+impl AegisDaemon for DaemonService {
+    type StreamEventsStream = ResponseStream<EventResponse>;
+    type StreamLogsStream = ResponseStream<pb::LogLine>;
+
+    async fn get_status(
+        &self,
+        _request: Request<StatusRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let event_count = self
+            .control
+            .store()
+            .get_event_count()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to count events: {}", e)))?;
+        let projects = self.control.list_projects();
+        let running = projects
+            .iter()
+            .filter(|p| p.process.as_ref().is_some_and(|pr| pr.status == "Running"))
+            .count();
+        Ok(Response::new(StatusResponse {
+            initialized: true,
+            version: DAEMON_VERSION.to_string(),
+            loaded_plugins: self.plugin_manager.get_loaded_plugins(),
+            event_count,
+            project_count: projects.len() as u32,
+            running_processes: running as u32,
+            data_dir: self.control.data_dir().to_string_lossy().to_string(),
+            web_url: self.web_url.clone().unwrap_or_default(),
+        }))
+    }
+
+    async fn emit_event(
+        &self,
+        request: Request<EmitEventRequest>,
+    ) -> Result<Response<EmitEventResponse>, Status> {
+        with_actor(CLI_ACTOR.into(), self.emit_event_impl(request)).await
+    }
+
+    async fn stream_events(
+        &self,
+        _request: Request<StreamEventsRequest>,
+    ) -> Result<Response<Self::StreamEventsStream>, Status> {
+        let mut rx = self.control.store().subscribe();
+        let (tx, response_rx) = tokio::sync::mpsc::channel(256);
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if tx.send(Ok(event_response(event))).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped = %skipped, "Event stream lagged; some events skipped");
+                    }
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(response_rx))))
+    }
+
+    async fn register_project(
+        &self,
+        request: Request<RegisterProjectRequest>,
+    ) -> Result<Response<ProjectInfo>, Status> {
+        with_actor(CLI_ACTOR.into(), self.register_project_impl(request)).await
+    }
+
+    async fn deploy(
+        &self,
+        request: Request<DeployRequest>,
+    ) -> Result<Response<DeployResponse>, Status> {
+        with_actor(CLI_ACTOR.into(), self.deploy_impl(request)).await
+    }
+
+    async fn rollback(
+        &self,
+        request: Request<RollbackRequest>,
+    ) -> Result<Response<RollbackResponse>, Status> {
+        with_actor(CLI_ACTOR.into(), self.rollback_impl(request)).await
+    }
+
+    async fn control_process(
+        &self,
+        request: Request<ControlProcessRequest>,
+    ) -> Result<Response<ProcessInfo>, Status> {
+        with_actor(CLI_ACTOR.into(), self.control_process_impl(request)).await
+    }
+
+    async fn configure_schedule(
+        &self,
+        request: Request<ConfigureScheduleRequest>,
+    ) -> Result<Response<ProjectInfo>, Status> {
+        with_actor(CLI_ACTOR.into(), self.configure_schedule_impl(request)).await
     }
 
     async fn list_projects(

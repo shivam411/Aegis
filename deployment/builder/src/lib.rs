@@ -385,6 +385,61 @@ async fn commit_info(dir: &Path, fallback_sha: &str) -> CommitInfo {
     }
 }
 
+/// Rejects repository URLs git could interpret as options or as
+/// command-running remote helpers (`ext::…`, `fd::…`).
+pub fn validate_repository_url(url: &str) -> Result<(), anyhow::Error> {
+    let url = url.trim();
+    if url.is_empty() {
+        anyhow::bail!("Repository URL is empty");
+    }
+    if url.starts_with('-') {
+        anyhow::bail!("Repository URL must not start with '-'");
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        anyhow::bail!("Repository URL must not contain whitespace or control characters");
+    }
+    // `<transport>::<address>` selects a git remote helper; `ext::` runs a command.
+    if let Some((scheme, _)) = url.split_once("::") {
+        if !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        {
+            anyhow::bail!(
+                "Repository URLs using git remote helpers ('{}::') are not allowed",
+                scheme
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Rejects branch/tag/commit names that git could read as options.
+pub fn validate_git_ref(reference: &str) -> Result<(), anyhow::Error> {
+    let valid = !reference.is_empty()
+        && reference.len() <= 255
+        && !reference.starts_with('-')
+        && !reference.contains("..")
+        && reference
+            .chars()
+            .all(|c| !c.is_control() && !c.is_whitespace() && !"~^:?*[\\".contains(c));
+    if !valid {
+        anyhow::bail!("Invalid git branch, tag or commit '{}'", reference);
+    }
+    Ok(())
+}
+
+/// Hides credentials embedded in a URL (`https://user:token@host/…`).
+pub fn redact_url(url: &str) -> String {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let authority_end = rest.find('/').unwrap_or(rest.len());
+        if let Some(at) = rest[..authority_end].rfind('@') {
+            return format!("{}://***@{}", scheme, &rest[at + 1..]);
+        }
+    }
+    url.to_string()
+}
+
 async fn fetch_source(
     source: &SourceSpec,
     dest: &Path,
@@ -402,7 +457,9 @@ async fn fetch_source(
 
     match source {
         SourceSpec::Git { url, reference } => {
-            log.line(&format!("==> Clone: {} @ {}", url, reference));
+            validate_repository_url(url)?;
+            validate_git_ref(reference)?;
+            log.line(&format!("==> Clone: {} @ {}", redact_url(url), reference));
             let is_commit = reference.len() >= 7
                 && reference.len() <= 40
                 && reference.chars().all(|c| c.is_ascii_hexdigit());
@@ -411,7 +468,15 @@ async fn fetch_source(
             let timeout = Duration::from_secs(600);
             let cwd = dest.parent().unwrap_or(Path::new("."));
             if is_commit {
-                run_argv("git", &["clone", url, &dest_str], cwd, &env, timeout, log).await?;
+                run_argv(
+                    "git",
+                    &["clone", "--", url, &dest_str],
+                    cwd,
+                    &env,
+                    timeout,
+                    log,
+                )
+                .await?;
                 run_argv(
                     "git",
                     &["checkout", "--detach", reference],
@@ -425,7 +490,13 @@ async fn fetch_source(
                 run_argv(
                     "git",
                     &[
-                        "clone", "--depth", "1", "--branch", reference, url, &dest_str,
+                        "clone",
+                        "--depth",
+                        "1",
+                        &format!("--branch={}", reference),
+                        "--",
+                        url,
+                        &dest_str,
                     ],
                     cwd,
                     &env,
@@ -695,6 +766,40 @@ mod tests {
             .output()
             .unwrap();
         assert!(status.status.success(), "git {:?}: {:?}", args, status);
+    }
+
+    #[test]
+    fn test_git_input_validation_and_redaction() {
+        for ok in [
+            "https://github.com/o/r.git",
+            "git@github.com:o/r.git",
+            "ssh://git@host/r.git",
+            "/srv/repos/app",
+        ] {
+            assert!(validate_repository_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "--upload-pack=touch /tmp/pwned",
+            "ext::sh -c touch% /tmp/pwned",
+            "fd::3",
+            "https://x/y z",
+            "",
+        ] {
+            assert!(validate_repository_url(bad).is_err(), "{bad}");
+        }
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("release/1.2").is_ok());
+        for bad in ["--upload-pack=x", "a..b", "a b", ""] {
+            assert!(validate_git_ref(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            redact_url("https://user:ghp_secret@github.com/o/r.git"),
+            "https://***@github.com/o/r.git"
+        );
+        assert_eq!(
+            redact_url("git@github.com:o/r.git"),
+            "git@github.com:o/r.git"
+        );
     }
 
     #[tokio::test]

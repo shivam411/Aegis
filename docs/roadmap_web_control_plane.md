@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phases 0–1 complete · Phase 2 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phases 0–2 complete · Phase 3 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
 
 ---
 
@@ -141,21 +141,38 @@ Delivered:
 
 Evidence: 7 HTTP API tests (guard rules, validation and errors, a full deploy → restart → stop/start → logs → rollback lifecycle against a real app, SSE filtering, shutdown ending streams, log follow) and new HTTP steps in `scripts/e2e-smoke.sh` (run in CI).
 
-### Phase 2 — Security and VPS hardening *(~1–2 weeks; must ship before any public bind)*
+### Phase 2 — Security and VPS hardening ✅ *done*
 
-A web page that can deploy code is remote code execution by design, so this phase is not optional.
+Delivered (details in [security.md](security.md)):
 
-- **Bind safely by default:** `web.host = "127.0.0.1"`. Binding `0.0.0.0` requires TLS or an explicit `web.behind_proxy = true`. The daemon refuses to start in an unsafe combination.
-- **Authentication:** implement `core/auth`. On first start, generate an admin password, print it once, and store it Argon2id-hashed in SQLite. Also offer `aegis admin reset-password`.
-- **Sessions:** `HttpOnly`, `Secure`, `SameSite=Strict` cookies; CSRF tokens on every mutating request; idle and absolute timeouts; login rate limiting and lockout.
-- **API tokens** for automation (scoped, revocable, hashed at rest).
-- **TLS:** built-in `rustls` with a certificate path, *or* automatic Let's Encrypt via ACME (`rustls-acme`) when a domain is configured. Document the Caddy/nginx reverse-proxy option.
-- **Audit:** every web action is a domain event that includes the actor, so the existing event store becomes the audit log shown in the UI.
-- **Security headers:** strict CSP (the UI loads nothing from third-party origins), HSTS, `X-Frame-Options: DENY`.
-- **Service install:** `install.sh --server` installs a hardened systemd unit (dedicated `aegis` user, `ProtectSystem=strict`, cgroup delegation via `Delegate=yes`), opens the port only when requested, and prints the dashboard URL and first-login password.
-- **Webhooks:** `POST /hooks/github/{project}` with HMAC-SHA256 signature verification (`git/webhook` finally gets a real endpoint).
+- **Authentication (`core/auth`):** an `admin` account created on first start, with the password written once to a `0600` file and deleted after it is changed. Passwords are Argon2id-hashed. `aegis-daemon admin reset-password` / `create-token` work locally through database file access.
+- **Sessions:** 256-bit random ids, stored only as SHA-256 hashes. Cookies are `HttpOnly`, `SameSite=Strict`, and `Secure` over HTTPS. Sessions have idle and absolute expiry; a CSRF token is required on every change; a password change ends all sessions.
+- **Login throttling:** separate limits per client address (5 per 15 min) and per username (20 per 15 min), so one attacker can't lock the admin out. Behind a proxy, only the proxy's `X-Forwarded-For` entry is trusted.
+- **API tokens:** `read` or `deploy` scope, hashed at rest, revocable. Tokens can never manage tokens, passwords or webhook secrets.
+- **Every `/api/v1` route returns 401 without credentials** except sign-in; a test enumerates all routes. `/healthz` is the only other public route.
+- **Audit:** events carry `actor` (`user:…`, `token:…`, `webhook:github`, `cli`). Sign-ins, failed sign-ins (never the password), sign-outs, password and token changes are recorded.
+- **TLS:** rustls (ring) serving from PEM files, with **certificate hot-reload** so renewals don't restart apps. Behind a proxy (Caddy/nginx), `behind_proxy` turns on Secure cookies and HSTS.
+- **Safe binds enforced:** the daemon (and `aegis-daemon check-config`) refuses a public API without TLS, public access without `allowed_hosts`, half-configured TLS, and gRPC on a non-loopback address. A config file that doesn't parse is now an error instead of being silently replaced by defaults. CI checks these refusals against the real binary.
+- **Security headers** on every response: CSP `default-src 'none'`, `X-Frame-Options: DENY`, nosniff, no-referrer, no-store, and HSTS over HTTPS.
+- **Webhooks:** `POST /hooks/github/{project}` with HMAC-SHA256 (checked against GitHub's published test vector), per-project rotatable secrets, redelivery de-duplication, and push-to-branch → deploy of the pushed commit from the project's **configured** repository.
+- **Service install:** `install.sh --server [--domain …]` creates an `aegis` system user, `/etc/aegis/aegis.toml` (`0640`), `/var/lib/aegis` (`0750`, database `0600`), and a hardened systemd unit (`ProtectSystem=strict`, `NoNewPrivileges`, `Delegate=yes`, `ExecStartPre=check-config`, `KillMode=mixed`). It verifies cleanly with `systemd-analyze` and was exercised as a real install in a container.
 
-**Done when:** a security review passes, unauthenticated requests get `401` on every route except `/login` and `/hooks/*` (signature-checked), and a CI test proves the daemon refuses a public bind without TLS or proxy mode.
+**Independent security review.** It found no authentication bypass, and it checked routing and path normalisation, CSRF, sessions, timing, webhook HMAC and config validation. It reported nine lower-severity issues, all fixed in this phase:
+
+- **HTTP/2 requests failed the Host check.** This broke every browser under direct TLS. It was reproduced with a real HTTP/2 client test before fixing.
+- **Login throttling could be raced**, and parallel Argon2 checks could exhaust memory. Attempts are now reserved atomically before the check, and at most 4 checks run at once.
+- **Open event and log streams outlived** token revocation and password changes.
+- **Webhooks:** replay of old signed pushes.
+- **git argument injection hardening:** `--`, `--branch=`, and rejecting `-…` and `ext::` URLs. Credentials in URLs are redacted from build logs.
+- **Installer:** a `--domain` newline bypass.
+- **File permissions:** the database is created `0600` before SQLite opens it.
+- **Certificate reload:** mismatched certificate/key pairs are rejected.
+- **Audit log:** attempted usernames are recorded only for existing accounts.
+- **Documentation:** the proxy's `X-Forwarded-For` requirement, and the fact that a deploy token is admin-equivalent.
+
+Deliberately not included: built-in ACME. It can't be tested without a public domain, so the recommended path is Caddy (automatic HTTPS) or certbot with `[web.tls]`. Multiple users and roles remain Phase 6.
+
+Evidence: 12 security tests in `core/web/tests/auth.rs` (route-by-route 401, cookie flags and CSRF, throttling, scopes, password change, streams closing on revocation, Host allowlist, signed webhooks deploying a real commit and ignoring replays, HTTPS over HTTP/1.1 and HTTP/2 with certificate renewal), 7 in `core/auth` (including 50 parallel sign-in attempts → exactly 5 allowed), config refusal tests, an independent security review of the diff, and new end-to-end steps (authentication, read-only token, unsafe-config refusals) in `scripts/e2e-smoke.sh`.
 
 ### Phase 3 — Web dashboard MVP *(~2–3 weeks)* → **v0.5.0**
 
@@ -256,7 +273,7 @@ memory_mb = 512
 | Milestone | Phases | Outcome |
 | :--- | :--- | :--- |
 | **M-Core** ✅ | 0 | Deploy/stop/restart/rollback do real work |
-| **M-API** | 1 ✅ + 2 | Secure HTTP API reachable on the VPS |
+| **M-API** ✅ | 1 + 2 | Secure HTTP API reachable on the VPS |
 | **v0.5.0 — Web MVP** | 3 | Manage all apps from the browser |
 | **v0.6.0 — Resource Control** | 4 | Live CPU/memory monitoring and slider limits |
 | **v0.7.0 — Self-serve Ops** | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |

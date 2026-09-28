@@ -1,80 +1,124 @@
-use aegis_event_bus::EventBus;
-use aegis_types::{DeploymentId, Event, ProjectId, ReleaseId};
-use serde::{Deserialize, Serialize};
+//! GitHub webhook support: signature verification and push-event parsing.
+//!
+//! GitHub signs each delivery with HMAC-SHA256 over the raw body using the
+//! webhook's secret, and sends it as `X-Hub-Signature-256: sha256=<hex>`.
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GitHubPushPayload {
-    pub ref_branch: Option<String>,
-    pub repository_url: String,
-    pub commit_sha: String,
-    pub commit_message: Option<String>,
-    pub author: Option<String>,
+use hmac::{Hmac, Mac};
+use serde::Deserialize;
+use sha2::Sha256;
+
+/// Verifies `X-Hub-Signature-256` for `body`. Comparison is constant-time.
+pub fn verify_github_signature(secret: &str, body: &[u8], header: &str) -> bool {
+    let Some(hex_sig) = header.strip_prefix("sha256=") else {
+        return false;
+    };
+    let Some(signature) = decode_hex(hex_sig) else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(body);
+    mac.verify_slice(&signature).is_ok()
 }
 
-pub struct WebhookHandler<'a> {
-    pub event_bus: &'a EventBus,
+/// Computes the header value GitHub would send (useful for tests and tools).
+pub fn sign_github_payload(secret: &str, body: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("any key length");
+    mac.update(body);
+    let bytes = mac.finalize().into_bytes();
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("sha256={}", hex)
 }
 
-impl<'a> WebhookHandler<'a> {
-    pub fn new(event_bus: &'a EventBus) -> Self {
-        Self { event_bus }
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
     }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
 
-    /// Processes an incoming Git push webhook payload and enqueues a deployment event.
-    pub fn handle_push(
-        &self,
-        project_id: ProjectId,
-        payload: GitHubPushPayload,
-    ) -> Result<Event, anyhow::Error> {
-        let deployment_id = DeploymentId::new();
-        let release_id = ReleaseId::new();
+/// The parts of a GitHub `push` event Aegis uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushEvent {
+    /// Branch name, e.g. `main` (from `refs/heads/main`).
+    pub branch: Option<String>,
+    /// Commit the branch now points to.
+    pub after: String,
+    pub deleted: bool,
+    pub pusher: Option<String>,
+}
 
-        let payload_json = serde_json::json!({
-            "deployment_id": deployment_id.to_string(),
-            "project_id": project_id.to_string(),
-            "release_id": release_id.to_string(),
-            "commit_sha": payload.commit_sha,
-            "repository_url": payload.repository_url,
-            "strategy": "Immediate",
-        })
-        .to_string();
+#[derive(Deserialize)]
+struct RawPush {
+    #[serde(rename = "ref")]
+    git_ref: String,
+    after: String,
+    #[serde(default)]
+    deleted: bool,
+    pusher: Option<RawPusher>,
+}
 
-        let mut event = Event::new("DeploymentQueued", payload_json);
-        event.aggregate_type = "Deployment".to_string();
-        event.aggregate_id = deployment_id.to_string();
+#[derive(Deserialize)]
+struct RawPusher {
+    name: Option<String>,
+}
 
-        self.event_bus.publish(event.clone());
-        tracing::info!(deployment_id = %deployment_id, project_id = %project_id, "Webhook push processed and deployment queued");
-
-        Ok(event)
+/// Parses a `push` event body.
+pub fn parse_push(body: &[u8]) -> Result<PushEvent, anyhow::Error> {
+    let raw: RawPush = serde_json::from_slice(body)?;
+    let is_hex = raw.after.len() == 40 && raw.after.chars().all(|c| c.is_ascii_hexdigit());
+    if !is_hex {
+        anyhow::bail!("push event has an invalid 'after' commit");
     }
+    Ok(PushEvent {
+        branch: raw.git_ref.strip_prefix("refs/heads/").map(str::to_string),
+        after: raw.after,
+        deleted: raw.deleted,
+        pusher: raw.pusher.and_then(|p| p.name),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_webhook_handler_push() {
-        let event_bus = EventBus::new();
-        let mut rx = event_bus.subscribe();
-        let handler = WebhookHandler::new(&event_bus);
+    #[test]
+    fn test_signature_round_trip_and_rejections() {
+        let body = br#"{"zen":"Keep it logically awesome."}"#;
+        let header = sign_github_payload("s3cret", body);
+        assert!(header.starts_with("sha256="));
+        assert!(verify_github_signature("s3cret", body, &header));
+        assert!(!verify_github_signature("other", body, &header));
+        assert!(!verify_github_signature("s3cret", b"tampered", &header));
+        assert!(!verify_github_signature("s3cret", body, "sha1=abcd"));
+        assert!(!verify_github_signature("s3cret", body, "sha256=zz"));
+        assert!(!verify_github_signature("s3cret", body, ""));
+    }
 
-        let proj_id = ProjectId::new();
-        let payload = GitHubPushPayload {
-            ref_branch: Some("refs/heads/main".to_string()),
-            repository_url: "https://github.com/shivam411/Aegis".to_string(),
-            commit_sha: "abc1234def5678".to_string(),
-            commit_message: Some("Test commit".to_string()),
-            author: Some("Dev".to_string()),
-        };
+    #[test]
+    fn test_known_vector() {
+        // Example from GitHub's "Validating webhook deliveries" docs.
+        assert_eq!(
+            sign_github_payload("It's a Secret to Everybody", b"Hello, World!"),
+            "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+        );
+    }
 
-        let event = handler.handle_push(proj_id, payload).unwrap();
-        assert_eq!(event.event_type, "DeploymentQueued");
-        assert_eq!(event.aggregate_type, "Deployment");
+    #[test]
+    fn test_parse_push() {
+        let body = br#"{"ref":"refs/heads/main","after":"0123456789abcdef0123456789abcdef01234567","deleted":false,"pusher":{"name":"octocat"},"repository":{"clone_url":"x"}}"#;
+        let push = parse_push(body).unwrap();
+        assert_eq!(push.branch.as_deref(), Some("main"));
+        assert_eq!(push.pusher.as_deref(), Some("octocat"));
+        assert!(!push.deleted);
 
-        let recv_event = rx.recv().await.unwrap();
-        assert_eq!(recv_event.id, event.id);
-        assert!(recv_event.payload_json.contains("abc1234def5678"));
+        let tag = br#"{"ref":"refs/tags/v1","after":"0123456789abcdef0123456789abcdef01234567"}"#;
+        assert_eq!(parse_push(tag).unwrap().branch, None);
+        assert!(parse_push(br#"{"ref":"refs/heads/x","after":"--upload-pack=evil"}"#).is_err());
+        assert!(parse_push(b"not json").is_err());
     }
 }

@@ -13,14 +13,22 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 utoipa = "5"
+tower = { version = "0.4", features = ["util"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "server-graceful", "service"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pemfile = "2"
+aegis-auth = { path = "../auth" }
 aegis-control = { path = "../control" }
 aegis-projection = { path = "../projection" }
 aegis-process = { path = "../../runtime/process" }
 aegis-types = { path = "../types" }
+aegis-webhook = { path = "../../git/webhook" }
 
 [dev-dependencies]
-tower = { version = "0.4", features = ["util"] }
+hyper = { version = "1", features = ["client", "http2"] }
 http-body-util = "0.1"
 sqlx = { workspace = true }
 tempfile = { workspace = true }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 aegis-event-store = { path = "../event_store" }

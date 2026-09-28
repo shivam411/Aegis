@@ -26,13 +26,13 @@ Aegis/
 │   ├── event_bus/     # tokio::broadcast pub/sub event distribution
 │   ├── projection/    # In-memory state projection from event replay
 │   ├── control/       # ControlPlane: deployments, rollbacks, process control (used by gRPC and HTTP)
-│   ├── web/           # HTTP/JSON API + SSE (loopback-only until authentication lands)
+│   ├── web/           # HTTP/JSON API + SSE, sessions/tokens, webhooks, TLS
 │   ├── plugin/        # Plugin manager trait and lifecycle
 │   ├── types/         # Shared domain types (ProjectId, ReleaseId, EventId, etc.)
 │   ├── api/           # gRPC service definitions (tonic + prost)
 │   ├── state/         # State management primitives
 │   ├── scheduler/     # Daily auto-deployment scheduler engine
-│   ├── auth/          # Authentication primitives
+│   ├── auth/          # Accounts (Argon2id), sessions, API tokens, login throttling
 │   ├── secrets/       # Secrets management
 │   └── ssh/           # SSH key management
 │

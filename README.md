@@ -169,7 +169,15 @@ For a deep dive, see the [**Architecture Documentation**](https://shivam411.gith
 
 ### HTTP API
 
-Set `[web] enabled = true` and the daemon also serves a JSON API with live Server-Sent Events on `127.0.0.1:8420`. It is loopback-only until authentication lands, so use an SSH tunnel for remote access. See [docs/http_api.md](docs/http_api.md) and [docs/openapi.json](docs/openapi.json).
+Set `[web] enabled = true` and the daemon also serves an authenticated JSON API, with live Server-Sent Events, on `127.0.0.1:8420`. Sign in as `admin` (the first password is in `<data_dir>/initial-admin-password`) or use API tokens. Reach it through an SSH tunnel, a reverse proxy with HTTPS, or built-in TLS. See [docs/http_api.md](docs/http_api.md), [docs/security.md](docs/security.md) and [docs/openapi.json](docs/openapi.json).
+
+### Server install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | sudo bash -s -- --server
+```
+
+This installs Aegis as a hardened systemd service running as a dedicated `aegis` user, with the web API enabled on loopback. Add `--domain aegis.example.com` to prepare it for a reverse proxy such as Caddy.
 
 ---
 
