@@ -13,6 +13,8 @@ use tonic::{transport::Server, Request, Response, Status};
 
 use async_trait::async_trait;
 
+const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // A Demo System Plugin that implements the dynamic Plugin trait
 struct DemoPlugin;
 
@@ -68,7 +70,7 @@ impl AegisDaemon for DaemonService {
 
         let response = StatusResponse {
             initialized: true,
-            version: "0.1.0".to_string(),
+            version: DAEMON_VERSION.to_string(),
             loaded_plugins: self.plugin_manager.get_loaded_plugins(),
             event_count,
         };
@@ -142,20 +144,15 @@ impl AegisDaemon for DaemonService {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    // 1. Load config
+    // 1. Load config. The daemon must not create aegis.toml itself: `aegis init`
+    // owns that file, and a pre-existing daemon-only file made init skip writing
+    // the [project] section, so every deploy got a fresh random project ID.
     let config_path = std::path::Path::new("aegis.toml");
-    if !config_path.exists() {
-        let default_config = Config::default();
-        let toml_str = toml::to_string_pretty(&default_config)?;
-        std::fs::write(config_path, toml_str)?;
-        println!("Created default config file: aegis.toml");
-    }
-
     let config = Config::load_or_default(config_path);
 
     // 2. Initialize logs
     aegis_logs::init_logging(&config.daemon.log_level);
-    tracing::info!("Aegis Daemon v0.1.0 starting up...");
+    tracing::info!("Aegis Daemon v{} starting up...", DAEMON_VERSION);
 
     // 3. Connect to Database
     let db_path = config.daemon.database_path.to_string_lossy().to_string();
@@ -311,6 +308,11 @@ async fn main() -> Result<(), anyhow::Error> {
                                         .await;
 
                                     let proc_id = spawn_res.unwrap_or_default();
+                                    let os_pid = process_supervisor
+                                        .list_processes()
+                                        .into_iter()
+                                        .find(|p| p.id == proc_id)
+                                        .and_then(|p| p.pid);
 
                                     let _ = orchestrator_store
                                         .append_event(
@@ -330,7 +332,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                             serde_json::json!({
                                                 "project_id": project_id.to_string(),
                                                 "process_id": proc_id.to_string(),
-                                                "pid": 9000
+                                                "pid": os_pid
                                             }),
                                         )
                                         .await;

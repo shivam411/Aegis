@@ -169,6 +169,10 @@ enum MigrateSubcommand {
     },
 }
 
+fn has_project_section(toml_content: &str) -> bool {
+    toml_content.lines().any(|line| line.trim() == "[project]")
+}
+
 fn resolve_project_id(explicit_id: Option<String>) -> String {
     if let Some(id) = explicit_id {
         return id;
@@ -296,13 +300,20 @@ async fn main() -> Result<(), anyhow::Error> {
 
             // Generate zero-boilerplate aegis.toml FIRST locally
             let local_toml_path = current_dir.join("aegis.toml");
+            let toml_content = pipeline.generate_toml(&detected_config, &project_id.to_string());
             if !local_toml_path.exists() {
-                let toml_content =
-                    pipeline.generate_toml(&detected_config, &project_id.to_string());
-                let _ = std::fs::write(&local_toml_path, toml_content);
+                std::fs::write(&local_toml_path, toml_content)?;
                 println!("Generated zero-boilerplate config: aegis.toml");
             } else {
-                println!("Found existing aegis.toml config file.");
+                let existing = std::fs::read_to_string(&local_toml_path)?;
+                if has_project_section(&existing) {
+                    println!("Found existing aegis.toml config file.");
+                } else {
+                    // Without [project], `deploy` would invent a new project ID on every run.
+                    let merged = format!("{}\n{}", existing.trim_end(), toml_content);
+                    std::fs::write(&local_toml_path, merged)?;
+                    println!("Added [project] section to existing aegis.toml");
+                }
             }
 
             // Sync with Aegis daemon if available
@@ -813,4 +824,17 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_project_section() {
+        assert!(has_project_section("[project]\nid = \"abc\"\n"));
+        assert!(!has_project_section(
+            "[daemon]\nhost = \"127.0.0.1\"\nport = 50051\n"
+        ));
+    }
 }
