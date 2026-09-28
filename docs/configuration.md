@@ -85,6 +85,17 @@ max_retained_versions = 2        # used when a project doesn't set its own
 | `daemon.data_dir` | `~/.aegis` |
 | `daemon.max_retained_versions` | `2` |
 
+### HTTP API (`[web]`)
+
+```toml
+[web]
+enabled = false        # off by default
+host = "127.0.0.1"     # must be a loopback address until authentication lands (Phase 2)
+port = 8420
+```
+
+The daemon refuses to start if `web.enabled = true` and `web.host` isn't loopback. See [http_api.md](http_api.md).
+
 ### Data directory layout
 
 ```
@@ -104,4 +115,4 @@ max_retained_versions = 2        # used when a project doesn't set its own
 
 - `AEGIS_*` environment variable overrides for individual settings (only `AEGIS_CONFIG` exists today).
 - A global `~/.aegis/config.toml` merged underneath project settings.
-- `[web]` settings for the web control plane (see [roadmap_web_control_plane.md](roadmap_web_control_plane.md)).
+- Authentication and TLS settings for the HTTP API (`[web.tls]`, sessions, API tokens) arrive with roadmap Phase 2.

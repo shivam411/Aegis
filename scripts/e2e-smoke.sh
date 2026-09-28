@@ -13,6 +13,8 @@ AEGIS_CLI="$BIN_DIR/aegis-cli"
 AEGIS_DAEMON="$BIN_DIR/aegis-daemon"
 GRPC_PORT="${GRPC_PORT:-50151}"
 APP_PORT="${APP_PORT:-3456}"
+WEB_PORT="${WEB_PORT:-18420}"
+API="http://127.0.0.1:$WEB_PORT/api/v1"
 
 WORK="$(mktemp -d)"
 APP="$WORK/node-app"
@@ -76,6 +78,24 @@ stop_daemon() {
   DAEMON_PID=""
 }
 
+# JSON field from stdin, e.g. `... | json '["status"]'`.
+json() { python3 -c "import sys, json; print(json.load(sys.stdin)$1)"; }
+
+api_post() {
+  local body="${2:-}"
+  [ -n "$body" ] || body='{}'
+  curl -sS -X POST -H 'Content-Type: application/json' -d "$body" "$API$1"
+}
+
+wait_http_deployment() {
+  local id="$1" status=""
+  for _ in $(seq 1 300); do
+    status=$(curl -sS "$API/deployments/$id" | json '["status"]')
+    case "$status" in Queued|InProgress) sleep 0.2 ;; *) echo "$status"; return 0 ;; esac
+  done
+  fail "deployment $id did not finish"
+}
+
 set_version() {
   sed -i.bak "s/version: '[^']*'/version: '$1'/" "$APP/index.js" && rm -f "$APP/index.js.bak"
 }
@@ -92,6 +112,11 @@ port = $GRPC_PORT
 database_path = "$WORK/aegis.db"
 log_level = "info"
 data_dir = "$WORK/data"
+
+[web]
+enabled = true
+host = "127.0.0.1"
+port = $WEB_PORT
 EOF
 
 step "Starting daemon"
@@ -171,5 +196,45 @@ sleep 1
 [ -z "$(app_body)" ] || fail "stopped app came back after daemon restart"
 aegis start
 expect_serving v1
+
+step "HTTP API: status, guard rules and OpenAPI"
+curl -sSf "$API/status" | json '["project_count"]' | grep -qx 1 || fail "status via HTTP"
+aegis status | grep -q "HTTP API:    http://127.0.0.1:$WEB_PORT/api/v1" || fail "CLI status lacks the API URL"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$API/status")
+[ "$code" = 403 ] || fail "foreign Host header allowed ($code)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: text/plain' -d '{}' "$API/processes/smoke-app/stop")
+[ "$code" = 415 ] || fail "non-JSON POST allowed ($code)"
+expect_serving v1
+curl -sSf "$API/openapi.json" | json '["openapi"]' | grep -q '^3' || fail "openapi.json"
+
+step "HTTP API: deploy with live event stream"
+curl -sN --max-time 120 "$API/events/stream?project=smoke-app" >"$WORK/sse.txt" &
+SSE_PID=$!
+sleep 0.5
+set_version v5
+DEP=$(api_post /projects/smoke-app/deploy '{"version":"v5-http"}' | json '["deployment_id"]')
+[ "$(wait_http_deployment "$DEP")" = Success ] || fail "HTTP deploy failed"
+expect_serving v5
+sleep 0.5
+grep -q "event: DeploymentCompleted" "$WORK/sse.txt" || fail "SSE stream missed DeploymentCompleted"
+grep -q "event: BuildStageInstall" "$WORK/sse.txt" || fail "SSE stream missed build stages"
+
+step "HTTP API: process control, logs and rollback"
+[ "$(api_post /processes/smoke-app/restart | json '["status"]')" = Running ] || fail "HTTP restart"
+expect_serving v5
+curl -sSf "$API/processes/smoke-app/logs?lines=20" | grep -q "running on port $APP_PORT" || fail "HTTP logs"
+[ "$(api_post /projects/smoke-app/rollback | json '["version"]')" = v1 ] || fail "HTTP rollback"
+expect_serving v1
+curl -sS -X PUT -H 'Content-Type: application/json' -d '{"hour":3,"minute":30}' "$API/projects/smoke-app/schedule" \
+  | json '["schedule"]["hour"]' | grep -qx 3 || fail "HTTP schedule"
+
+step "Daemon shutdown is not held up by an open event stream"
+kill -0 "$SSE_PID" 2>/dev/null || fail "SSE client ended early"
+START=$(date +%s)
+stop_daemon
+ELAPSED=$(( $(date +%s) - START ))
+[ "$ELAPSED" -lt 20 ] || fail "shutdown took ${ELAPSED}s with an open stream"
+for _ in $(seq 1 25); do kill -0 "$SSE_PID" 2>/dev/null || break; sleep 0.2; done
+if kill -0 "$SSE_PID" 2>/dev/null; then fail "SSE stream still open after shutdown"; fi
 
 printf '\nAll end-to-end checks passed.\n'

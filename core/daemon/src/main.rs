@@ -72,7 +72,15 @@ async fn shutdown_signal() {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() {
+    // Report startup errors as a message, not as Debug output with a backtrace.
+    if let Err(e) = run().await {
+        eprintln!("aegis-daemon: {:#}", e);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), anyhow::Error> {
     // 1. Load config. The daemon must not create aegis.toml itself: `aegis init`
     // owns that file, and a pre-existing daemon-only file made init skip writing
     // the [project] section, so every deploy got a fresh random project ID.
@@ -82,6 +90,10 @@ async fn main() -> Result<(), anyhow::Error> {
     // 2. Initialize logs
     aegis_logs::init_logging(&config.daemon.log_level);
     tracing::info!("Aegis Daemon v{} starting up...", DAEMON_VERSION);
+    if config.web.enabled {
+        // Refuse to start rather than expose an unauthenticated API.
+        config.web.validate()?;
+    }
 
     // 3. Connect to Database
     let db_path = config.daemon.database_path.clone();
@@ -153,12 +165,51 @@ async fn main() -> Result<(), anyhow::Error> {
     let restored = control.recover().await;
     tracing::info!(restored, "Recovered app processes");
 
-    // 8. gRPC server
+    // 8. HTTP API (optional, loopback only)
+    let (web_shutdown, web_shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut web_url = None;
+    let web_task = if config.web.enabled {
+        let listener = tokio::net::TcpListener::bind((config.web.host.as_str(), config.web.port))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Cannot listen on {}:{} for the HTTP API: {}",
+                    config.web.host,
+                    config.web.port,
+                    e
+                )
+            })?;
+        let local = listener.local_addr()?;
+        let url = format!("http://{}", local);
+        tracing::info!(url = %url, "HTTP API listening (loopback only)");
+        web_url = Some(url);
+        let state = aegis_web::AppState {
+            control: control.clone(),
+            version: DAEMON_VERSION.to_string(),
+            shutdown: web_shutdown_rx.clone(),
+        };
+        let mut stop = web_shutdown_rx;
+        Some(tokio::spawn(aegis_web::serve(
+            listener,
+            state,
+            async move {
+                let _ = stop.wait_for(|stopping| *stopping).await;
+            },
+        )))
+    } else {
+        None
+    };
+
+    // 9. gRPC server
     let addr: SocketAddr = format!("{}:{}", config.daemon.host, config.daemon.port).parse()?;
+    if !addr.ip().is_loopback() {
+        tracing::warn!(grpc_bind = %addr, "The gRPC API has no authentication and is listening on a non-loopback address; anyone who can reach it can deploy code");
+    }
     tracing::info!(grpc_bind = %addr, "Starting gRPC service server");
     let service = DaemonService {
         control: control.clone(),
         plugin_manager,
+        web_url,
     };
     Server::builder()
         .add_service(AegisDaemonServer::new(service))
@@ -168,7 +219,16 @@ async fn main() -> Result<(), anyhow::Error> {
         })
         .await?;
 
-    // 9. Stop apps cleanly; they are restarted on the next boot.
+    // 10. Stop the HTTP API (ends open event/log streams), then the apps;
+    // apps are restarted on the next boot.
+    let _ = web_shutdown.send(true);
+    if let Some(task) = web_task {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), task).await {
+            Ok(Ok(Err(e))) => tracing::warn!(error = %e, "HTTP API stopped with an error"),
+            Err(_) => tracing::warn!("HTTP API did not stop within 5s"),
+            _ => {}
+        }
+    }
     control.shutdown().await;
     tracing::info!("Aegis Daemon stopped");
     Ok(())
@@ -208,6 +268,7 @@ mod tests {
         DaemonService {
             control,
             plugin_manager: Arc::new(plugin_manager),
+            web_url: None,
         }
     }
 

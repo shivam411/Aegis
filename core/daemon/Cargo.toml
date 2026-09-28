@@ -18,6 +18,7 @@ aegis-config = { path = "../config" }
 aegis-logs = { path = "../../runtime/logs" }
 aegis-api = { path = "../api" }
 aegis-control = { path = "../control" }
+aegis-web = { path = "../web" }
 aegis-event-bus = { path = "../event_bus" }
 aegis-event-store = { path = "../event_store" }
 aegis-plugins = { path = "../plugin" }

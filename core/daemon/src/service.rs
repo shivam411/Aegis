@@ -2,13 +2,13 @@
 
 use aegis_api::aegis::aegis_daemon_server::AegisDaemon;
 use aegis_api::aegis::{
-    self as pb, ControlProcessRequest, DeployRequest, DeployResponse, DeploymentInfo,
-    EmitEventRequest, EmitEventResponse, EventResponse, GetDeploymentRequest, GetLogsRequest,
-    GetLogsResponse, ListDeploymentsRequest, ListDeploymentsResponse, ListEventsRequest,
-    ListEventsResponse, ListProcessesRequest, ListProcessesResponse, ListProjectsRequest,
-    ListProjectsResponse, ListReleasesRequest, ListReleasesResponse, ProcessInfo, ProjectInfo,
-    RegisterProjectRequest, ReleaseInfo, RollbackRequest, RollbackResponse, StatusRequest,
-    StatusResponse, StreamEventsRequest, StreamLogsRequest,
+    self as pb, ConfigureScheduleRequest, ControlProcessRequest, DeployRequest, DeployResponse,
+    DeploymentInfo, EmitEventRequest, EmitEventResponse, EventResponse, GetDeploymentRequest,
+    GetLogsRequest, GetLogsResponse, ListDeploymentsRequest, ListDeploymentsResponse,
+    ListEventsRequest, ListEventsResponse, ListProcessesRequest, ListProcessesResponse,
+    ListProjectsRequest, ListProjectsResponse, ListReleasesRequest, ListReleasesResponse,
+    ProcessInfo, ProjectInfo, RegisterProjectRequest, ReleaseInfo, RollbackRequest,
+    RollbackResponse, StatusRequest, StatusResponse, StreamEventsRequest, StreamLogsRequest,
 };
 use aegis_control::{ControlError, ControlPlane, ProcessAction, ProjectView, RegisterProject};
 use aegis_plugins::PluginManager;
@@ -27,6 +27,8 @@ type ResponseStream<T> = Pin<Box<dyn futures_core::Stream<Item = Result<T, Statu
 pub struct DaemonService {
     pub control: ControlPlane,
     pub plugin_manager: Arc<PluginManager>,
+    /// Base URL of the HTTP API, when it is enabled.
+    pub web_url: Option<String>,
 }
 
 fn status_from(e: ControlError) -> Status {
@@ -162,6 +164,7 @@ impl AegisDaemon for DaemonService {
             project_count: projects.len() as u32,
             running_processes: running as u32,
             data_dir: self.control.data_dir().to_string_lossy().to_string(),
+            web_url: self.web_url.clone().unwrap_or_default(),
         }))
     }
 
@@ -311,6 +314,25 @@ impl AegisDaemon for DaemonService {
             .await
             .map_err(status_from)?;
         Ok(Response::new(process_info(process)))
+    }
+
+    async fn configure_schedule(
+        &self,
+        request: Request<ConfigureScheduleRequest>,
+    ) -> Result<Response<ProjectInfo>, Status> {
+        let req = request.into_inner();
+        let project_id = self.project_id(&req.project).map_err(status_from)?;
+        self.control
+            .configure_schedule(project_id, req.hour, req.minute, opt_string(req.branch))
+            .await
+            .map_err(status_from)?;
+        let view = self
+            .control
+            .list_projects()
+            .into_iter()
+            .find(|v| v.project.id == project_id)
+            .ok_or_else(|| Status::not_found("Unknown project"))?;
+        Ok(Response::new(project_info(view)))
     }
 
     async fn list_projects(

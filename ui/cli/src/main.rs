@@ -1,9 +1,9 @@
 use aegis_api::aegis::aegis_daemon_client::AegisDaemonClient;
 use aegis_api::aegis::{
-    ControlProcessRequest, DeployRequest, EmitEventRequest, GetLogsRequest, ListDeploymentsRequest,
-    ListEventsRequest, ListProjectsRequest, ListReleasesRequest, LogLine, ProcessAction,
-    ProcessInfo, RegisterProjectRequest, RollbackRequest, StatusRequest, StatusResponse,
-    StreamEventsRequest, StreamLogsRequest,
+    ConfigureScheduleRequest, ControlProcessRequest, DeployRequest, EmitEventRequest,
+    GetLogsRequest, ListDeploymentsRequest, ListEventsRequest, ListProjectsRequest,
+    ListReleasesRequest, LogLine, ProcessAction, ProcessInfo, RegisterProjectRequest,
+    RollbackRequest, StatusRequest, StatusResponse, StreamEventsRequest, StreamLogsRequest,
 };
 use aegis_config::{Config, ProjectFile};
 use aegis_engine::ResolvedProjectConfig;
@@ -94,7 +94,7 @@ enum Commands {
         /// Process id, or project id/name (defaults to ./aegis.toml)
         target: Option<String>,
     },
-    /// Configure a daily auto-deployment schedule at specific hours
+    /// Configure a daily auto-deployment (UTC time)
     Schedule {
         /// Target project ID (reads from aegis.toml if omitted)
         project_id: Option<String>,
@@ -104,9 +104,9 @@ enum Commands {
         /// Target deployment minute (0-59)
         #[arg(short, long, default_value = "0")]
         minute: u32,
-        /// Target Git branch
-        #[arg(short, long, default_value = "main")]
-        branch: String,
+        /// Branch to deploy (defaults to the project's branch)
+        #[arg(short, long)]
+        branch: Option<String>,
     },
     /// Restart an app's process
     Restart {
@@ -427,6 +427,11 @@ async fn run() -> Result<(), anyhow::Error> {
             println!("  Projects:    {}", response.project_count);
             println!("  Running:     {}", response.running_processes);
             println!("  Data dir:    {}", response.data_dir);
+            if response.web_url.is_empty() {
+                println!("  HTTP API:    disabled (set [web] enabled = true)");
+            } else {
+                println!("  HTTP API:    {}/api/v1", response.web_url);
+            }
             println!("  Plugins ({}):", response.loaded_plugins.len());
             for plugin in response.loaded_plugins {
                 println!("    - {}", plugin);
@@ -700,29 +705,21 @@ async fn run() -> Result<(), anyhow::Error> {
             minute,
             branch,
         } => {
-            let pid = target_or_local(project_id)?;
-            println!(
-                "Configuring daily auto-deploy for project {} at {:02}:{:02} (Branch: {})",
-                pid, hour, minute, branch
-            );
-            let response = rpc(daemon
+            let project = target_or_local(project_id)?;
+            let updated = rpc(daemon
                 .client()
                 .await?
-                .emit_event(EmitEventRequest {
-                    event_type: "ScheduleConfigured".to_string(),
-                    payload_json: serde_json::json!({
-                        "project_id": pid,
-                        "hour": hour,
-                        "minute": minute,
-                        "branch": branch,
-                    })
-                    .to_string(),
+                .configure_schedule(ConfigureScheduleRequest {
+                    project,
+                    hour,
+                    minute,
+                    branch: branch.unwrap_or_default(),
                 })
                 .await)?;
-
-            if response.success {
-                println!("Schedule configured and emitted to Aegis daemon!");
-            }
+            println!(
+                "{} will deploy daily at {:02}:{:02} UTC (branch {}).",
+                updated.name, hour, minute, updated.branch
+            );
         }
         Commands::EmitEvent {
             event_type,

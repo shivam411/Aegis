@@ -703,18 +703,17 @@ impl ControlPlane {
 
     /// Keeps the active release plus the newest inactive ones, up to `max`.
     async fn prune_releases(&self, project_id: ProjectId, max: usize) {
-        let releases = self.inner.projection.get_project_releases(&project_id);
-        let mut keep: Vec<String> = releases
-            .iter()
-            .filter(|r| r.status == "Active")
-            .map(|r| r.version.clone())
+        // Keep the live release and the ones most recently live before it:
+        // those are the rollback targets. Builds that never went live go first.
+        let keep: Vec<String> = self
+            .inner
+            .projection
+            .releases_by_recency(&project_id)
+            .into_iter()
+            .filter(|r| matches!(r.status.as_str(), "Active" | "Inactive"))
+            .take(max.max(1))
+            .map(|r| r.version)
             .collect();
-        for release in releases.iter().rev().filter(|r| r.status == "Inactive") {
-            if keep.len() >= max.max(1) {
-                break;
-            }
-            keep.push(release.version.clone());
-        }
         match self.switcher(project_id).prune_versions(&keep).await {
             Ok(removed) => {
                 for version in removed {
@@ -759,9 +758,12 @@ impl ControlPlane {
                 .find(|r| &r.version == v)
                 .cloned()
                 .ok_or_else(|| ControlError::NotFound(format!("Unknown release '{}'", v)))?,
-            None => releases
+            // The release that was live most recently before the current one.
+            None => self
+                .inner
+                .projection
+                .releases_by_recency(&project_id)
                 .iter()
-                .rev()
                 .filter(|r| r.version != current && r.status == "Inactive")
                 .find(|r| switcher.get_version_dir(&r.version).is_dir())
                 .cloned()

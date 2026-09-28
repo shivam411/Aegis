@@ -16,15 +16,14 @@ members = [
     "core/event_bus",
     "core/projection",
     "core/control",
+    "core/web",
 
     # Deployment
     "deployment/builder",
     "deployment/release",
-    "deployment/rollback",
     "deployment/health",
     "deployment/analytics",
     "deployment/artifact_store",
-    "deployment/strategy",
 
     # Runtime
     "runtime/process",

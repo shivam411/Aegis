@@ -13,6 +13,8 @@ service AegisDaemon {
   // Switches back to an earlier release; returns once it is live (or failed).
   rpc Rollback(RollbackRequest) returns (RollbackResponse);
   rpc ControlProcess(ControlProcessRequest) returns (ProcessInfo);
+  // Sets a project's daily auto-deployment time (UTC).
+  rpc ConfigureSchedule(ConfigureScheduleRequest) returns (ProjectInfo);
 
   // Queries
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
@@ -35,6 +37,8 @@ message StatusResponse {
   uint32 project_count = 5;
   uint32 running_processes = 6;
   string data_dir = 7;
+  // Empty when the HTTP API is disabled.
+  string web_url = 8;
 }
 
 message EmitEventRequest {
@@ -133,6 +137,14 @@ message ProcessInfo {
   string command = 8;
   string last_start = 9;
   optional int32 last_exit_code = 10;
+}
+
+message ConfigureScheduleRequest {
+  string project = 1;
+  uint32 hour = 2;
+  uint32 minute = 3;
+  // Defaults to the project's branch.
+  string branch = 4;
 }
 
 message ListProjectsRequest {}

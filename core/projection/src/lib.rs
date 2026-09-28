@@ -24,6 +24,16 @@ pub struct ProjectState {
     pub current_release: Option<String>,
     /// The process serving the current release.
     pub current_process: Option<ProcessId>,
+    /// Daily auto-deployment, if configured.
+    pub schedule: Option<ScheduleState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduleState {
+    /// UTC hour, 0-23.
+    pub hour: u32,
+    pub minute: u32,
+    pub branch: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -41,6 +51,10 @@ pub struct ReleaseState {
     pub status: String,
     pub created_at: String,
     pub seq: u64,
+    /// When this release last went live (event sequence); orders releases
+    /// by "most recently live", which differs from build order after a rollback.
+    #[serde(default)]
+    pub promoted_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -185,9 +199,23 @@ impl ProjectionEngine {
                         runtime: string_field(&payload, "runtime"),
                         source_dir: string_field(&payload, "source_dir"),
                         current_release: previous.as_ref().and_then(|p| p.current_release.clone()),
-                        current_process: previous.and_then(|p| p.current_process),
+                        current_process: previous.as_ref().and_then(|p| p.current_process),
+                        schedule: previous.and_then(|p| p.schedule),
                     },
                 );
+            }
+            "ScheduleConfigured" => {
+                if let Some(project) = id_field::<ProjectId>(&payload, "project_id")
+                    .and_then(|id| st.projects.get_mut(&id))
+                {
+                    project.schedule = Some(ScheduleState {
+                        hour: payload.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u32 % 24,
+                        minute: payload.get("minute").and_then(|v| v.as_u64()).unwrap_or(0) as u32
+                            % 60,
+                        branch: string_field(&payload, "branch")
+                            .unwrap_or_else(|| "main".to_string()),
+                    });
+                }
             }
             "DeploymentQueued" => {
                 let (Some(id), Some(project_id)) = (
@@ -299,6 +327,7 @@ impl ProjectionEngine {
                         status: "Built".to_string(),
                         created_at: at,
                         seq,
+                        promoted_seq: None,
                     },
                 );
             }
@@ -316,6 +345,7 @@ impl ProjectionEngine {
                 }
                 let version = st.releases.get_mut(&release_id).map(|r| {
                     r.status = "Active".to_string();
+                    r.promoted_seq = Some(seq);
                     r.version.clone()
                 });
                 if let Some(project) = st.projects.get_mut(&project_id) {
@@ -491,6 +521,17 @@ impl ProjectionEngine {
             .collect()
     }
 
+    /// Releases that have been live, most recently live first.
+    pub fn releases_by_recency(&self, project_id: &ProjectId) -> Vec<ReleaseState> {
+        let mut releases: Vec<_> = self
+            .get_project_releases(project_id)
+            .into_iter()
+            .filter(|r| r.promoted_seq.is_some())
+            .collect();
+        releases.sort_by_key(|r| std::cmp::Reverse(r.promoted_seq));
+        releases
+    }
+
     pub fn find_release(&self, project_id: &ProjectId, version: &str) -> Option<ReleaseState> {
         self.get_project_releases(project_id)
             .into_iter()
@@ -540,6 +581,19 @@ mod tests {
         assert_eq!(projects[0].name, "aegis-app");
         assert_eq!(projects[0].id, proj_id);
         assert_eq!(projects[0].source_dir.as_deref(), Some("/srv/app"));
+
+        engine.apply_event(&ev(
+            "ScheduleConfigured",
+            serde_json::json!({"project_id": proj_id.to_string(), "hour": 2, "minute": 30, "branch": "prod"}),
+        ));
+        assert_eq!(
+            engine.get_project(&proj_id).unwrap().schedule,
+            Some(ScheduleState {
+                hour: 2,
+                minute: 30,
+                branch: "prod".to_string()
+            })
+        );
 
         let single_proj = engine.get_project(&proj_id);
         assert!(single_proj.is_some());
@@ -662,6 +716,22 @@ mod tests {
             "ReleasePromoted",
             serde_json::json!({"release_id": r2.to_string(), "project_id": p}),
         ));
+        // Rolling back to r1 makes it the most recently live release.
+        engine.apply_event(&ev(
+            "ReleasePromoted",
+            serde_json::json!({"release_id": r1.to_string(), "project_id": p}),
+        ));
+        let recency: Vec<_> = engine
+            .releases_by_recency(&proj)
+            .into_iter()
+            .map(|r| r.version)
+            .collect();
+        assert_eq!(recency, vec!["r1".to_string(), "r2".to_string()]);
+        engine.apply_event(&ev(
+            "ReleasePromoted",
+            serde_json::json!({"release_id": r2.to_string(), "project_id": p}),
+        ));
+
         let versions: Vec<_> = engine
             .get_project_releases(&proj)
             .into_iter()

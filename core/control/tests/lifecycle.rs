@@ -470,3 +470,28 @@ async fn retention_prunes_old_releases_and_validation_errors() {
     }
     h.control.shutdown().await;
 }
+
+#[tokio::test]
+async fn rollback_and_retention_follow_live_order_not_build_order() {
+    let h = harness().await;
+    for v in ["r1", "r2"] {
+        assert_eq!(deploy(&h, v).await.status, "Success");
+    }
+    // r2 -> r1: now r1 is live and r2 was live before it.
+    assert_eq!(h.control.rollback(h.project_id, None).await.unwrap(), "r1");
+    // Deploy r3 with the default retention of 2: keep r3 and r1 (the last
+    // live release), not r2 (merely the newest build).
+    assert_eq!(deploy(&h, "r3").await.status, "Success");
+    let releases_dir = h
+        .data
+        .path()
+        .join(format!("projects/{}/releases", h.project_id));
+    assert!(
+        releases_dir.join("r1").exists(),
+        "previously live release was pruned"
+    );
+    assert!(!releases_dir.join("r2").exists());
+    assert_eq!(h.control.rollback(h.project_id, None).await.unwrap(), "r1");
+    assert_eq!(serving(h.port).await.as_deref(), Some("r1"));
+    h.control.shutdown().await;
+}

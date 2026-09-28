@@ -261,6 +261,41 @@ impl ControlPlane {
             .ok_or_else(|| ControlError::Internal(anyhow::anyhow!("Project was not recorded")))
     }
 
+    /// Sets a project's daily auto-deployment time (UTC).
+    pub async fn configure_schedule(
+        &self,
+        project_id: ProjectId,
+        hour: u32,
+        minute: u32,
+        branch: Option<String>,
+    ) -> ControlResult<ProjectState> {
+        if hour > 23 || minute > 59 {
+            return Err(ControlError::InvalidArgument(format!(
+                "Invalid schedule time {:02}:{:02}; use hour 0-23 and minute 0-59",
+                hour, minute
+            )));
+        }
+        let project = self
+            .inner
+            .projection
+            .get_project(&project_id)
+            .ok_or_else(|| ControlError::NotFound(format!("Unknown project {}", project_id)))?;
+        self.record(
+            "ScheduleConfigured",
+            json!({
+                "project_id": project_id.to_string(),
+                "hour": hour,
+                "minute": minute,
+                "branch": branch.filter(|b| !b.is_empty()).unwrap_or(project.branch),
+            }),
+        )
+        .await?;
+        self.inner
+            .projection
+            .get_project(&project_id)
+            .ok_or_else(|| ControlError::Internal(anyhow::anyhow!("Project vanished")))
+    }
+
     /// Finds a project by id or (unique) name.
     pub fn resolve_project(&self, key: &str) -> ControlResult<ProjectState> {
         if let Ok(id) = key.parse::<ProjectId>() {

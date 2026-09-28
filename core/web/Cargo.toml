@@ -1,0 +1,26 @@
+[package]
+name = "aegis-web"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+utoipa = "5"
+aegis-control = { path = "../control" }
+aegis-projection = { path = "../projection" }
+aegis-process = { path = "../../runtime/process" }
+aegis-types = { path = "../types" }
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+sqlx = { workspace = true }
+tempfile = { workspace = true }
+aegis-event-store = { path = "../event_store" }

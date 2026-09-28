@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phase 0 complete · Phase 1 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phases 0–1 complete · Phase 2 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
 
 ---
 
@@ -51,7 +51,7 @@ These passed tests but didn't do what the docs and CLI claimed. Phase 0 fixed th
 ### Still open after Phase 0 (tracked in later phases)
 
 - **Cutover has a brief gap.** Without a reverse proxy, the old and new process can't share a port, so there is a gap between stopping the old process and the new one accepting connections. The gap lasts as long as the app takes to start listening: about 0.5 s for `examples/node-app`, and several seconds for slow-starting apps such as JVM services. It will be removed by the Phase 5 proxy, which also enables `Rolling`/`BlueGreen`.
-- **Superseded crates.** `deployment/strategy` and `deployment/rollback` are no longer used by the daemon; `core/control` replaced them. They will be removed or folded in during Phase 1.
+- ~~**Superseded crates.**~~ `deployment/strategy` and `deployment/rollback` were removed in Phase 1.
 - **Stub crates.** `metrics`, `auth`, `secrets`, `ssh`, `state`, `analytics`, `action`, `docker` and `github` are still stubs; they are scheduled in Phases 2, 4 and 5.
 - **Experimental CLI commands.** `replay`, `incident`, `investigate`, `inspect --at` and `upgrade` still print placeholder output.
 - **No webhook endpoint yet.** A webhook HTTP endpoint needs the Phase 1 HTTP server.
@@ -127,27 +127,19 @@ Evidence:
 - 64 unit and integration tests. They include control-plane tests with real HTTP processes covering deploy, redeploy, failed build, unhealthy release, rollback, retention and daemon restart.
 - [`scripts/e2e-smoke.sh`](../scripts/e2e-smoke.sh), run in CI, drives the real binaries through the same scenarios with `examples/node-app`.
 
-### Phase 1 — HTTP API in the daemon *(~1–2 weeks)*
+### Phase 1 — HTTP API in the daemon ✅ *done*
 
-- Add an `axum` listener next to `tonic`, controlled by `[web]` config and **disabled unless enabled**.
-- REST endpoints (JSON), all served by `ControlPlane`:
+Delivered:
 
-| Method & path | Purpose |
-| :--- | :--- |
-| `GET /api/v1/status` | Daemon version, uptime, host summary |
-| `GET /api/v1/projects` · `GET /api/v1/projects/{id}` | Projects with current release and process state |
-| `POST /api/v1/projects` | Register a project (repo URL, branch, commands, port) |
-| `POST /api/v1/projects/{id}/deploy` | Queue a deployment (branch or commit, strategy) |
-| `POST /api/v1/projects/{id}/rollback` | Roll back to a release |
-| `GET /api/v1/projects/{id}/releases` · `/deployments` | History |
-| `POST /api/v1/processes/{id}/{start,stop,restart}` | Process control |
-| `GET /api/v1/processes/{id}/logs?tail=500` | Log tail |
-| `GET /api/v1/events/stream` | SSE: live domain events |
-| `GET /api/v1/processes/{id}/logs/stream` | SSE: live logs |
+- **`core/web` (`aegis-web`):** an `axum` HTTP/JSON API served by the daemon next to gRPC. It is enabled with `[web] enabled = true` and is **loopback-only**: the daemon refuses any other bind until Phase 2 adds authentication. Every handler calls `ControlPlane`, so gRPC and HTTP share one implementation.
+- **Endpoints:** status; projects (list, create, get); deploy; rollback; schedule; releases; deployments (list, get); processes (list, start/stop/restart); logs; events. Server-Sent Events streams exist for **events** and **logs**, and streams end on daemon shutdown so they never block it. See [http_api.md](http_api.md).
+- **Browser-attack protection for the local API:** a loopback `Host` check blocks DNS rebinding; an `Origin`/`Sec-Fetch-Site` check blocks cross-site requests; and state-changing requests require JSON, which forces a CORS preflight that is never granted.
+- **OpenAPI 3:** generated with `utoipa`, served at `/api/v1/openapi.json`, and checked in as [`docs/openapi.json`](openapi.json). A test fails if the two drift apart.
+- **Parity additions:** a typed `ConfigureSchedule` command (gRPC, HTTP and CLI) replaces raw event emission; schedules are visible on projects; `aegis status` shows the API URL.
+- **Bug found by the new end-to-end checks and fixed:** after a rollback, both the default rollback target and retention used *build* order instead of *live* order. So `rollback` could pick the wrong release, and retention could delete the release that had just been live. Both now use `ReleasePromoted` order, with a regression test.
+- **Cleanup:** the superseded `deployment/strategy` and `deployment/rollback` crates were removed; the daemon now warns when the (also unauthenticated) gRPC API is bound to a non-loopback address.
 
-- OpenAPI spec generated with `utoipa` and published in `docs/`.
-
-**Done when:** every CLI command has an HTTP equivalent, integration tests cover each endpoint, and the gRPC and HTTP transports share one implementation.
+Evidence: 7 HTTP API tests (guard rules, validation and errors, a full deploy → restart → stop/start → logs → rollback lifecycle against a real app, SSE filtering, shutdown ending streams, log follow) and new HTTP steps in `scripts/e2e-smoke.sh` (run in CI).
 
 ### Phase 2 — Security and VPS hardening *(~1–2 weeks; must ship before any public bind)*
 
@@ -264,7 +256,7 @@ memory_mb = 512
 | Milestone | Phases | Outcome |
 | :--- | :--- | :--- |
 | **M-Core** ✅ | 0 | Deploy/stop/restart/rollback do real work |
-| **M-API** | 1 + 2 | Secure HTTP API reachable on the VPS |
+| **M-API** | 1 ✅ + 2 | Secure HTTP API reachable on the VPS |
 | **v0.5.0 — Web MVP** | 3 | Manage all apps from the browser |
 | **v0.6.0 — Resource Control** | 4 | Live CPU/memory monitoring and slider limits |
 | **v0.7.0 — Self-serve Ops** | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |

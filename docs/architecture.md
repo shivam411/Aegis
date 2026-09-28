@@ -25,6 +25,8 @@ Aegis/
 │   ├── event_store/   # SQLite-backed event persistence
 │   ├── event_bus/     # tokio::broadcast pub/sub event distribution
 │   ├── projection/    # In-memory state projection from event replay
+│   ├── control/       # ControlPlane: deployments, rollbacks, process control (used by gRPC and HTTP)
+│   ├── web/           # HTTP/JSON API + SSE (loopback-only until authentication lands)
 │   ├── plugin/        # Plugin manager trait and lifecycle
 │   ├── types/         # Shared domain types (ProjectId, ReleaseId, EventId, etc.)
 │   ├── api/           # gRPC service definitions (tonic + prost)
@@ -38,9 +40,7 @@ Aegis/
 │   ├── release/       # Release model + ReleaseSwitcher (atomic version switching)
 │   ├── artifact_store/# Disk-backed artifact storage with SHA-256 integrity
 │   ├── builder/       # 7-stage build pipeline
-│   ├── strategy/      # Deployment strategies (Immediate, Rolling, BlueGreen, GracefulSwitch)
 │   ├── health/        # TCP and HTTP health checkers
-│   ├── rollback/      # Rollback executor
 │   └── analytics/     # Deployment analytics
 │
 ├── runtime/           # Process runtime domain

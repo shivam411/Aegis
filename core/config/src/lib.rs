@@ -38,6 +38,52 @@ pub struct Config {
     /// still parses instead of silently falling back to defaults.
     #[serde(default)]
     pub daemon: DaemonConfig,
+    #[serde(default)]
+    pub web: WebConfig,
+}
+
+/// The HTTP API (and, later, the dashboard) served by the daemon.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct WebConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "127.0.0.1".to_string(),
+            port: 8420,
+        }
+    }
+}
+
+impl WebConfig {
+    /// The API has no authentication yet (roadmap Phase 2), and it can deploy
+    /// code, so it may only listen on a loopback address. Reach it remotely
+    /// through an SSH tunnel: `ssh -L 8420:127.0.0.1:8420 your-server`.
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        let loopback = self.host == "localhost"
+            || self
+                .host
+                .parse::<std::net::IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false);
+        if !loopback {
+            anyhow::bail!(
+                "web.host = \"{}\" is not a loopback address. The HTTP API has no authentication yet, \
+                 so it only listens on 127.0.0.1/::1/localhost. Use an SSH tunnel for remote access \
+                 (ssh -L {}:127.0.0.1:{} <server>).",
+                self.host,
+                self.port,
+                self.port
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Default for DaemonConfig {
@@ -191,6 +237,30 @@ strategy = "GracefulSwitch"
         let config = Config::load_from_file(temp_file.path()).unwrap();
         assert_eq!(config.daemon.port, 50051);
         assert_eq!(config.daemon.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_web_config_defaults_and_loopback_rule() {
+        let config: Config = toml::from_str("[web]\nenabled = true\n").unwrap();
+        assert!(config.web.enabled);
+        assert_eq!(config.web.port, 8420);
+        assert!(config.web.validate().is_ok());
+        assert!(!Config::default().web.enabled);
+
+        for ok in ["127.0.0.1", "::1", "localhost", "127.0.0.2"] {
+            let web = WebConfig {
+                host: ok.to_string(),
+                ..WebConfig::default()
+            };
+            assert!(web.validate().is_ok(), "{ok}");
+        }
+        for bad in ["0.0.0.0", "::", "203.0.113.5", "example.com"] {
+            let web = WebConfig {
+                host: bad.to_string(),
+                ..WebConfig::default()
+            };
+            assert!(web.validate().is_err(), "{bad}");
+        }
     }
 
     #[test]

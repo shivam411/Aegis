@@ -167,6 +167,10 @@ For a deep dive, see the [**Architecture Documentation**](https://shivam411.gith
 
 `target` is a process id or a project id/name; without it, commands use the project in `./aegis.toml`.
 
+### HTTP API
+
+Set `[web] enabled = true` and the daemon also serves a JSON API with live Server-Sent Events on `127.0.0.1:8420`. It is loopback-only until authentication lands, so use an SSH tunnel for remote access. See [docs/http_api.md](docs/http_api.md) and [docs/openapi.json](docs/openapi.json).
+
 ---
 
 ## ⚙️ Configuration

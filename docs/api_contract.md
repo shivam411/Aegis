@@ -28,8 +28,13 @@ This document establishes the public API freeze and classification system for al
 ### `aegis-event-store`
 * **`[STABLE]`** `EventStore::new(pool: SqlitePool) -> Self`
 * **`[STABLE]`** `EventStore::append_event(type: &str, payload: Value) -> Result<Event, AegisError>`
-* **`[STABLE]`** `EventStore::get_events() -> Result<Vec<Event>, AegisError>`
+* **`[STABLE]`** `EventStore::get_events() -> Result<Vec<Event>, AegisError>` (insertion order)
+* **`[EXPERIMENTAL]`** `EventStore::add_sync_listener(...)`: runs a callback for each event, in sequence order, before it is broadcast
 * **`[INTERNAL]`** `EventStore::initialize_db(pool: &SqlitePool)`
+
+### `aegis-control`
+* **`[EXPERIMENTAL]`** `ControlPlane`: the command and query API used by every transport (gRPC, HTTP). Covers `register_project`, `queue_deployment`, `rollback`, `process_action`, `configure_schedule`, `recover`, `shutdown`, and the `list_*` and `resolve_*` queries.
+* **`[EXPERIMENTAL]`** `ControlError` (`NotFound`, `InvalidArgument`, `FailedPrecondition`, `Internal`)
 
 ### `aegis-projection`
 * **`[STABLE]`** `ProjectionEngine::new() -> Self`
@@ -41,6 +46,9 @@ This document establishes the public API freeze and classification system for al
 ### `aegis-api`
 * **`[STABLE]`** Protocol Buffer service definition (`aegis.proto`).
 * **`[STABLE]`** `AegisDaemonClient` and `AegisDaemonServer` gRPC bindings.
+
+### `aegis-web`
+* **`[EXPERIMENTAL]`** HTTP/JSON API under `/api/v1`, described in [`openapi.json`](openapi.json) and [`http_api.md`](http_api.md).
 
 ### `aegis-scheduler`
 * **`[STABLE]`** `SchedulerEngine::schedule_daily_deploy(...)`
@@ -62,15 +70,11 @@ This document establishes the public API freeze and classification system for al
 * **`[STABLE]`** `ArtifactStore::get(...) -> Result<PathBuf, AegisError>`
 * **`[STABLE]`** `ArtifactStore::verify(...) -> Result<bool, AegisError>`
 * **`[STABLE]`** `ArtifactStore::cleanup(...) -> Result<usize, AegisError>`
-
-### `aegis-strategy`
-* **`[STABLE]`** `trait DeploymentStrategy` (`name()`, `execute()`)
-* **`[STABLE]`** `ImmediateStrategy`
-* **`[STABLE]`** `GracefulSwitchStrategy`
-* **`[EXPERIMENTAL]`** `RollingStrategy` batch parameters.
+* **`[EXPERIMENTAL]`** `ArtifactStore::register(...)`, `verify_checksum(...)`, `fingerprint_path(...)`
 
 ### `aegis-builder`
-* **`[STABLE]`** `BuildPipeline::run_pipeline(...) -> Result<Release, AegisError>`
+* **`[EXPERIMENTAL]`** `BuildPipeline::new(artifact_store, reporter)` and `BuildPipeline::run(&BuildRequest) -> Result<BuildOutput, BuildFailure>`
+* **`[EXPERIMENTAL]`** `trait StageReporter`, `SourceSpec` (`LocalDir`, `Git`)
 * **`[STABLE]`** `PipelineStage` enum (`Clone`, `Install`, `Build`, `Test`, `Package`, `Verify`, `Promote`).
 
 ---
@@ -78,7 +82,8 @@ This document establishes the public API freeze and classification system for al
 ## 4. Runtime & Process Engine (`runtime/*`)
 
 ### `aegis-engine`
-* **`[STABLE]`** `trait Runtime` (`name()`, `detect()`, `prepare()`, `install()`, `build()`, `start()`, `stop()`, `health()`)
+* **`[STABLE]`** `trait Runtime` (`name()`, `detect()`). It only detects the runtime; commands come from `aegis.toml`, and the process supervisor owns the process lifecycle.
+* **`[EXPERIMENTAL]`** `ResolvedProjectConfig`: `aegis.toml` merged with detected defaults
 * **`[STABLE]`** `RuntimeDetector::detect_runtime(...)`
 * **`[STABLE]`** `NodeRuntime`, `RustRuntime`, `GoRuntime`, `PythonRuntime`, `GenericRuntime`.
 * **`[INTERNAL]`** Process handle signal low-level interactions.

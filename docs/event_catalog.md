@@ -44,7 +44,8 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `ProjectCreated` | New project initialized | `project_id`, `name`, `repository_url`, `branch`, `runtime` |
+| `ProjectCreated` | New project initialized | `project_id`, `name`, `repository_url`, `branch`, `runtime`, `source_dir` |
+| `ScheduleConfigured` | Daily auto-deployment time set (UTC) | `project_id`, `hour`, `minute`, `branch` |
 | `ProjectUpdated` | Config or environment updated | `project_id`, `updated_fields` |
 | `ProjectDeleted` | Project removed from workspace | `project_id`, `deleted_at` |
 
@@ -102,6 +103,6 @@ A `ProcessStopped` with reason `requested` or `replaced` marks the process as wa
 ## 3. Projection Invalidation Rules
 1. `ProjectCreated` creates or updates `ProjectState`.
 2. `DeploymentQueued` → `Queued`, `DeploymentStarted` → `InProgress`, `DeploymentCompleted` → `Success`, `DeploymentFailed` → `Failed`, `DeploymentRolledBack` → `RolledBack`. `BuildStage*` events update the deployment's current stage.
-3. `ReleaseCreated` → release `Built`. `ReleasePromoted` makes the release `Active`, marks the project's previously active release `Inactive`, and sets the project's current release. A built release whose deployment fails becomes `Failed`. `ReleaseArchived` → `Archived`.
+3. `ReleaseCreated` → release `Built`. `ReleasePromoted` makes the release `Active`, marks the project's previously active release `Inactive`, records when it went live, and sets the project's current release. The time it went live, not build order, decides the default rollback target and which releases retention keeps. A built release whose deployment fails becomes `Failed`. `ReleaseArchived` → `Archived`.
 4. `ProcessStarted` sets the project's current process. Process events update status, PID, exit code and desired state.
 5. Events are applied in insertion order (`seq`), synchronously as they are stored, and replayed in the same order on startup.
