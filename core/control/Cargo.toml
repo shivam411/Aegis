@@ -20,6 +20,9 @@ aegis-release = { path = "../../deployment/release" }
 aegis-health = { path = "../../deployment/health" }
 aegis-engine = { path = "../../runtime/engine" }
 aegis-process = { path = "../../runtime/process" }
+aegis-resources = { path = "../../runtime/resources" }
+aegis-metrics = { path = "../../runtime/metrics" }
+serde = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

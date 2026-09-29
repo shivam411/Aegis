@@ -127,14 +127,19 @@ RestartSec=5
 KillMode=mixed
 TimeoutStopSec=60
 
-# Apps run inside this service's cgroup; delegation lets Aegis manage
-# per-app CPU/memory limits (roadmap Phase 4).
+# Apps run inside this service's cgroup; delegation lets Aegis create a
+# cgroup per app and change its CPU/memory limits live. The daemon moves
+# itself into <service>/daemon and puts apps under <service>/apps.
 Delegate=yes
 
 # Hardening. Apps inherit these restrictions.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=${STATE_DIR}
+# ProtectKernelTunables makes /sys read-only; the delegated cgroup must stay
+# writable (systemd owns everything else there, so file permissions still
+# confine the aegis user to its own subtree).
+ReadWritePaths=/sys/fs/cgroup
 # Read-only (not hidden) so deployments can copy projects from /home.
 ProtectHome=read-only
 PrivateTmp=yes

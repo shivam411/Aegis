@@ -29,6 +29,7 @@ members = [
     "runtime/process",
     "runtime/logs",
     "runtime/metrics",
+    "runtime/resources",
     "runtime/engine",
 
     # Git

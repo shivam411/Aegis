@@ -37,7 +37,9 @@ fn status_from(e: ControlError) -> Status {
     match e {
         ControlError::NotFound(m) => Status::not_found(m),
         ControlError::InvalidArgument(m) => Status::invalid_argument(m),
-        ControlError::FailedPrecondition(m) => Status::failed_precondition(m),
+        ControlError::FailedPrecondition(m) | ControlError::NeedsConfirmation(m) => {
+            Status::failed_precondition(m)
+        }
         ControlError::Internal(e) => Status::internal(e.to_string()),
     }
 }
@@ -189,6 +191,7 @@ impl DaemonService {
         Ok(Response::new(project_info(ProjectView {
             project,
             process: None,
+            usage: None,
         })))
     }
 

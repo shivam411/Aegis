@@ -110,6 +110,7 @@ Only pushes to the project's branch deploy, and always from the project's **conf
 - Runs as a dedicated `aegis` system user. Config lives in `/etc/aegis/aegis.toml` (`0640 root:aegis`) and state in `/var/lib/aegis` (`0750`). The database is kept at `0600`.
 - The systemd unit applies `NoNewPrivileges`, `ProtectSystem=strict` (writable: `/var/lib/aegis` only), `ProtectHome=read-only`, `PrivateTmp`, `PrivateDevices`, kernel/clock/hostname protections, `RestrictNamespaces`, `RestrictSUIDSGID` and `UMask=0027`. **Your apps inherit these restrictions.**
 - `ExecStartPre=aegis-daemon check-config` stops a bad configuration from starting.
+- `Delegate=yes` gives the daemon its own cgroup subtree for per-app limits. `/sys/fs/cgroup` is left writable for that, and systemd's file ownership still confines the `aegis` user to its own subtree. The daemon never needs root for limits under this unit. Run by hand as root, it creates `/sys/fs/cgroup/aegis` instead.
 - The installer never changes firewall rules. With Option B, open 80/443 for the proxy yourself.
 
 ## Known limitations
@@ -119,6 +120,7 @@ Only pushes to the project's branch deploy, and always from the project's **conf
 - Credentials embedded in a repository URL (`https://user:token@…`) are stored in events that `read` tokens can see; they are redacted only in build logs. Prefer SSH deploy keys.
 - Apps run as the same user as the daemon, so a compromised app can read the daemon's database. Per-app users are future work.
 - No built-in ACME; use certbot or a reverse proxy.
+- Resource limits constrain CPU, memory and process count, not disk or network use. An app that forks and calls `setsid` still stays in its cgroup (so its limits apply), but outside cgroups (limits unavailable) such children aren't counted in the app's metrics.
 
 ## The web dashboard
 

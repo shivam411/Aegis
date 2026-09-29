@@ -606,6 +606,12 @@ async fn git_file_list(dir: &Path) -> Option<Vec<PathBuf>> {
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .collect();
+    // The whole directory is ignored by an enclosing repository (e.g. an app
+    // kept in a gitignored folder): copy it as a plain directory instead of
+    // copying nothing.
+    if files.is_empty() {
+        return None;
+    }
     // aegis.toml is usually gitignored but always belongs to the release.
     files.push(PathBuf::from("aegis.toml"));
     files.sort();
@@ -1053,6 +1059,31 @@ GREETING = "hi"
             .unwrap_err();
         assert!(err.message.contains("Timed out"));
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn test_app_in_an_ignored_folder_is_copied_whole() {
+        let repo = TempDir::new().unwrap();
+        git(repo.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join(".gitignore"), "apps/\n").unwrap();
+        let app = repo.path().join("apps").join("hog");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("app.py"), "print('hi')").unwrap();
+        std::fs::write(
+            app.join("aegis.toml"),
+            "[build]\nbuild_command = \"\"\nstart_command = \"true\"\n",
+        )
+        .unwrap();
+
+        let out = TempDir::new().unwrap();
+        let store = ArtifactStore::new(out.path().join("artifacts"));
+        let recorder = Recorder::default();
+        let req = request(SourceSpec::LocalDir(app), out.path());
+        BuildPipeline::new(&store, &recorder)
+            .run(&req)
+            .await
+            .unwrap();
+        assert!(req.release_dir.join("app.py").exists());
     }
 
     #[tokio::test]

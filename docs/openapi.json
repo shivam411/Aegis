@@ -440,6 +440,83 @@
         }
       }
     },
+    "/api/v1/host/metrics": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "host_metrics",
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "description": "How far back: e.g. `5m`, `15m` (default), `1h`, `6h`, `24h`, `7d`.\nUp to an hour uses 2-second samples; longer uses per-minute rollups.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "points",
+            "in": "query",
+            "description": "Maximum number of points (default 300, max 2000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Host CPU (in cores) and memory history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/metrics/stream": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "stream_metrics",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Only this project (id or name); every app and the host when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "With `project`, also send host samples.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`sample` messages, `{\"series\": <project id or \"host\">, \"sample\": SampleDto}`, every sample interval (2 s by default)",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        }
+      }
+    },
     "/api/v1/processes": {
       "get": {
         "tags": [
@@ -796,6 +873,76 @@
         }
       }
     },
+    "/api/v1/projects/{project}/metrics": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "project_metrics",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "description": "How far back: e.g. `5m`, `15m` (default), `1h`, `6h`, `24h`, `7d`.\nUp to an hour uses 2-second samples; longer uses per-minute rollups.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "points",
+            "in": "query",
+            "description": "Maximum number of points (default 300, max 2000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CPU and memory history with the limits in effect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/releases": {
       "get": {
         "tags": [
@@ -823,6 +970,106 @@
                   "items": {
                     "$ref": "#/components/schemas/ReleaseDto"
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "get_resources",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResourcesDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "set_resources",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetResourcesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied to the running app at once (no restart) and to every later start",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResourcesDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`confirmation_required`: repeat with `force: true`; `failed_precondition`: not supported on this host or refused by the kernel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -1018,6 +1265,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WebhookSecretDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "capabilities",
+        "responses": {
+          "200": {
+            "description": "Whether this host can enforce limits, and how much is committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceCapabilitiesDto"
                 }
               }
             }
@@ -1728,6 +1995,32 @@
           }
         }
       },
+      "MetricsDto": {
+        "type": "object",
+        "required": [
+          "series",
+          "range_secs",
+          "points"
+        ],
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PointDto"
+            },
+            "description": "Oldest first."
+          },
+          "range_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "series": {
+            "type": "string",
+            "description": "A project id, or \"host\"."
+          }
+        }
+      },
       "NewTokenDto": {
         "type": "object",
         "required": [
@@ -1741,6 +2034,61 @@
           "token": {
             "type": "string",
             "description": "Shown once. Send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "PointDto": {
+        "type": "object",
+        "description": "A chart point: average and peak over the bucket starting at `at`.",
+        "required": [
+          "at",
+          "cpu_cores",
+          "cpu_cores_max",
+          "memory_bytes",
+          "memory_bytes_max",
+          "throttled_ratio"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cpu_cores": {
+            "type": "number",
+            "format": "double"
+          },
+          "cpu_cores_max": {
+            "type": "number",
+            "format": "double"
+          },
+          "cpu_limit_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_bytes_max": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_limit_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "throttled_ratio": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -1816,7 +2164,8 @@
           "repository_url",
           "branch",
           "created_at",
-          "settings"
+          "settings",
+          "resources"
         ],
         "properties": {
           "branch": {
@@ -1852,6 +2201,10 @@
           "repository_url": {
             "type": "string"
           },
+          "resources": {
+            "$ref": "#/components/schemas/ResourceLimitsDto",
+            "description": "CPU, memory and process limits."
+          },
           "runtime": {
             "type": [
               "string",
@@ -1876,6 +2229,46 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SampleDto",
+                "description": "The latest measurement, while the app runs."
+              }
+            ]
+          }
+        }
+      },
+      "ProjectResourcesDto": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "limits",
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/ResourceCapabilitiesDto"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ResourceLimitsDto"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SampleDto"
+              }
             ]
           }
         }
@@ -1973,6 +2366,99 @@
           }
         }
       },
+      "ResourceCapabilitiesDto": {
+        "type": "object",
+        "required": [
+          "backend",
+          "cpu",
+          "memory",
+          "pids",
+          "host_cpu_cores",
+          "host_memory_bytes",
+          "committed_memory_bytes",
+          "committed_cpu_cores"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "\"cgroup2\", \"cgroup1\" or \"none\"."
+          },
+          "committed_cpu_cores": {
+            "type": "number",
+            "format": "double"
+          },
+          "committed_memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sums of all apps' limits.",
+            "minimum": 0
+          },
+          "cpu": {
+            "type": "boolean"
+          },
+          "host_cpu_cores": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "host_memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where app cgroups are created."
+          },
+          "memory": {
+            "type": "boolean"
+          },
+          "pids": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why limits are unavailable, or partly so."
+          }
+        }
+      },
+      "ResourceLimitsDto": {
+        "type": "object",
+        "description": "Limits for one app; `null` means unlimited.",
+        "properties": {
+          "cpu_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "CPU time in cores (0.5 = half of one core)."
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hard memory limit in bytes; the soft limit is 90% of it.",
+            "minimum": 0
+          },
+          "pids_max": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Maximum number of processes and threads.",
+            "minimum": 0
+          }
+        }
+      },
       "RollbackRequest": {
         "type": "object",
         "properties": {
@@ -1996,6 +2482,85 @@
           "version": {
             "type": "string",
             "description": "The release that is now live."
+          }
+        }
+      },
+      "SampleDto": {
+        "type": "object",
+        "description": "One measurement.",
+        "required": [
+          "at",
+          "cpu_cores",
+          "memory_bytes",
+          "throttled_ratio",
+          "threads",
+          "fds",
+          "procs",
+          "restarts",
+          "oom_kills"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds."
+          },
+          "cpu_cores": {
+            "type": "number",
+            "format": "double",
+            "description": "CPU in use, in cores."
+          },
+          "cpu_limit_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "fds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Open file descriptors.",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_limit_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "oom_kills": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Out-of-memory kills in the current process's cgroup.",
+            "minimum": 0
+          },
+          "procs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "restarts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "threads": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "throttled_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "Share of CPU periods held back by the CPU limit, 0-1."
           }
         }
       },
@@ -2088,6 +2653,44 @@
             "description": "\"read\" or \"deploy\" (tokens only)."
           }
         }
+      },
+      "SetResourcesRequest": {
+        "type": "object",
+        "description": "New limits. Omitted or `null` fields become unlimited.",
+        "properties": {
+          "cpu_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "default": null
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Apply even if the memory limit is below current use or more memory\nis promised to apps than the host has (otherwise 409\n`confirmation_required`).",
+            "default": false
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "default": null,
+            "minimum": 0
+          },
+          "pids_max": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "StatusDto": {
         "type": "object",
@@ -2251,6 +2854,9 @@
     },
     {
       "name": "webhooks"
+    },
+    {
+      "name": "resources"
     }
   ]
 }

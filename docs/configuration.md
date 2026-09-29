@@ -104,6 +104,38 @@ key_path = "/etc/letsencrypt/live/aegis.example.com/privkey.pem"
 
 The daemon refuses to start if the API would be exposed unsafely: a non-loopback `host` without `[web.tls]`, public access without `allowed_hosts`, or half-configured TLS. `daemon.host` (gRPC) must be loopback. `aegis-daemon check-config` validates without starting. A configuration file that doesn't parse is an error, not silently ignored. See [security.md](security.md) and [http_api.md](http_api.md).
 
+### Resource limits and metrics (`[resources]`)
+
+```toml
+[resources]
+cgroups = "auto"            # "auto" (use cgroups when possible) or "off"
+# cgroup_root = "/sys/fs/cgroup/my.slice/aegis"   # cgroup v2: use this directory instead of detecting
+sample_interval_secs = 2    # how often apps and the host are measured
+retention_days = 7          # per-minute metric rollups kept in the database
+```
+
+With `cgroups = "auto"`, the daemon picks the first of these that works:
+
+- **cgroup v2 under systemd** with `Delegate=yes`, as `install.sh --server` sets up: app cgroups go under `<service cgroup>/apps`.
+- **cgroup v2 as root:** `/sys/fs/cgroup/aegis`.
+- **cgroup v1 as root:** `aegis/` under the daemon's cgroup in each controller.
+
+Otherwise limits are unavailable (the dashboard says why), but CPU, memory, threads and open files are still measured from `/proc`. The daemon's startup log and `GET /api/v1/resources` show which backend is in use. Limits are set per app from the dashboard or `PUT /api/v1/projects/{p}/resources`, not in this file; they are stored as events, so they survive restarts.
+
+### Notifications (`[notifications]`)
+
+```toml
+[notifications]
+slack_webhook_url = "https://hooks.slack.com/services/T000/B000/XXXX"
+```
+
+When set, Aegis posts to Slack when:
+
+- a deployment succeeds, fails or is rolled back;
+- a rollback fails;
+- an app crash-loops;
+- a resource alert fires: out-of-memory kill, sustained CPU throttling, memory near its limit, or low disk.
+
 ### Data directory layout
 
 ```

@@ -43,6 +43,19 @@ jobs:
       - name: Run unit and integration tests
         run: cargo test --workspace --all-targets
 
+      - name: Resource limits against the real kernel (cgroup v2, as root)
+        # Tests that need cgroups skip themselves when run unprivileged, so
+        # run them again as root: CPU caps, live limit changes, OOM kills
+        # and restarts, enforced by the runner's kernel.
+        run: |
+          for spec in "aegis-resources kernel" "aegis-web resources"; do
+            set -- $spec
+            cargo test -p "$1" --test "$2" --no-run --message-format=json \
+              | jq -r 'select(.profile.test == true and .executable != null) | .executable'
+          done > "$RUNNER_TEMP/cgroup-tests"
+          cat "$RUNNER_TEMP/cgroup-tests"
+          while read -r bin; do sudo -E "$bin" --nocapture; done < "$RUNNER_TEMP/cgroup-tests"
+
       - name: Check performance benchmark compilation
         run: cargo check --benches
 
@@ -104,6 +117,8 @@ jobs:
 
       - name: Install dashboard test dependencies
         working-directory: ui-tests
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
         run: |
           npm ci
           npx playwright install --with-deps chromium
@@ -111,13 +126,16 @@ jobs:
       - name: Dashboard browser tests
         # Drives the web dashboard in Chromium against the same release
         # build: sign-in, new-app wizard, live deploy pipeline, logs,
-        # process control, rollback, timeline, audit log, API tokens, and a
-        # phone-sized viewport. Any CSP violation or script error fails it.
+        # process control, rollback, timeline, audit log, API tokens, CPU
+        # and memory sliders (a busy loop capped, an OOM kill restarted),
+        # and a phone-sized viewport. Any CSP violation or script error
+        # fails it. Run as root so the daemon can manage cgroups.
         working-directory: ui-tests
         env:
           BIN_DIR: target/release
           CI: 'true'
-        run: npx playwright test
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
+        run: sudo -E env "PATH=$PATH" npx playwright test
 
       - name: Upload dashboard test report
         if: failure()

@@ -56,6 +56,10 @@ pub struct ProjectDto {
     pub settings: ProjectSettingsDto,
     /// The process serving the live release.
     pub process: Option<ProcessDto>,
+    /// CPU, memory and process limits.
+    pub resources: ResourceLimitsDto,
+    /// The latest measurement, while the app runs.
+    pub usage: Option<SampleDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -224,7 +228,9 @@ impl From<ProjectView> for ProjectDto {
             created_at: p.created_at,
             schedule: p.schedule.map(Into::into),
             settings: p.settings.into(),
+            resources: p.resources.into(),
             process: view.process.map(Into::into),
+            usage: view.usage.map(Into::into),
         }
     }
 }
@@ -505,4 +511,162 @@ impl From<aegis_metrics::HostSnapshot> for HostDto {
 pub struct BuildLogDto {
     pub deployment_id: String,
     pub lines: Vec<String>,
+}
+
+// ----------------------------------------------------------------------
+// Resources and metrics
+// ----------------------------------------------------------------------
+
+/// Limits for one app; `null` means unlimited.
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
+pub struct ResourceLimitsDto {
+    /// CPU time in cores (0.5 = half of one core).
+    pub cpu_cores: Option<f64>,
+    /// Hard memory limit in bytes; the soft limit is 90% of it.
+    pub memory_bytes: Option<u64>,
+    /// Maximum number of processes and threads.
+    pub pids_max: Option<u64>,
+}
+
+impl From<aegis_config::ResourceLimits> for ResourceLimitsDto {
+    fn from(l: aegis_config::ResourceLimits) -> Self {
+        Self {
+            cpu_cores: l.cpu_cores,
+            memory_bytes: l.memory_bytes,
+            pids_max: l.pids_max,
+        }
+    }
+}
+
+/// New limits. Omitted or `null` fields become unlimited.
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SetResourcesRequest {
+    pub cpu_cores: Option<f64>,
+    pub memory_bytes: Option<u64>,
+    pub pids_max: Option<u64>,
+    /// Apply even if the memory limit is below current use or more memory
+    /// is promised to apps than the host has (otherwise 409
+    /// `confirmation_required`).
+    pub force: bool,
+}
+
+/// One measurement.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SampleDto {
+    /// Unix milliseconds.
+    pub at: i64,
+    /// CPU in use, in cores.
+    pub cpu_cores: f64,
+    pub memory_bytes: u64,
+    pub cpu_limit_cores: Option<f64>,
+    pub memory_limit_bytes: Option<u64>,
+    /// Share of CPU periods held back by the CPU limit, 0-1.
+    pub throttled_ratio: f64,
+    pub threads: u64,
+    /// Open file descriptors.
+    pub fds: u64,
+    pub procs: u64,
+    pub restarts: u32,
+    /// Out-of-memory kills in the current process's cgroup.
+    pub oom_kills: u64,
+}
+
+impl From<aegis_metrics::history::Sample> for SampleDto {
+    fn from(s: aegis_metrics::history::Sample) -> Self {
+        Self {
+            at: s.at,
+            cpu_cores: s.cpu_cores,
+            memory_bytes: s.memory_bytes,
+            cpu_limit_cores: s.cpu_limit_cores,
+            memory_limit_bytes: s.memory_limit_bytes,
+            throttled_ratio: s.throttled_ratio,
+            threads: s.threads,
+            fds: s.fds,
+            procs: s.procs,
+            restarts: s.restarts,
+            oom_kills: s.oom_kills,
+        }
+    }
+}
+
+/// A chart point: average and peak over the bucket starting at `at`.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct PointDto {
+    pub at: i64,
+    pub cpu_cores: f64,
+    pub cpu_cores_max: f64,
+    pub memory_bytes: u64,
+    pub memory_bytes_max: u64,
+    pub cpu_limit_cores: Option<f64>,
+    pub memory_limit_bytes: Option<u64>,
+    pub throttled_ratio: f64,
+}
+
+impl From<aegis_metrics::history::Point> for PointDto {
+    fn from(p: aegis_metrics::history::Point) -> Self {
+        Self {
+            at: p.at,
+            cpu_cores: p.cpu_cores,
+            cpu_cores_max: p.cpu_cores_max,
+            memory_bytes: p.memory_bytes,
+            memory_bytes_max: p.memory_bytes_max,
+            cpu_limit_cores: p.cpu_limit_cores,
+            memory_limit_bytes: p.memory_limit_bytes,
+            throttled_ratio: p.throttled_ratio,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct MetricsDto {
+    /// A project id, or "host".
+    pub series: String,
+    pub range_secs: u64,
+    /// Oldest first.
+    pub points: Vec<PointDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ResourceCapabilitiesDto {
+    /// "cgroup2", "cgroup1" or "none".
+    pub backend: String,
+    pub cpu: bool,
+    pub memory: bool,
+    pub pids: bool,
+    /// Where app cgroups are created.
+    pub location: Option<String>,
+    /// Why limits are unavailable, or partly so.
+    pub reason: Option<String>,
+    pub host_cpu_cores: usize,
+    pub host_memory_bytes: u64,
+    /// Sums of all apps' limits.
+    pub committed_memory_bytes: u64,
+    pub committed_cpu_cores: f64,
+}
+
+impl From<aegis_control::ResourceOverview> for ResourceCapabilitiesDto {
+    fn from(o: aegis_control::ResourceOverview) -> Self {
+        let c = o.capabilities;
+        Self {
+            backend: c.backend.as_str().into(),
+            cpu: c.cpu,
+            memory: c.memory,
+            pids: c.pids,
+            location: c.location.map(|p| p.display().to_string()),
+            reason: c.reason,
+            host_cpu_cores: o.host_cpu_cores,
+            host_memory_bytes: o.host_memory_bytes,
+            committed_memory_bytes: o.committed_memory_bytes,
+            committed_cpu_cores: o.committed_cpu_cores,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProjectResourcesDto {
+    pub project_id: String,
+    pub limits: ResourceLimitsDto,
+    pub usage: Option<SampleDto>,
+    pub capabilities: ResourceCapabilitiesDto,
 }

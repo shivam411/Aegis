@@ -246,7 +246,7 @@ main {
 .app-card .title .spacer { flex: 1; }
 .app-card .source { font-size: 12.5px; }
 .facts {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 8px;
   margin: 0;
 }
 .facts div { min-width: 0; }
@@ -433,6 +433,29 @@ td.actions { text-align: right; white-space: nowrap; }
 .log .sys { color: var(--log-sys); font-style: italic; }
 .log mark { background: #6b5a00; color: #fff3b0; border-radius: 2px; }
 .log .notice { padding: 6px 14px; color: #8d96a3; font-style: italic; }
+
+/* ------------------------------------------------------------------ */
+/* Charts and sliders                                                  */
+/* ------------------------------------------------------------------ */
+
+.grid.stats.compact { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.grid.stats.compact .value { font-size: 17px; margin-bottom: 0; }
+.chart { position: relative; height: 220px; }
+.chart canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.chart-readout { margin-top: 6px; font-variant-numeric: tabular-nums; min-height: 1.5em; }
+
+.segmented { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.segmented .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+.limit { padding: 12px 0; border-top: 1px solid var(--border); }
+.limit:first-of-type { border-top: 0; }
+.limit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.slider { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.slider input[type="range"] { flex: 1; min-width: 180px; min-height: 0; padding: 0; border: 0; accent-color: var(--accent); }
+.slider input[type="range"]:focus { box-shadow: none; }
+.slider input[type="range"]:disabled { opacity: .45; }
+.slider-value { min-width: 90px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.slider-number { width: 110px; }
 
 /* ------------------------------------------------------------------ */
 /* Activity list                                                       */

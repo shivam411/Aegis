@@ -57,6 +57,32 @@ module.exports = async (config) => {
   git(repo, 'add', '.');
   git(repo, 'commit', '-q', '-m', 'v1');
 
+  // A second app for the resource tests: /spin starts a busy loop and /hog
+  // allocates 200 MiB.
+  const hog = path.join(WORK, 'hog');
+  fs.mkdirSync(hog);
+  fs.writeFileSync(path.join(hog, 'requirements.txt'), '');
+  fs.writeFileSync(path.join(hog, 'app.py'), `import http.server, os, threading
+hog = []
+def spin():
+    while True:
+        pass
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/spin":
+            threading.Thread(target=spin, daemon=True).start()
+        if self.path == "/hog":
+            for _ in range(50):
+                hog.append(bytearray(4 * 1024 * 1024))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *a):
+        pass
+print("hog listening on", os.environ["PORT"], flush=True)
+http.server.ThreadingHTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
+`);
+
   const configPath = path.join(WORK, 'daemon.toml');
   fs.writeFileSync(configPath, `[daemon]
 host = "127.0.0.1"
@@ -83,5 +109,5 @@ port = ${webPort}
 
   await waitFor(`${baseURL}/healthz`, 30_000);
   const password = fs.readFileSync(path.join(WORK, 'data', 'initial-admin-password'), 'utf8').trim();
-  fs.writeFileSync(path.join(WORK, 'env.json'), JSON.stringify({ repo, password, baseURL }));
+  fs.writeFileSync(path.join(WORK, 'env.json'), JSON.stringify({ repo, hog, password, baseURL }));
 };

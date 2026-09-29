@@ -7,6 +7,7 @@
 
 mod deploy;
 mod process;
+mod resources;
 
 use aegis_artifact_store::ArtifactStore;
 use aegis_event_store::EventStore;
@@ -25,6 +26,7 @@ use std::time::Duration;
 
 pub use deploy::DeployRequest;
 pub use process::ProcessAction;
+pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 
 tokio::task_local! {
     static ACTOR: String;
@@ -50,13 +52,18 @@ pub enum ControlError {
     NotFound(String),
     InvalidArgument(String),
     FailedPrecondition(String),
+    /// The request is allowed but risky; repeat it with `force` to proceed.
+    NeedsConfirmation(String),
     Internal(anyhow::Error),
 }
 
 impl std::fmt::Display for ControlError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound(m) | Self::InvalidArgument(m) | Self::FailedPrecondition(m) => {
+            Self::NotFound(m)
+            | Self::InvalidArgument(m)
+            | Self::FailedPrecondition(m)
+            | Self::NeedsConfirmation(m) => {
                 write!(f, "{}", m)
             }
             Self::Internal(e) => write!(f, "{}", e),
@@ -83,6 +90,12 @@ pub struct ControlSettings {
     pub health_poll_interval: Duration,
     /// How long a health-URL-less release must stay up to count as healthy.
     pub liveness_window: Duration,
+    /// Where app cgroups live (resource limits).
+    pub resources: aegis_resources::Mode,
+    /// How often apps and the host are measured.
+    pub sample_interval: Duration,
+    /// How long per-minute metric rollups are kept.
+    pub metrics_retention: Duration,
 }
 
 impl ControlSettings {
@@ -92,6 +105,9 @@ impl ControlSettings {
             max_retained_versions: 2,
             health_poll_interval: Duration::from_millis(500),
             liveness_window: Duration::from_secs(3),
+            resources: aegis_resources::Mode::Auto,
+            sample_interval: Duration::from_secs(2),
+            metrics_retention: Duration::from_secs(7 * 24 * 3600),
         }
     }
 }
@@ -112,6 +128,8 @@ pub struct RegisterProject {
 pub struct ProjectView {
     pub project: ProjectState,
     pub process: Option<ProcessState>,
+    /// The latest resource sample, while the app runs.
+    pub usage: Option<aegis_metrics::history::Sample>,
 }
 
 struct Inner {
@@ -124,6 +142,10 @@ struct Inner {
     /// Release version each supervised process was started from.
     process_release: Mutex<HashMap<ProcessId, String>>,
     shutting_down: AtomicBool,
+    resources: Arc<aegis_resources::ResourceManager>,
+    host: aegis_metrics::HostMonitor,
+    history: aegis_metrics::history::History,
+    metrics_tx: tokio::sync::broadcast::Sender<MetricsUpdate>,
 }
 
 #[derive(Clone)]
@@ -151,6 +173,18 @@ impl ControlPlane {
         );
 
         std::fs::create_dir_all(&settings.data_dir).map_err(anyhow::Error::from)?;
+        let resources = Arc::new(aegis_resources::ResourceManager::new(&settings.resources));
+        for project in projection.get_projects() {
+            resources.load_limits(project.id, project.resources.clone());
+        }
+        supervisor.set_spawn_hook(resources.clone());
+        let host = aegis_metrics::HostMonitor::new(settings.data_dir.clone());
+        let history = aegis_metrics::history::History::new(
+            Some(store.pool().clone()),
+            Duration::from_secs(3600),
+            settings.metrics_retention,
+        );
+        let (metrics_tx, _) = tokio::sync::broadcast::channel(256);
         Ok(Self {
             inner: Arc::new(Inner {
                 store,
@@ -161,6 +195,10 @@ impl ControlPlane {
                 project_locks: Mutex::new(HashMap::new()),
                 process_release: Mutex::new(HashMap::new()),
                 shutting_down: AtomicBool::new(false),
+                resources,
+                host,
+                history,
+                metrics_tx,
             }),
         })
     }
@@ -171,6 +209,7 @@ impl ControlPlane {
     pub fn start(&self) {
         self.spawn_dispatcher();
         self.spawn_process_event_recorder();
+        self.spawn_sampler();
     }
 
     pub fn store(&self) -> &EventStore {
@@ -535,11 +574,19 @@ impl ControlPlane {
             .projection
             .get_projects()
             .into_iter()
-            .map(|project| ProjectView {
-                process: project
+            .map(|project| {
+                let process = project
                     .current_process
-                    .and_then(|id| self.process_view(&id)),
-                project,
+                    .and_then(|id| self.process_view(&id));
+                let usage = process
+                    .as_ref()
+                    .filter(|p| p.status == "Running")
+                    .and_then(|_| self.inner.history.latest(&project.id.to_string()));
+                ProjectView {
+                    process,
+                    usage,
+                    project,
+                }
             })
             .collect()
     }

@@ -1,0 +1,20 @@
+[package]
+name = "aegis-resources"
+version = "0.1.0"
+edition = "2021"
+description = "Per-app CPU, memory and process limits with Linux cgroups"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+aegis-types = { path = "../../core/types" }
+aegis-config = { path = "../../core/config" }
+aegis-process = { path = "../process" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

@@ -10,6 +10,7 @@ mod api;
 mod auth;
 pub mod dto;
 mod guard;
+mod resources;
 pub mod tls;
 mod ui;
 
@@ -69,8 +70,6 @@ pub struct AppState {
     pub shutdown: watch::Receiver<bool>,
     /// Recently seen webhook delivery ids, to ignore redeliveries.
     pub deliveries: Arc<Mutex<VecDeque<String>>>,
-    /// Host CPU/memory/disk sampler for the dashboard.
-    pub host: aegis_metrics::HostMonitor,
 }
 
 impl AppState {
@@ -81,10 +80,7 @@ impl AppState {
         version: String,
         shutdown: watch::Receiver<bool>,
     ) -> Self {
-        let host = aegis_metrics::HostMonitor::new(control.data_dir().clone());
-        host.start(std::time::Duration::from_secs(5));
         Self {
-            host,
             control,
             auth,
             limiter: Arc::new(LoginThrottle::default()),
@@ -146,6 +142,9 @@ impl From<ControlError> for ApiError {
             ControlError::InvalidArgument(m) => Self::bad_request(m),
             ControlError::FailedPrecondition(m) => {
                 Self::new(StatusCode::CONFLICT, "failed_precondition", m)
+            }
+            ControlError::NeedsConfirmation(m) => {
+                Self::new(StatusCode::CONFLICT, "confirmation_required", m)
             }
             ControlError::Internal(e) => Self::internal(e),
         }
@@ -235,6 +234,8 @@ impl Modify for SecuritySchemes {
         api::get_deployment, api::list_processes, api::process_action, api::get_logs,
         api::stream_logs, api::list_events, api::stream_events, api::host,
         api::update_settings, api::detect, api::deployment_log, api::deployment_events,
+        resources::capabilities, resources::get_resources, resources::set_resources,
+        resources::project_metrics, resources::host_metrics, resources::stream_metrics,
         auth::login, auth::logout, auth::session_info, auth::change_password,
         auth::list_tokens, auth::create_token, auth::revoke_token,
         auth::rotate_webhook_secret, auth::github_webhook
@@ -245,11 +246,12 @@ impl Modify for SecuritySchemes {
         RollbackRequest, RollbackResult, ScheduleRequest, ErrorBody, ErrorDetail,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
         NewTokenDto, WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
-        DetectedDto, HostDto, BuildLogDto
+        DetectedDto, HostDto, BuildLogDto, ResourceLimitsDto, SetResourcesRequest, SampleDto,
+        PointDto, MetricsDto, ResourceCapabilitiesDto, ProjectResourcesDto
     )),
     tags(
         (name = "auth"), (name = "system"), (name = "projects"), (name = "deployments"),
-        (name = "processes"), (name = "events"), (name = "webhooks")
+        (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources")
     )
 )]
 pub struct ApiDoc;
@@ -276,6 +278,17 @@ pub fn router(state: AppState) -> Router {
         .route("/tokens/:id", delete(auth::revoke_token))
         .route("/status", get(api::status))
         .route("/host", get(api::host))
+        .route("/host/metrics", get(resources::host_metrics))
+        .route("/resources", get(resources::capabilities))
+        .route("/metrics/stream", get(resources::stream_metrics))
+        .route(
+            "/projects/:project/resources",
+            get(resources::get_resources).put(resources::set_resources),
+        )
+        .route(
+            "/projects/:project/metrics",
+            get(resources::project_metrics),
+        )
         .route("/detect", post(api::detect))
         .route(
             "/projects",

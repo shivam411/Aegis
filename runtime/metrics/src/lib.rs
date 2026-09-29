@@ -1,5 +1,10 @@
 //! Host metrics: CPU, memory, disk and load, sampled in the background so
 //! reads are instant and CPU usage is measured over a real interval.
+//! [`proc`] reads per-process counters from `/proc`, and [`history`] keeps
+//! samples for charts.
+
+pub mod history;
+pub mod proc;
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};

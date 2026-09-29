@@ -119,14 +119,17 @@ dependencies = [
  "aegis-engine",
  "aegis-event-store",
  "aegis-health",
+ "aegis-metrics",
  "aegis-process",
  "aegis-projection",
  "aegis-release",
+ "aegis-resources",
  "aegis-types",
  "anyhow",
  "async-trait",
  "chrono",
  "libc",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -145,9 +148,11 @@ dependencies = [
  "aegis-event-bus",
  "aegis-event-store",
  "aegis-logs",
+ "aegis-notifications",
  "aegis-plugins",
  "aegis-process",
  "aegis-projection",
+ "aegis-resources",
  "aegis-scheduler",
  "aegis-types",
  "aegis-web",
@@ -245,9 +250,12 @@ name = "aegis-metrics"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
+ "sqlx",
  "sysinfo",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -258,8 +266,12 @@ dependencies = [
  "aegis-types",
  "anyhow",
  "async-trait",
+ "rustls",
+ "serde_json",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -309,6 +321,21 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "aegis-resources"
+version = "0.1.0"
+dependencies = [
+ "aegis-config",
+ "aegis-process",
+ "aegis-types",
+ "anyhow",
+ "libc",
+ "serde",
  "tempfile",
  "tokio",
  "tracing",
@@ -376,6 +403,7 @@ dependencies = [
  "aegis-metrics",
  "aegis-process",
  "aegis-projection",
+ "aegis-resources",
  "aegis-types",
  "aegis-webhook",
  "anyhow",
@@ -3388,6 +3416,24 @@ checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

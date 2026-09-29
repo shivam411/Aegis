@@ -14,7 +14,7 @@ test('works on a small screen', async ({ page }) => {
   await page.locator('[data-app="shop"]').getByRole('link', { name: 'shop' }).click();
   await expect(page.locator('[data-stage="Promote"]')).toBeVisible();
   await noHorizontalScroll(page);
-  for (const tab of ['Releases', 'Logs', 'Settings', 'Activity']) {
+  for (const tab of ['Releases', 'Logs', 'Resources', 'Settings', 'Activity']) {
     await page.getByRole('link', { name: tab }).click();
     await noHorizontalScroll(page);
   }

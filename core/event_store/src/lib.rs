@@ -27,6 +27,11 @@ impl EventStore {
         }
     }
 
+    /// The database, for other tables kept alongside the events (metrics).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Performs SQLite database migrations.
     pub async fn initialize_db(pool: &SqlitePool) -> Result<(), anyhow::Error> {
         tracing::info!("Running database migrations...");

@@ -29,6 +29,7 @@ aegis-config = { path = "../config" }
 aegis-engine = { path = "../../runtime/engine" }
 
 [dev-dependencies]
+aegis-resources = { path = "../../runtime/resources" }
 hyper = { version = "1", features = ["client", "http2"] }
 http-body-util = "0.1"
 sqlx = { workspace = true }

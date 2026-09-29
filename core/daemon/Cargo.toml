@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+aegis-resources = { path = "../../runtime/resources" }
+aegis-notifications = { path = "../../integrations/slack" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 sqlx = { workspace = true }

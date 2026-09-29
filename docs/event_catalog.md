@@ -46,6 +46,8 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | :--- | :--- | :--- |
 | `ProjectCreated` | New project initialized | `project_id`, `name`, `repository_url`, `branch`, `runtime`, `source_dir` |
 | `ProjectSettingsUpdated` | Build/run settings edited in the dashboard or API (override aegis.toml from the next deployment) | `project_id`, `settings`, `actor` |
+| `ResourceLimitsChanged` | CPU/memory/process limits changed (applied live) | `project_id`, `limits`, `previous`, `applied_to_processes`, `forced`, `actor` |
+| `ResourcePressureDetected` | An alert: `kind` is `oom_kill`, `cpu_throttled` (≥50% of periods for 30 s), `memory_pressure` (≥90% of the limit for 30 s) or `disk_low` (<10% free) | `kind`, `message`, `project_id` (not for `disk_low`), and figures such as `oom_kills`, `memory_limit_bytes` |
 | `ScheduleConfigured` | Daily auto-deployment time set (UTC) | `project_id`, `hour`, `minute`, `branch` |
 | `ProjectUpdated` | Config or environment updated | `project_id`, `updated_fields` |
 | `ProjectDeleted` | Project removed from workspace | `project_id`, `deleted_at` |

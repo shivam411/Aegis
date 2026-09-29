@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
@@ -98,6 +98,26 @@ impl StopReason {
             Self::Shutdown => "shutdown",
         }
     }
+}
+
+/// Lets another component (resource limits) prepare each process before it
+/// starts, e.g. by creating a cgroup for it.
+pub trait SpawnHook: Send + Sync {
+    /// Called before every spawn (including automatic restarts). Returns
+    /// files (`cgroup.procs`) the child joins by writing its own pid before
+    /// running the command, so everything it forks is covered too. Problems
+    /// are reported as messages for the process's log; the process starts
+    /// anyway.
+    fn prepare(&self, process_id: &ProcessId, project_id: &ProjectId) -> Placement;
+    /// The process is gone for good (stopped, failed, or exited without a
+    /// restart).
+    fn finished(&self, process_id: &ProcessId);
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Placement {
+    pub join_files: Vec<PathBuf>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +387,7 @@ struct Inner {
     processes: Mutex<HashMap<ProcessId, Arc<Managed>>>,
     events: broadcast::Sender<ProcessEvent>,
     config: SupervisorConfig,
+    hook: OnceLock<Arc<dyn SpawnHook>>,
 }
 
 impl Inner {
@@ -406,8 +427,15 @@ impl ProcessSupervisor {
                 processes: Mutex::new(HashMap::new()),
                 events,
                 config,
+                hook: OnceLock::new(),
             }),
         }
+    }
+
+    /// Installs the hook that prepares each process before it starts. Only
+    /// the first call has an effect.
+    pub fn set_spawn_hook(&self, hook: Arc<dyn SpawnHook>) {
+        let _ = self.inner.hook.set(hook);
     }
 
     /// Lifecycle events for every supervised process.
@@ -474,12 +502,14 @@ impl ProcessSupervisor {
 
         let (stop_tx, stop_rx) = watch::channel(None);
         let (first_tx, first_rx) = oneshot::channel();
-        let task = tokio::spawn(monitor(
-            self.inner.clone(),
-            managed.clone(),
-            stop_rx,
-            first_tx,
-        ));
+        let inner = self.inner.clone();
+        let for_monitor = managed.clone();
+        let task = tokio::spawn(async move {
+            monitor(inner.clone(), for_monitor, stop_rx, first_tx).await;
+            if let Some(hook) = inner.hook.get() {
+                hook.finished(&id);
+            }
+        });
         *managed.control.lock().unwrap() = Some(Control { stop_tx, task });
 
         match first_rx.await {
@@ -592,14 +622,38 @@ impl ProcessSupervisor {
     }
 }
 
-fn spawn_child(spec: &ProcessSpec) -> std::io::Result<Child> {
+fn spawn_child(spec: &ProcessSpec, join_files: &[PathBuf]) -> std::io::Result<Child> {
     #[cfg(unix)]
     let mut cmd = {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(&spec.command);
         cmd.process_group(0);
+        if !join_files.is_empty() {
+            use std::os::unix::ffi::OsStrExt;
+            let paths: Vec<std::ffi::CString> = join_files
+                .iter()
+                .filter_map(|p| std::ffi::CString::new(p.as_os_str().as_bytes()).ok())
+                .collect();
+            // Runs in the child between fork and exec, so it may only make
+            // async-signal-safe calls: open/write/close on prepared paths.
+            // Failures are ignored here; the parent checks placement after.
+            unsafe {
+                cmd.pre_exec(move || {
+                    for path in &paths {
+                        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                        if fd >= 0 {
+                            libc::write(fd, b"0".as_ptr().cast(), 1);
+                            libc::close(fd);
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
         cmd
     };
+    #[cfg(not(unix))]
+    let _ = join_files;
     #[cfg(not(unix))]
     let mut cmd = {
         let mut cmd = Command::new("cmd");
@@ -723,7 +777,15 @@ async fn monitor(
     loop {
         let spec = managed.spec.lock().unwrap().clone();
         let project_id = spec.project_id;
-        let mut child = match spawn_child(&spec) {
+        let placement = inner
+            .hook
+            .get()
+            .map(|hook| hook.prepare(&id, &project_id))
+            .unwrap_or_default();
+        for warning in &placement.warnings {
+            inner.system_log(&managed, warning.clone());
+        }
+        let mut child = match spawn_child(&spec, &placement.join_files) {
             Ok(child) => child,
             Err(e) => {
                 let reason = format!("Failed to spawn '{}': {}", spec.command, e);
@@ -747,6 +809,22 @@ async fn monitor(
         };
 
         let pid = child.id();
+        // The child joined its cgroups itself; make sure it worked (writing
+        // the pid again is harmless) so a missing limit never goes unnoticed.
+        if let Some(pid) = pid {
+            for file in &placement.join_files {
+                if let Err(e) = std::fs::write(file, pid.to_string()) {
+                    inner.system_log(
+                        &managed,
+                        format!(
+                            "Could not place the process in {}: {} (resource limits do not apply)",
+                            file.display(),
+                            e
+                        ),
+                    );
+                }
+            }
+        }
         let restart_count = {
             let mut state = managed.state.lock().unwrap();
             state.pid = pid;

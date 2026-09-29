@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phases 0–3 complete · Phase 4 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phases 0–4 complete · Phase 5 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
 
 ---
 
@@ -98,7 +98,7 @@ The web control plane lives **inside the existing daemon** as a second listener.
 | Business logic | Extract a `ControlPlane` service used by gRPC, HTTP and webhooks | Today, logic sits in the gRPC handler and a 200-line saga closure in `main.rs`; a third transport would duplicate it |
 | Live updates | Server-Sent Events (SSE) for events, deploy progress, metrics and logs | One-directional, works through proxies, auto-reconnects, simpler than WebSockets |
 | Frontend | A dependency-free vanilla JavaScript single-page app (`core/web/ui/`), embedded in the binary with `include_str!` and built on the same `/api/v1` endpoints as the CLI *(changed in Phase 3; the original plan was askama + htmx)* | Still no build step and no Node toolchain for source builds, so it stays a single binary. Talking to the JSON API directly means the dashboard can't drift from it, live views use the existing SSE streams, and a strict content security policy (no inline code, same-origin only) is easy to keep. Node is only needed to run the Playwright browser tests. |
-| Resource limits | cgroup v2 on Linux: one cgroup per managed app, with `cpu.max`, `memory.max` and `memory.high` | Limits can be changed **live, without restarting the app**, which is what the sliders need. Fallback: `systemd-run --scope` plus `systemctl set-property`. |
+| Resource limits | Linux cgroups: one cgroup per supervised process, with `cpu.max`, `memory.max`/`memory.high` (and `pids.max`) on v2, or the v1 equivalents. The child joins its cgroup between fork and exec. *(Changed in Phase 4: per process rather than per app, and a cgroup v1 backend instead of the `systemd-run` fallback.)* | Limits can be changed **live, without restarting the app**, which is what the sliders need. A cgroup per process means both copies of an app during a graceful switch each get the full limit, instead of sharing one and risking an OOM mid-deploy. Delegation (`Delegate=yes`) covers systemd hosts; running as root covers the rest, including v1-only hosts that `systemd-run` wouldn't help with. |
 | Metrics | `sysinfo` crate for the host; `/proc/<pid>` and cgroup `cpu.stat` / `memory.current` for each app; in-memory ring buffer plus 1-minute rollups in SQLite | No Prometheus required. A `/metrics` Prometheus endpoint is optional later. |
 | Config | New `[web]` section in `aegis.toml` | See §3 |
 
@@ -202,7 +202,43 @@ UX: responsive (usable on a phone for incident response), light and dark themes,
 
 **Done when:** everything in the Phase 0 "done" scenario can be done from the browser without SSH, with Playwright end-to-end tests in CI.
 
-### Phase 4 — Resource monitoring and control *(~2–3 weeks)* → **v0.6.0**
+### Phase 4 — Resource monitoring and control ✅ *done* → **v0.6.0**
+
+Delivered:
+
+- **`runtime/resources` (new):** detects cgroup v2 (delegated under systemd, or as root) or v1 (as root), else "none" with a reason. It creates a cgroup per process and writes limits to all of an app's live cgroups at once. It reads usage, throttling, OOM-kill and memory-event counters, and removes cgroups when processes end.
+- **Supervisor spawn hook:** the child joins its cgroup before `exec`, so everything it forks is limited. The parent re-checks placement and logs any failure in the app's log.
+- **`runtime/metrics`:**
+  - `/proc` sampling for threads, open files, and CPU/RSS where no cgroup exists.
+  - History: the last hour of 2 s samples in memory, and per-minute rollups in SQLite (`metrics_rollup`) with configurable retention and hourly pruning.
+- **Control plane:**
+  - A sampler for apps and the host, with live samples on a broadcast channel.
+  - `set_resource_limits` validates ranges and asks for confirmation when a limit is below current use or would over-commit memory. It applies limits without a restart, restores them on every start, and records `ResourceLimitsChanged`.
+  - Alerts are recorded as `ResourcePressureDetected`: OOM kill, sustained throttling, memory near its limit, and low disk.
+- **API:** `GET /resources`, `GET|PUT /projects/{p}/resources`, `GET /projects/{p}/metrics`, `GET /host/metrics`, and the SSE stream `/metrics/stream`.
+- **Dashboard:**
+  - A Resources tab: live stats; canvas charts of CPU and memory (5 min live, 1 h, 24 h, 7 d) with the limit as a dashed line; CPU and memory sliders applied on release, with a confirmation dialog for risky values.
+  - Where limits aren't available, the tab explains why.
+  - Usage on the overview cards.
+- **Slack:** `[notifications] slack_webhook_url` posts deploy outcomes, crash loops and resource alerts. The plugin was previously a logging stub.
+- **Server install:** the systemd unit keeps `/sys/fs/cgroup` writable (`ReadWritePaths`) despite `ProtectKernelTunables`.
+
+The "done when" scenario is tested end to end in the browser (`ui-tests/tests/resources.spec.js`), against the real kernel:
+
+1. A memory-limit change reaches the running app within a second, with no restart.
+2. Dragging the CPU slider to 0.2 cores caps a busy loop at about 0.2 cores.
+3. Allocating past the limit gets the app OOM-killed and restarted, and the alert shows in the UI.
+
+CI runs the kernel tests and the browser suite as root on cgroup v2. Locally they also pass on a cgroup v1 host.
+
+Not done, deferred:
+
+- Per-app network I/O: not attributable without network namespaces.
+- `io.max`.
+- The optional instances slider, which needs the Phase 5 proxy.
+
+Original plan:
+
 
 This is the "drag CPU and memory" feature.
 
@@ -284,5 +320,5 @@ memory_mb = 512
 | **M-Core** ✅ | 0 | Deploy/stop/restart/rollback do real work |
 | **M-API** ✅ | 1 + 2 | Secure HTTP API reachable on the VPS |
 | **v0.5.0 — Web MVP** ✅ | 3 | Manage all apps from the browser |
-| **v0.6.0 — Resource Control** | 4 | Live CPU/memory monitoring and slider limits |
+| **v0.6.0 — Resource Control** ✅ | 4 | Live CPU/memory monitoring and slider limits |
 | **v0.7.0 — Self-serve Ops** | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |

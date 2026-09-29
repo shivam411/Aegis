@@ -7,4 +7,12 @@ edition = "2021"
 tokio = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
 sysinfo = { version = "0.32", default-features = false, features = ["system", "disk"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true }

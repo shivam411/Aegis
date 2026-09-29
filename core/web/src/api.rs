@@ -475,10 +475,10 @@ pub(crate) async fn stream_logs(
 #[utoipa::path(get, path = "/api/v1/host", tag = "system",
     responses((status = 200, description = "Host CPU, memory, disk and load (sampled every few seconds)", body = HostDto)))]
 pub(crate) async fn host(State(st): State<AppState>) -> Json<HostDto> {
-    let monitor = st.host.clone();
+    let monitor = st.control.host().clone();
     let snapshot = tokio::task::spawn_blocking(move || monitor.latest())
         .await
-        .unwrap_or_else(|_| st.host.latest());
+        .unwrap_or_else(|_| st.control.host().latest());
     Json(snapshot.into())
 }
 

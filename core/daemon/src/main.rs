@@ -179,9 +179,21 @@ async fn run() -> Result<(), anyhow::Error> {
     }
 }
 
+fn resource_mode(config: &aegis_config::ResourcesConfig) -> aegis_resources::Mode {
+    if config.cgroups == "off" {
+        return aegis_resources::Mode::Off;
+    }
+    match &config.cgroup_root {
+        Some(root) => aegis_resources::Mode::V2At(root.clone()),
+        None => aegis_resources::Mode::Auto,
+    }
+}
+
 /// Refuses configurations that would expose the daemon unsafely.
 fn validate_config(config: &Config) -> Result<(), anyhow::Error> {
     config.daemon.validate()?;
+    config.resources.validate()?;
+    config.notifications.validate()?;
     if config.web.enabled {
         config.web.validate()?;
     }
@@ -328,21 +340,44 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
     let auth = auth_store(&config, pool.clone())?;
     let event_store = EventStore::new(pool);
 
-    // 4. Plugins
-    let mut plugin_manager = PluginManager::new();
-    plugin_manager.register(Arc::new(DemoPlugin));
-    plugin_manager.initialize_all().await?;
-    plugin_manager.start_event_loop(event_store.subscribe());
-    let plugin_manager = Arc::new(plugin_manager);
-
-    // 5. Control plane: rebuilds state from history and runs deployments.
+    // 4. Control plane: rebuilds state from history and runs deployments.
     let data_dir = config.daemon.resolved_data_dir();
     let mut settings = ControlSettings::new(data_dir.clone());
     settings.max_retained_versions = config.daemon.max_retained_versions;
+    settings.resources = resource_mode(&config.resources);
+    settings.sample_interval = Duration::from_secs(config.resources.sample_interval_secs);
+    settings.metrics_retention = Duration::from_secs(config.resources.retention_days * 86400);
     let control = ControlPlane::new(event_store.clone(), ProcessSupervisor::new(), settings)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // 5. Plugins, including notifications.
+    let mut plugin_manager = PluginManager::new();
+    plugin_manager.register(Arc::new(DemoPlugin));
+    if let Some(url) = &config.notifications.slack_webhook_url {
+        let names = control.clone();
+        plugin_manager.register(Arc::new(aegis_notifications::SlackPlugin::with_names(
+            url.clone(),
+            Arc::new(move |id: &str| {
+                id.parse()
+                    .ok()
+                    .and_then(|id| names.projection().get_project(&id))
+                    .map(|p| p.name)
+            }),
+        )));
+    }
+    plugin_manager.initialize_all().await?;
+    plugin_manager.start_event_loop(event_store.subscribe());
+    let plugin_manager = Arc::new(plugin_manager);
     control.start();
+    let caps = control.resource_capabilities();
+    tracing::info!(
+        backend = caps.backend.as_str(),
+        cpu = caps.cpu,
+        memory = caps.memory,
+        reason = caps.reason.as_deref().unwrap_or(""),
+        "Resource limits"
+    );
     tracing::info!(data_dir = %data_dir.display(), "Control plane ready");
 
     // 6. Scheduler: restore persisted schedules, then follow new ones.
@@ -513,13 +548,12 @@ mod tests {
         let mut plugin_manager = PluginManager::new();
         plugin_manager.register(Arc::new(DemoPlugin));
 
-        let control = ControlPlane::new(
-            event_store,
-            ProcessSupervisor::new(),
-            ControlSettings::new(data_dir.to_path_buf()),
-        )
-        .await
-        .unwrap();
+        let mut settings = ControlSettings::new(data_dir.to_path_buf());
+        // Keep background samples (and their alerts) out of these tests.
+        settings.sample_interval = Duration::from_secs(3600);
+        let control = ControlPlane::new(event_store, ProcessSupervisor::new(), settings)
+            .await
+            .unwrap();
         control.start();
         DaemonService {
             control,

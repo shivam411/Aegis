@@ -25,7 +25,9 @@ curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | b
 | 🖥️ **Terminal UI (TUI)** | Real-time interactive dashboard powered by `ratatui` + `crossterm`. |
 | 🔒 **Event-Sourced Audit Trail** | Every mutation is an immutable domain event. Full replay on startup. |
 | 🔄 **Instant Rollbacks** | Roll back to any retained release without rebuilding from source. |
-| 🔌 **Plugin System** | Extensible event bus with Slack, GitHub, and webhook integrations. |
+| 🎛️ **Live Resource Limits** | Per-app CPU and memory limits with Linux cgroups (v2 or v1), changed from dashboard sliders without restarting the app. Live and 7-day charts, OOM and throttling alerts. |
+| 🌐 **Web Dashboard** | Deploy, roll back, stream logs, watch resources and audit everything from the browser. |
+| 🔌 **Plugin System** | Extensible event bus; Slack alerts for failed deploys, crashes and resource pressure. |
 
 ---
 
@@ -177,6 +179,7 @@ With `[web] enabled = true`, open `http://127.0.0.1:8420/` (through an SSH tunne
 - **Logs:** follow, pause, search and download live logs.
 - **Audit:** browse the deployments timeline and a filterable event log showing who did what.
 - **Add apps:** a wizard goes from repo URL to auto-detected settings to a first deploy.
+- **Resources:** watch live and historical CPU and memory for each app, with its limit drawn on the chart. Drag the CPU and memory sliders to change limits on the running app with no restart. See when an app is throttled or killed for running out of memory.
 - **Manage:** edit app settings, set daily schedules, create webhook secrets and API tokens.
 
 The dashboard has light and dark themes, works on a phone, and has keyboard shortcuts (press `?`).

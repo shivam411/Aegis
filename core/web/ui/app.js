@@ -259,6 +259,7 @@ function storedTheme() {
 function applyTheme(pref) {
   if (pref === 'light' || pref === 'dark') document.documentElement.dataset.theme = pref;
   else delete document.documentElement.dataset.theme;
+  window.dispatchEvent(new Event('aegis-theme'));
   try {
     localStorage.setItem('aegis.theme', pref);
   } catch {
@@ -351,6 +352,7 @@ const EVENT_TYPES = [
   'ProcessStarted', 'ProcessCrashed', 'ProcessFailed', 'ProcessStopped',
   'UserLoggedIn', 'UserLoginFailed', 'UserLoggedOut', 'PasswordChanged', 'PasswordReset',
   'ApiTokenCreated', 'ApiTokenRevoked', 'WebhookSecretRotated',
+  'ResourceLimitsChanged', 'ResourcePressureDetected',
 ];
 
 function connectEvents() {
@@ -711,7 +713,9 @@ function appCard(project, activeDeployment, reload) {
       h('dl', { class: 'facts' },
         h('div', {}, h('dt', {}, 'Version'), h('dd', { class: 'truncate', title: project.current_release || '' }, project.current_release || '–')),
         h('div', {}, h('dt', {}, 'Uptime'), h('dd', {}, uptime(p))),
-        h('div', {}, h('dt', {}, 'Restarts'), h('dd', {}, p ? p.restart_count : '–')))),
+        h('div', {}, h('dt', {}, 'Restarts'), h('dd', {}, p ? p.restart_count : '–')),
+        h('div', { 'data-fact': 'cpu' }, h('dt', {}, 'CPU'), h('dd', {}, project.usage ? fmtCores(project.usage.cpu_cores, project.resources.cpu_cores) : '–')),
+        h('div', { 'data-fact': 'memory' }, h('dt', {}, 'Memory'), h('dd', {}, project.usage ? fmtUsage(project.usage.memory_bytes, project.resources.memory_bytes) : '–')))),
     h('div', { class: 'actions' },
       h('button', { class: 'btn small primary', type: 'button', 'data-action': 'deploy', onclick: (e) => quickDeploy(project, e.currentTarget) }, 'Deploy'),
       processButtons(project, reload),
@@ -726,6 +730,7 @@ const APP_TABS = [
   ['deploy', 'Deploy'],
   ['releases', 'Releases'],
   ['logs', 'Logs'],
+  ['resources', 'Resources'],
   ['settings', 'Settings'],
   ['activity', 'Activity'],
 ];
@@ -781,6 +786,7 @@ async function appPage(main, ctx, name, tab = 'deploy') {
   switch (tab) {
     case 'releases': return releasesTab(body, tabCtx);
     case 'logs': return logsTab(body, tabCtx);
+    case 'resources': return resourcesTab(body, tabCtx);
     case 'settings': return settingsTab(body, tabCtx);
     case 'activity': return activityTab(body, tabCtx);
     default: return deployTab(body, tabCtx);
@@ -1351,6 +1357,435 @@ async function settingsTab(body, ctx) {
   append(body, h('div', { class: 'grid' }, settingsForm, h('div', { class: 'grid two' }, scheduleForm, hookCard), info));
 }
 
+// --- Resources tab -----------------------------------------------------
+
+const MIB = 1024 * 1024;
+
+function fmtCores(cores, limit) {
+  if (cores === null || cores === undefined) return '–';
+  const used = cores < 10 ? cores.toFixed(2) : cores.toFixed(1);
+  return limit ? `${used} / ${limit} cores` : `${used} cores`;
+}
+
+function fmtUsage(bytes, limit) {
+  return limit ? `${fmtBytes(bytes)} / ${fmtBytes(limit)}` : fmtBytes(bytes);
+}
+
+function describeLimits(l) {
+  if (!l) return '';
+  const parts = [
+    l.cpu_cores ? `CPU ${l.cpu_cores} cores` : 'CPU unlimited',
+    l.memory_bytes ? `memory ${fmtBytes(l.memory_bytes)}` : 'memory unlimited',
+  ];
+  if (l.pids_max) parts.push(`${l.pids_max} processes`);
+  return parts.join(', ');
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/**
+ * A line chart on a canvas: the value, its peak (faint), and the limit as a
+ * dashed line. `format` labels the y axis. Returns {el, update(points)}.
+ */
+function lineChart(ctx, { label, format, color }) {
+  const canvas = h('canvas', { role: 'img', 'aria-label': `${label} chart` });
+  const readout = h('div', { class: 'chart-readout muted small', 'aria-live': 'off' }, ' ');
+  const wrap = h('div', { class: 'chart' }, canvas);
+  let points = [];
+  let hover = null;
+
+  const draw = () => {
+    const dpr = window.devicePixelRatio || 1;
+    const width = wrap.clientWidth;
+    const height = wrap.clientHeight;
+    if (!width || !height) return;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    const g = canvas.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, width, height);
+    const pad = { l: 64, r: 10, t: 10, b: 22 };
+    const w = width - pad.l - pad.r;
+    const hgt = height - pad.t - pad.b;
+    const text = cssVar('--text-muted');
+    const grid = cssVar('--border');
+    const line = cssVar(color);
+    const limitColor = cssVar('--bad');
+    g.font = `11px ${cssVar('--font') || 'sans-serif'}`;
+    g.fillStyle = text;
+
+    if (!points.length) {
+      g.textAlign = 'center';
+      g.fillText('Waiting for data…', pad.l + w / 2, pad.t + hgt / 2);
+      return;
+    }
+    const t0 = points[0].at;
+    const t1 = Math.max(points[points.length - 1].at, t0 + 1);
+    let top = 0;
+    for (const p of points) top = Math.max(top, p.max ?? p.value, p.limit ?? 0);
+    top = top > 0 ? top * 1.12 : 1;
+    const x = (t) => pad.l + ((t - t0) / (t1 - t0)) * w;
+    const y = (v) => pad.t + hgt - (v / top) * hgt;
+
+    // Grid and y labels.
+    g.strokeStyle = grid;
+    g.lineWidth = 1;
+    g.textAlign = 'right';
+    g.textBaseline = 'middle';
+    for (let i = 0; i <= 4; i += 1) {
+      const v = (top / 4) * i;
+      const yy = Math.round(y(v)) + 0.5;
+      g.beginPath();
+      g.moveTo(pad.l, yy);
+      g.lineTo(pad.l + w, yy);
+      g.stroke();
+      g.fillText(format(v), pad.l - 6, yy);
+    }
+    // Time labels.
+    g.textBaseline = 'top';
+    g.textAlign = 'left';
+    g.fillText(new Date(t0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), pad.l, pad.t + hgt + 6);
+    g.textAlign = 'right';
+    g.fillText(new Date(t1).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), pad.l + w, pad.t + hgt + 6);
+
+    const path = (key) => {
+      g.beginPath();
+      points.forEach((p, i) => {
+        const v = p[key] ?? p.value;
+        if (i === 0) g.moveTo(x(p.at), y(v));
+        else g.lineTo(x(p.at), y(v));
+      });
+    };
+    // Peak (faint), then area and line for the average.
+    if (points.some((p) => p.max !== undefined && p.max !== p.value)) {
+      g.globalAlpha = 0.35;
+      g.strokeStyle = line;
+      path('max');
+      g.stroke();
+      g.globalAlpha = 1;
+    }
+    path('value');
+    g.lineTo(x(points[points.length - 1].at), y(0));
+    g.lineTo(x(points[0].at), y(0));
+    g.closePath();
+    g.globalAlpha = 0.14;
+    g.fillStyle = line;
+    g.fill();
+    g.globalAlpha = 1;
+    g.strokeStyle = line;
+    g.lineWidth = 2;
+    path('value');
+    g.stroke();
+
+    // Limit: a dashed step line wherever one applied.
+    g.strokeStyle = limitColor;
+    g.lineWidth = 1.5;
+    g.setLineDash([6, 4]);
+    g.beginPath();
+    let open = false;
+    for (const p of points) {
+      if (p.limit) {
+        if (!open) g.moveTo(x(p.at), y(p.limit));
+        else g.lineTo(x(p.at), y(p.limit));
+        open = true;
+      } else if (open) {
+        g.stroke();
+        g.beginPath();
+        open = false;
+      }
+    }
+    if (open) g.stroke();
+    g.setLineDash([]);
+
+    if (hover !== null && points[hover]) {
+      const p = points[hover];
+      g.strokeStyle = text;
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(Math.round(x(p.at)) + 0.5, pad.t);
+      g.lineTo(Math.round(x(p.at)) + 0.5, pad.t + hgt);
+      g.stroke();
+    }
+  };
+
+  const showReadout = () => {
+    const p = points[hover ?? points.length - 1];
+    readout.textContent = p
+      ? `${new Date(p.at).toLocaleTimeString()} · ${format(p.value)}${p.max !== undefined && p.max !== p.value ? ` (peak ${format(p.max)})` : ''}${p.limit ? ` · limit ${format(p.limit)}` : ''}`
+      : ' ';
+  };
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!points.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const t0 = points[0].at;
+    const t1 = Math.max(points[points.length - 1].at, t0 + 1);
+    const t = t0 + ((e.clientX - rect.left - 64) / (rect.width - 74)) * (t1 - t0);
+    let best = 0;
+    for (let i = 1; i < points.length; i += 1) if (Math.abs(points[i].at - t) < Math.abs(points[best].at - t)) best = i;
+    hover = best;
+    showReadout();
+    draw();
+  });
+  canvas.addEventListener('mouseleave', () => {
+    hover = null;
+    showReadout();
+    draw();
+  });
+
+  const observer = new ResizeObserver(() => draw());
+  observer.observe(wrap);
+  const redraw = () => draw();
+  window.addEventListener('aegis-theme', redraw);
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  media.addEventListener('change', redraw);
+  ctx.cleanup(() => {
+    observer.disconnect();
+    window.removeEventListener('aegis-theme', redraw);
+    media.removeEventListener('change', redraw);
+  });
+
+  return {
+    el: h('div', {}, wrap, readout),
+    canvas,
+    update(next) {
+      points = next;
+      showReadout();
+      draw();
+    },
+  };
+}
+
+const RANGES = [['5m', 'Live · 5 min'], ['1h', '1 hour'], ['24h', '24 hours'], ['7d', '7 days']];
+const RANGE_MS = { '5m': 300_000, '1h': 3_600_000, '24h': 86_400_000, '7d': 604_800_000 };
+
+async function resourcesTab(body, ctx) {
+  const project = ctx.project();
+  const [caps, current] = await Promise.all([
+    api('GET', '/resources'),
+    api('GET', `/projects/${enc(project.id)}/resources`),
+  ]);
+  if (!ctx.alive()) return;
+  let limits = current.limits;
+  let range = '5m';
+  let raw = [];
+
+  // --- Live numbers ---------------------------------------------------
+  const stat = (key, label) => {
+    const value = h('div', { class: 'value' }, '–');
+    return { key, value, el: h('div', { class: 'card stat', 'data-stat': key }, h('div', { class: 'label' }, label), value) };
+  };
+  const stats = [
+    stat('cpu', 'CPU'), stat('memory', 'Memory'), stat('throttled', 'CPU throttled'),
+    stat('threads', 'Threads'), stat('fds', 'Open files'), stat('oom', 'OOM kills'),
+  ];
+  const showUsage = (u) => {
+    const set = (key, text) => {
+      stats.find((x) => x.key === key).value.textContent = text;
+    };
+    if (!u) {
+      for (const x of stats) x.value.textContent = '–';
+      return;
+    }
+    set('cpu', fmtCores(u.cpu_cores, u.cpu_limit_cores));
+    set('memory', fmtUsage(u.memory_bytes, u.memory_limit_bytes));
+    set('throttled', `${Math.round(u.throttled_ratio * 100)}%`);
+    set('threads', `${u.threads} in ${u.procs} process${u.procs === 1 ? '' : 'es'}`);
+    set('fds', String(u.fds));
+    set('oom', String(u.oom_kills));
+  };
+  showUsage(current.usage);
+
+  // --- Charts ----------------------------------------------------------
+  const cpuChart = lineChart(ctx, { label: 'CPU', color: '--accent', format: (v) => `${v < 1 ? v.toFixed(2) : v.toFixed(1)} cores` });
+  const memChart = lineChart(ctx, { label: 'Memory', color: '--ok', format: (v) => fmtBytes(v) });
+  const redrawCharts = () => {
+    const cutoff = Date.now() - RANGE_MS[range];
+    const pts = raw.filter((p) => p.at >= cutoff);
+    cpuChart.update(pts.map((p) => ({ at: p.at, value: p.cpu_cores, max: p.cpu_cores_max, limit: p.cpu_limit_cores })));
+    memChart.update(pts.map((p) => ({ at: p.at, value: p.memory_bytes, max: p.memory_bytes_max, limit: p.memory_limit_bytes })));
+  };
+  const loadHistory = async () => {
+    const m = await api('GET', `/projects/${enc(project.id)}/metrics?range=${range}&points=400`);
+    if (!ctx.alive()) return;
+    raw = m.points;
+    redrawCharts();
+  };
+  const rangeButtons = h('div', { class: 'segmented', role: 'group', 'aria-label': 'Time range' },
+    RANGES.map(([value, text]) => h('button', {
+      class: 'btn small',
+      type: 'button',
+      'aria-pressed': value === range ? 'true' : 'false',
+      'data-range': value,
+      onclick: (e) => {
+        range = value;
+        for (const b of rangeButtons.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
+        loadHistory().catch((err) => toast(err.message, 'bad'));
+      },
+    }, text)));
+
+  // Live samples: extend the charts while the "Live" range is shown.
+  const stream = new EventSource(`/api/v1/metrics/stream?project=${enc(project.id)}`);
+  stream.addEventListener('sample', (m) => {
+    let update;
+    try {
+      update = JSON.parse(m.data);
+    } catch {
+      return;
+    }
+    const smp = update.sample;
+    showUsage(smp);
+    if (range !== '5m') return;
+    raw.push({
+      at: smp.at, cpu_cores: smp.cpu_cores, cpu_cores_max: smp.cpu_cores, memory_bytes: smp.memory_bytes,
+      memory_bytes_max: smp.memory_bytes, cpu_limit_cores: smp.cpu_limit_cores, memory_limit_bytes: smp.memory_limit_bytes,
+    });
+    redrawCharts();
+  });
+  ctx.cleanup(() => stream.close());
+
+  // --- Limits ------------------------------------------------------------
+  const canLimit = caps.cpu || caps.memory;
+  const maxMemMib = Math.max(64, Math.floor(caps.host_memory_bytes / MIB));
+  const cpuOff = h('input', { type: 'checkbox', id: 'cpu-unlimited', checked: !limits.cpu_cores, disabled: !caps.cpu });
+  const cpuRange = h('input', {
+    type: 'range', id: 'cpu-limit', min: 0.1, max: caps.host_cpu_cores, step: 0.05,
+    value: limits.cpu_cores ?? caps.host_cpu_cores, disabled: !caps.cpu || !limits.cpu_cores, 'aria-label': 'CPU limit in cores',
+  });
+  const cpuValue = h('output', { for: 'cpu-limit', class: 'slider-value', 'data-value': 'cpu' });
+  const memOff = h('input', { type: 'checkbox', id: 'mem-unlimited', checked: !limits.memory_bytes, disabled: !caps.memory });
+  const memRange = h('input', {
+    type: 'range', id: 'mem-limit', min: 16, max: maxMemMib, step: 16,
+    value: limits.memory_bytes ? Math.round(limits.memory_bytes / MIB) : maxMemMib,
+    disabled: !caps.memory || !limits.memory_bytes, 'aria-label': 'Memory limit in MiB',
+  });
+  const memNumber = h('input', {
+    type: 'number', id: 'mem-limit-mib', min: 8, max: maxMemMib, step: 1, class: 'slider-number',
+    value: memRange.value, disabled: memRange.disabled, 'aria-label': 'Memory limit (MiB)',
+  });
+  const pidsInput = h('input', {
+    type: 'number', id: 'pids-limit', min: 1, placeholder: 'unlimited', value: limits.pids_max ?? '',
+    disabled: !caps.pids, class: 'slider-number',
+  });
+  const applied = h('span', { class: 'muted small', 'data-applied': '' });
+
+  const syncLabels = () => {
+    cpuRange.disabled = !caps.cpu || cpuOff.checked;
+    memRange.disabled = !caps.memory || memOff.checked;
+    memNumber.disabled = memRange.disabled;
+    cpuValue.textContent = cpuOff.checked ? 'No limit' : `${Number(cpuRange.value).toFixed(2)} cores`;
+    memNumber.value = memRange.value;
+  };
+  const wanted = () => ({
+    cpu_cores: caps.cpu && !cpuOff.checked ? Number(Number(cpuRange.value).toFixed(2)) : null,
+    memory_bytes: caps.memory && !memOff.checked ? Number(memNumber.value) * MIB : null,
+    pids_max: caps.pids && pidsInput.value ? Number(pidsInput.value) : null,
+  });
+  const resetInputs = () => {
+    cpuOff.checked = !limits.cpu_cores;
+    if (limits.cpu_cores) cpuRange.value = limits.cpu_cores;
+    memOff.checked = !limits.memory_bytes;
+    if (limits.memory_bytes) memRange.value = Math.round(limits.memory_bytes / MIB);
+    memNumber.value = limits.memory_bytes ? Math.round(limits.memory_bytes / MIB) : memRange.value;
+    pidsInput.value = limits.pids_max ?? '';
+    syncLabels();
+  };
+
+  let saving = false;
+  let again = false;
+  const apply = async () => {
+    // Keyboard moves fire several changes; apply the last one after the
+    // request in flight.
+    if (saving) {
+      again = true;
+      return;
+    }
+    saving = true;
+    const req = wanted();
+    applied.textContent = 'Applying…';
+    try {
+      let res;
+      try {
+        res = await api('PUT', `/projects/${enc(project.id)}/resources`, req);
+      } catch (err) {
+        if (err.code !== 'confirmation_required') throw err;
+        const ok = await confirmDialog({
+          title: 'Apply this limit anyway?',
+          message: err.message,
+          confirmLabel: 'Apply anyway',
+          danger: true,
+        });
+        if (!ok) {
+          resetInputs();
+          applied.textContent = 'Not changed.';
+          return;
+        }
+        res = await api('PUT', `/projects/${enc(project.id)}/resources`, { ...req, force: true });
+      }
+      limits = res.limits;
+      applied.textContent = `Applied at ${new Date().toLocaleTimeString()}, without a restart.`;
+      toast(`${project.name}: ${describeLimits(limits)}`);
+    } catch (err) {
+      if (err.status !== 401) toast(err.message, 'bad');
+      resetInputs();
+      applied.textContent = '';
+    } finally {
+      saving = false;
+      if (again) {
+        again = false;
+        apply();
+      }
+    }
+  };
+
+  cpuRange.addEventListener('input', syncLabels);
+  memRange.addEventListener('input', syncLabels);
+  memNumber.addEventListener('input', () => {
+    memRange.value = memNumber.value;
+    cpuValue.textContent = cpuOff.checked ? 'No limit' : `${Number(cpuRange.value).toFixed(2)} cores`;
+  });
+  // Moving a slider applies it when released (or on Enter in a number box).
+  for (const el of [cpuRange, memRange, memNumber, pidsInput]) el.addEventListener('change', apply);
+  for (const box of [cpuOff, memOff]) box.addEventListener('change', () => { syncLabels(); apply(); });
+  resetInputs();
+
+  const limitRow = (title, control, hint) => h('div', { class: 'limit' },
+    h('div', { class: 'limit-head' }, h('h3', {}, title), hint),
+    control);
+  const limitsCard = h('section', { class: 'card', 'data-limits': '' },
+    h('div', { class: 'card-header' }, h('h2', {}, 'Limits'), h('span', { class: 'spacer' }), applied),
+    h('div', { class: 'card-body' },
+      canLimit
+        ? h('p', { class: 'muted small' }, 'Changes apply to the running app immediately, without a restart, and again on every start and deploy. ',
+          caps.reason ? caps.reason : '')
+        : h('div', { class: 'alert warn', 'data-unsupported': '' },
+          h('strong', {}, 'Limits are not available on this server. '), caps.reason || '',
+          ' Usage is still measured.'),
+      limitRow('CPU', h('div', { class: 'slider' }, cpuRange, cpuValue),
+        h('label', { class: 'small', for: 'cpu-unlimited' }, cpuOff, ' No limit')),
+      limitRow('Memory', h('div', { class: 'slider' }, memRange, memNumber, h('span', { class: 'muted small' }, 'MiB')),
+        h('label', { class: 'small', for: 'mem-unlimited' }, memOff, ' No limit')),
+      h('p', { class: 'muted small' }, `Over the memory limit, the kernel stops the app and Aegis restarts it. The soft limit (90%) makes it reclaim memory first. Host: ${caps.host_cpu_cores} cores, ${fmtBytes(caps.host_memory_bytes)}; apps are promised ${fmtBytes(caps.committed_memory_bytes)} in total.`),
+      caps.pids ? limitRow('Processes', h('div', { class: 'slider' }, pidsInput), h('span', { class: 'muted small' }, 'Max processes and threads')) : null));
+
+  const chartCard = (title, chart) => h('section', { class: 'card' },
+    h('div', { class: 'card-header' }, h('h2', {}, title)),
+    h('div', { class: 'card-body' }, chart.el));
+
+  append(body,
+    h('div', { class: 'grid stats compact' }, stats.map((x) => x.el)),
+    h('div', { class: 'section page-header' }, h('h2', {}, 'Usage'), h('div', { class: 'spacer' }), rangeButtons),
+    h('div', { class: 'grid two' }, chartCard('CPU', cpuChart), chartCard('Memory', memChart)),
+    h('div', { class: 'section' }, limitsCard));
+  await loadHistory();
+  // Keep longer ranges fresh.
+  every(ctx, 60_000, () => {
+    if (range !== '5m') loadHistory().catch(() => {});
+  });
+}
+
 // --- Activity tab ------------------------------------------------------
 
 async function activityTab(body, ctx) {
@@ -1416,6 +1851,13 @@ function describeEvent(e) {
     case 'ProcessFailed':
       bits.push(p.reason);
       break;
+    case 'ResourceLimitsChanged':
+      bits.push(describeLimits(p.limits));
+      break;
+    case 'ResourcePressureDetected':
+      bits.length = 0;
+      bits.push(p.message);
+      break;
     case 'ProcessStopped':
       bits.push(p.reason);
       break;
@@ -1440,7 +1882,7 @@ function describeEvent(e) {
 }
 
 function eventKind(type) {
-  if (/Failed|Crashed/.test(type)) return 'bad';
+  if (/Failed|Crashed|ResourcePressure/.test(type)) return 'bad';
   if (/RolledBack|LoginFailed/.test(type)) return 'warn';
   if (/Completed|Succeeded|Promoted|LoggedIn/.test(type)) return 'ok';
   return '';
@@ -1462,6 +1904,7 @@ const EVENT_CATEGORIES = [
   ['deploy', 'Deployments & builds', (t) => /^(Deployment|BuildStage|Release|Rollback|Scheduled)/.test(t)],
   ['process', 'Processes', (t) => t.startsWith('Process')],
   ['access', 'Access & security', (t) => /^(User|Password|ApiToken|Webhook)/.test(t)],
+  ['resources', 'Resources & alerts', (t) => t.startsWith('Resource')],
   ['config', 'App configuration', (t) => /^(Project|Schedule)/.test(t)],
 ];
 
@@ -1858,7 +2301,7 @@ const SHORTCUTS = [
   ['g e', 'Events'],
   ['g a', 'Account'],
   ['n', 'New app'],
-  ['1 – 5', 'Switch tabs on an app page'],
+  ['1 – 6', 'Switch tabs on an app page'],
   ['/', 'Search (logs and events)'],
   ['t', 'Toggle light/dark theme'],
   ['?', 'Show shortcuts'],

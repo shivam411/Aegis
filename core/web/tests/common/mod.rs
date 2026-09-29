@@ -32,6 +32,13 @@ pub async fn api() -> Api {
 }
 
 pub async fn api_with(settings_web: WebSettings) -> Api {
+    api_configured(settings_web, |_| {}).await
+}
+
+pub async fn api_configured(
+    settings_web: WebSettings,
+    configure: impl FnOnce(&mut ControlSettings),
+) -> Api {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -48,6 +55,8 @@ pub async fn api_with(settings_web: WebSettings) -> Api {
     let data = TempDir::new().unwrap();
     let mut settings = ControlSettings::new(data.path().to_path_buf());
     settings.health_poll_interval = Duration::from_millis(100);
+    settings.sample_interval = Duration::from_millis(250);
+    configure(&mut settings);
     let control = ControlPlane::new(EventStore::new(pool), ProcessSupervisor::new(), settings)
         .await
         .unwrap();

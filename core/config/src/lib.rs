@@ -40,6 +40,95 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default)]
     pub web: WebConfig,
+    #[serde(default)]
+    pub resources: ResourcesConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
+}
+
+/// `[resources]`: per-app limits and metrics.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResourcesConfig {
+    /// "auto" (use cgroups when possible) or "off".
+    pub cgroups: String,
+    /// cgroup v2 only: create app cgroups under this directory instead of
+    /// detecting one. It must have the cpu and memory controllers enabled
+    /// in its cgroup.subtree_control.
+    pub cgroup_root: Option<PathBuf>,
+    /// How often apps and the host are measured.
+    pub sample_interval_secs: u64,
+    /// How long per-minute metric rollups are kept.
+    pub retention_days: u64,
+}
+
+impl Default for ResourcesConfig {
+    fn default() -> Self {
+        Self {
+            cgroups: "auto".into(),
+            cgroup_root: None,
+            sample_interval_secs: 2,
+            retention_days: 7,
+        }
+    }
+}
+
+impl ResourcesConfig {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if !matches!(self.cgroups.as_str(), "auto" | "off") {
+            anyhow::bail!("resources.cgroups must be \"auto\" or \"off\"");
+        }
+        if !(1..=60).contains(&self.sample_interval_secs) {
+            anyhow::bail!("resources.sample_interval_secs must be 1-60");
+        }
+        if !(1..=365).contains(&self.retention_days) {
+            anyhow::bail!("resources.retention_days must be 1-365");
+        }
+        if let Some(root) = &self.cgroup_root {
+            if !root.is_absolute() {
+                anyhow::bail!("resources.cgroup_root must be an absolute path");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `[notifications]`: where alerts go.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// A Slack incoming-webhook URL. Deployment failures, crashes and
+    /// resource alerts are posted to it.
+    pub slack_webhook_url: Option<String>,
+}
+
+impl NotificationsConfig {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if let Some(url) = &self.slack_webhook_url {
+            if !url.starts_with("https://") && !url.starts_with("http://") {
+                anyhow::bail!("notifications.slack_webhook_url must be an http(s) URL");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resource limits for one app. `None` means unlimited.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResourceLimits {
+    /// CPU time as a number of cores (0.5 = half of one core).
+    pub cpu_cores: Option<f64>,
+    /// Hard memory limit in bytes; the soft limit is 90% of it.
+    pub memory_bytes: Option<u64>,
+    /// Maximum number of processes and threads.
+    pub pids_max: Option<u64>,
+}
+
+impl ResourceLimits {
+    pub fn is_unlimited(&self) -> bool {
+        self.cpu_cores.is_none() && self.memory_bytes.is_none() && self.pids_max.is_none()
+    }
 }
 
 fn is_loopback_host(host: &str) -> bool {

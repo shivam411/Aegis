@@ -29,6 +29,9 @@ pub struct ProjectState {
     /// Settings edited in the dashboard, applied on top of aegis.toml.
     #[serde(default)]
     pub settings: aegis_config::ProjectOverrides,
+    /// CPU, memory and process limits (unlimited by default).
+    #[serde(default)]
+    pub resources: aegis_config::ResourceLimits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -204,7 +207,11 @@ impl ProjectionEngine {
                         current_release: previous.as_ref().and_then(|p| p.current_release.clone()),
                         current_process: previous.as_ref().and_then(|p| p.current_process),
                         schedule: previous.as_ref().and_then(|p| p.schedule.clone()),
-                        settings: previous.map(|p| p.settings).unwrap_or_default(),
+                        settings: previous
+                            .as_ref()
+                            .map(|p| p.settings.clone())
+                            .unwrap_or_default(),
+                        resources: previous.map(|p| p.resources).unwrap_or_default(),
                     },
                 );
             }
@@ -217,6 +224,17 @@ impl ProjectionEngine {
                         .and_then(|v| serde_json::from_value(v.clone()).ok()),
                 ) {
                     project.settings = settings;
+                }
+            }
+            "ResourceLimitsChanged" => {
+                if let (Some(project), Some(limits)) = (
+                    id_field::<ProjectId>(&payload, "project_id")
+                        .and_then(|id| st.projects.get_mut(&id)),
+                    payload
+                        .get("limits")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                ) {
+                    project.resources = limits;
                 }
             }
             "ScheduleConfigured" => {
@@ -614,6 +632,14 @@ mod tests {
             "ProjectSettingsUpdated",
             serde_json::json!({"project_id": proj_id.to_string(), "settings": {"start_command": "node server.js", "port": 4000}}),
         ));
+        engine.apply_event(&ev(
+            "ResourceLimitsChanged",
+            serde_json::json!({"project_id": proj_id.to_string(), "limits": {"cpu_cores": 0.5, "memory_bytes": 1048576}}),
+        ));
+        let resources = engine.get_project(&proj_id).unwrap().resources;
+        assert_eq!(resources.cpu_cores, Some(0.5));
+        assert_eq!(resources.memory_bytes, Some(1048576));
+        assert_eq!(resources.pids_max, None);
         let settings = engine.get_project(&proj_id).unwrap().settings;
         assert_eq!(settings.start_command.as_deref(), Some("node server.js"));
         assert_eq!(settings.port, Some(4000));

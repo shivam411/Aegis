@@ -8,5 +8,9 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+serde_json = { workspace = true }
 aegis-types = { path = "../../core/types" }
 aegis-plugins = { path = "../../core/plugin" }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+webpki-roots = "0.26"

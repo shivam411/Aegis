@@ -47,6 +47,12 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | Method & path | Does |
 | :--- | :--- |
 | `GET /status` | Version, project count, running apps, event count |
+| `GET /resources` | Whether this host can enforce limits (`backend`: cgroup2, cgroup1 or none, with a `reason`), host size, and the limits already promised to apps |
+| `GET /projects/{project}/resources` | The app's limits and its latest usage sample |
+| `PUT /projects/{project}/resources` | Set limits, applied at once without a restart: `{"cpu_cores"?, "memory_bytes"?, "pids_max"?, "force"?}` (omitted = unlimited). A memory limit below current use, or more memory promised than the host has, returns 409 `confirmation_required` unless `force` is true |
+| `GET /projects/{project}/metrics?range=&points=` | CPU and memory history with the limits in effect (`range`: e.g. `5m`, `1h`, `24h`, `7d`; up to an hour at 2 s resolution, longer from per-minute rollups) |
+| `GET /host/metrics?range=&points=` | The same for the whole host |
+| `GET /metrics/stream?project=&host=` | **SSE**: a `sample` message per app (and the host) every sample interval |
 | `GET /host` | Host CPU %, memory, swap, disk (the data directory's filesystem) and load average, sampled every 5 s |
 | `POST /detect` | Detect runtime and default commands: `{"source_dir"}` or `{"repository_url", "branch"?}` (shallow clone into scratch space) |
 | `GET /projects` | Projects with their live release, schedule and process |
@@ -101,6 +107,7 @@ Errors use HTTP status codes and a JSON body:
 | `csrf` | 403 | Session request without the right `X-CSRF-Token` |
 | `rate_limited` | 429 | Too many failed sign-ins; see `Retry-After` |
 | `not_found` | 404 | Unknown project, process, deployment or endpoint |
+| `confirmation_required` | 409 | A risky resource limit; repeat with `"force": true` |
 | `failed_precondition` | 409 | E.g. nothing to roll back to, already running, or the rollback target didn't become healthy |
 | `internal` | 500 | Unexpected failure; see the daemon log |
 

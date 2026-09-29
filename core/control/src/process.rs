@@ -284,6 +284,8 @@ impl ControlPlane {
     /// so [`ControlPlane::recover`] starts them again on the next boot.
     pub async fn shutdown(&self) {
         self.inner.shutting_down.store(true, Ordering::SeqCst);
+        // Keep the minute of metrics in progress.
+        self.inner.history.flush().await;
         let running: Vec<(ProcessId, aegis_types::ProjectId)> = self
             .inner
             .supervisor
