@@ -523,3 +523,57 @@ async fn events_record_the_acting_principal() {
     assert_eq!(schedules[0]["actor"], "user:alice");
     assert!(schedules[1].get("actor").is_none());
 }
+
+#[tokio::test]
+async fn dashboard_settings_apply_to_the_next_release_only() {
+    let h = harness().await;
+    assert_eq!(deploy(&h, "r1").await.status, "Success");
+
+    // Change the start command from the dashboard: r2 serves a different file.
+    let mut settings = aegis_config::ProjectOverrides {
+        build_command: Some("echo $AEGIS_RELEASE_VERSION-custom > version.txt".into()),
+        ..Default::default()
+    };
+    h.control
+        .update_project_settings(h.project_id, settings.clone())
+        .await
+        .unwrap();
+    assert_eq!(deploy(&h, "r2").await.status, "Success");
+    assert_eq!(serving(h.port).await.as_deref(), Some("r2-custom"));
+
+    // Rolling back to r1 uses r1's own settings.
+    assert_eq!(h.control.rollback(h.project_id, None).await.unwrap(), "r1");
+    assert_eq!(serving(h.port).await.as_deref(), Some("r1"));
+
+    settings.port = Some(0);
+    assert!(h
+        .control
+        .update_project_settings(h.project_id, settings.clone())
+        .await
+        .is_err());
+    settings.port = None;
+    settings.health_check_url = Some("https://nope/".into());
+    assert!(h
+        .control
+        .update_project_settings(h.project_id, settings)
+        .await
+        .is_err());
+
+    // The build log and per-deployment events are available.
+    let dep = h
+        .control
+        .list_deployments(Some(&h.project_id))
+        .pop()
+        .unwrap();
+    let log = h.control.deployment_log(&dep, 100);
+    assert!(
+        log.iter().any(|l| l.contains("Applied project settings")),
+        "{log:?}"
+    );
+    let events = h.control.deployment_events(&dep).await.unwrap();
+    assert!(events.iter().any(|e| e.event_type == "DeploymentCompleted"));
+    assert!(events
+        .iter()
+        .all(|e| e.payload_json.contains(&dep.id.to_string())));
+    h.control.shutdown().await;
+}

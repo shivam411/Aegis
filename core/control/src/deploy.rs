@@ -318,6 +318,7 @@ impl ControlPlane {
             source,
             release_dir: release_dir.clone(),
             log_path: self.deployment_log_path(project_id, deployment_id),
+            overrides: project.settings.clone(),
         };
         let output = match BuildPipeline::new(&self.inner.artifact_store, &reporter)
             .run(&request)

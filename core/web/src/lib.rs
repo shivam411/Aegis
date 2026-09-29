@@ -11,6 +11,7 @@ mod auth;
 pub mod dto;
 mod guard;
 pub mod tls;
+mod ui;
 
 use aegis_auth::{AuthStore, LoginThrottle};
 use aegis_control::{ControlError, ControlPlane};
@@ -68,6 +69,8 @@ pub struct AppState {
     pub shutdown: watch::Receiver<bool>,
     /// Recently seen webhook delivery ids, to ignore redeliveries.
     pub deliveries: Arc<Mutex<VecDeque<String>>>,
+    /// Host CPU/memory/disk sampler for the dashboard.
+    pub host: aegis_metrics::HostMonitor,
 }
 
 impl AppState {
@@ -78,7 +81,10 @@ impl AppState {
         version: String,
         shutdown: watch::Receiver<bool>,
     ) -> Self {
+        let host = aegis_metrics::HostMonitor::new(control.data_dir().clone());
+        host.start(std::time::Duration::from_secs(5));
         Self {
+            host,
             control,
             auth,
             limiter: Arc::new(LoginThrottle::default()),
@@ -227,7 +233,8 @@ impl Modify for SecuritySchemes {
         api::status, api::list_projects, api::create_project, api::get_project, api::deploy,
         api::rollback, api::set_schedule, api::list_releases, api::list_deployments,
         api::get_deployment, api::list_processes, api::process_action, api::get_logs,
-        api::stream_logs, api::list_events, api::stream_events,
+        api::stream_logs, api::list_events, api::stream_events, api::host,
+        api::update_settings, api::detect, api::deployment_log, api::deployment_events,
         auth::login, auth::logout, auth::session_info, auth::change_password,
         auth::list_tokens, auth::create_token, auth::revoke_token,
         auth::rotate_webhook_secret, auth::github_webhook
@@ -237,7 +244,8 @@ impl Modify for SecuritySchemes {
         LogLineDto, LogsDto, CreateProjectRequest, DeployRequest, DeployAccepted,
         RollbackRequest, RollbackResult, ScheduleRequest, ErrorBody, ErrorDetail,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
-        NewTokenDto, WebhookSecretDto, WebhookResult
+        NewTokenDto, WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
+        DetectedDto, HostDto, BuildLogDto
     )),
     tags(
         (name = "auth"), (name = "system"), (name = "projects"), (name = "deployments"),
@@ -267,6 +275,8 @@ pub fn router(state: AppState) -> Router {
         .route("/tokens", get(auth::list_tokens).post(auth::create_token))
         .route("/tokens/:id", delete(auth::revoke_token))
         .route("/status", get(api::status))
+        .route("/host", get(api::host))
+        .route("/detect", post(api::detect))
         .route(
             "/projects",
             get(api::list_projects).post(api::create_project),
@@ -275,6 +285,7 @@ pub fn router(state: AppState) -> Router {
         .route("/projects/:project/deploy", post(api::deploy))
         .route("/projects/:project/rollback", post(api::rollback))
         .route("/projects/:project/schedule", put(api::set_schedule))
+        .route("/projects/:project/settings", put(api::update_settings))
         .route(
             "/projects/:project/webhook",
             post(auth::rotate_webhook_secret),
@@ -282,6 +293,8 @@ pub fn router(state: AppState) -> Router {
         .route("/projects/:project/releases", get(api::list_releases))
         .route("/deployments", get(api::list_deployments))
         .route("/deployments/:id", get(api::get_deployment))
+        .route("/deployments/:id/log", get(api::deployment_log))
+        .route("/deployments/:id/events", get(api::deployment_events))
         .route("/processes", get(api::list_processes))
         .route("/processes/:target/logs", get(api::get_logs))
         .route("/processes/:target/logs/stream", get(api::stream_logs))
@@ -295,6 +308,8 @@ pub fn router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024));
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/", get(ui::index))
+        .route("/assets/:file", get(ui::asset))
         .nest("/api/v1", api)
         .nest("/hooks", hooks)
         .fallback(not_found)

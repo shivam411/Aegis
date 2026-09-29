@@ -323,6 +323,147 @@ impl ControlPlane {
             .ok_or_else(|| ControlError::Internal(anyhow::anyhow!("Project vanished")))
     }
 
+    /// Replaces a project's dashboard settings. They take effect on the next
+    /// deployment (each release keeps the settings it was built with).
+    pub async fn update_project_settings(
+        &self,
+        project_id: ProjectId,
+        settings: aegis_config::ProjectOverrides,
+    ) -> ControlResult<ProjectState> {
+        if self.inner.projection.get_project(&project_id).is_none() {
+            return Err(ControlError::NotFound(format!(
+                "Unknown project {}",
+                project_id
+            )));
+        }
+        let clean = |v: Option<String>| v.map(|s| s.trim().to_string());
+        let settings = aegis_config::ProjectOverrides {
+            install_command: clean(settings.install_command),
+            build_command: clean(settings.build_command),
+            test_command: clean(settings.test_command),
+            start_command: clean(settings.start_command).filter(|s| !s.is_empty()),
+            port: settings.port,
+            health_check_url: clean(settings.health_check_url),
+        };
+        if settings.port == Some(0) {
+            return Err(ControlError::InvalidArgument("Port must be 1-65535".into()));
+        }
+        if let Some(url) = settings
+            .health_check_url
+            .as_deref()
+            .filter(|u| !u.is_empty())
+        {
+            if !(url.starts_with("http://") || url.starts_with("tcp://")) {
+                return Err(ControlError::InvalidArgument(
+                    "The health check URL must start with http:// (or tcp:// for a port check)"
+                        .into(),
+                ));
+            }
+            let target = url.strip_prefix("tcp://").unwrap_or(url);
+            aegis_health::parse_http_target(target).map_err(|e| {
+                ControlError::InvalidArgument(format!("Invalid health check URL: {}", e))
+            })?;
+        }
+        for command in [
+            &settings.install_command,
+            &settings.build_command,
+            &settings.test_command,
+            &settings.start_command,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if command.contains('\n') || command.len() > 4096 {
+                return Err(ControlError::InvalidArgument(
+                    "Commands must be a single line of at most 4096 characters".into(),
+                ));
+            }
+        }
+        self.record(
+            "ProjectSettingsUpdated",
+            json!({"project_id": project_id.to_string(), "settings": settings}),
+        )
+        .await?;
+        self.inner
+            .projection
+            .get_project(&project_id)
+            .ok_or_else(|| ControlError::Internal(anyhow::anyhow!("Project vanished")))
+    }
+
+    /// Previews the settings a deployment from this source would use:
+    /// aegis.toml (if present) plus runtime detection. Git sources are
+    /// cloned into a scratch directory that is removed afterwards.
+    pub async fn detect_source(
+        &self,
+        source_dir: Option<PathBuf>,
+        repository_url: Option<String>,
+        branch: Option<String>,
+    ) -> ControlResult<aegis_engine::ResolvedProjectConfig> {
+        let source = match (source_dir, repository_url) {
+            (Some(_), Some(_)) => {
+                return Err(ControlError::InvalidArgument(
+                    "Give a source_dir or a repository_url, not both".into(),
+                ))
+            }
+            (Some(dir), None) => aegis_builder::SourceSpec::LocalDir(dir),
+            (None, Some(url)) => {
+                aegis_builder::validate_repository_url(&url)
+                    .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+                let reference = branch.unwrap_or_else(|| "main".into());
+                aegis_builder::validate_git_ref(&reference)
+                    .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+                aegis_builder::SourceSpec::Git { url, reference }
+            }
+            (None, None) => {
+                return Err(ControlError::InvalidArgument(
+                    "Give a source_dir or a repository_url".into(),
+                ))
+            }
+        };
+        let scratch = self
+            .inner
+            .settings
+            .data_dir
+            .join("tmp")
+            .join(format!("detect-{}", aegis_types::EventId::new()));
+        aegis_builder::detect_source(&source, &scratch)
+            .await
+            .map_err(|e| {
+                ControlError::FailedPrecondition(format!("Could not read the source: {}", e))
+            })
+    }
+
+    /// The last `lines` lines of a deployment's build log.
+    pub fn deployment_log(&self, deployment: &DeploymentState, lines: usize) -> Vec<String> {
+        let path = self.deployment_log_path(deployment.project_id, deployment.id);
+        let Ok(content) = std::fs::read(&path) else {
+            return Vec::new();
+        };
+        let text = String::from_utf8_lossy(&content);
+        let all: Vec<&str> = text.lines().collect();
+        let skip = all.len().saturating_sub(lines);
+        all[skip..].iter().map(|l| l.to_string()).collect()
+    }
+
+    /// Events recorded for one deployment (stages, outcome), oldest first.
+    pub async fn deployment_events(
+        &self,
+        deployment: &DeploymentState,
+    ) -> ControlResult<Vec<Event>> {
+        let id = deployment.id.to_string();
+        Ok(self
+            .list_events(Some(&deployment.project_id), usize::MAX)
+            .await?
+            .into_iter()
+            .filter(|e| {
+                serde_json::from_str::<Value>(&e.payload_json)
+                    .ok()
+                    .and_then(|v| v.get("deployment_id")?.as_str().map(|d| d == id))
+                    .unwrap_or(false)
+            })
+            .collect())
+    }
+
     /// Finds a project by id or (unique) name.
     pub fn resolve_project(&self, key: &str) -> ControlResult<ProjectState> {
         if let Ok(id) = key.parse::<ProjectId>() {

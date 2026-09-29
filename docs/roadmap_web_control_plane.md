@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phases 0–2 complete · Phase 3 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phases 0–3 complete · Phase 4 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
 
 ---
 
@@ -97,7 +97,7 @@ The web control plane lives **inside the existing daemon** as a second listener.
 | HTTP server | `axum` inside the daemon (same Tokio runtime as `tonic`) | Same ecosystem as `tonic`; no second process |
 | Business logic | Extract a `ControlPlane` service used by gRPC, HTTP and webhooks | Today, logic sits in the gRPC handler and a 200-line saga closure in `main.rs`; a third transport would duplicate it |
 | Live updates | Server-Sent Events (SSE) for events, deploy progress, metrics and logs | One-directional, works through proxies, auto-reconnects, simpler than WebSockets |
-| Frontend | Server-rendered HTML (`askama`) + htmx + a small vendored JS chart library (uPlot), embedded in the binary with `rust-embed` | Keeps the build Rust-only (no Node toolchain in CI or for source builds), so it stays a single binary. *Alternative:* a Vite + Svelte SPA if the UI outgrows htmx, at the cost of a Node build step. |
+| Frontend | A dependency-free vanilla JavaScript single-page app (`core/web/ui/`), embedded in the binary with `include_str!` and built on the same `/api/v1` endpoints as the CLI *(changed in Phase 3; the original plan was askama + htmx)* | Still no build step and no Node toolchain for source builds, so it stays a single binary. Talking to the JSON API directly means the dashboard can't drift from it, live views use the existing SSE streams, and a strict content security policy (no inline code, same-origin only) is easy to keep. Node is only needed to run the Playwright browser tests. |
 | Resource limits | cgroup v2 on Linux: one cgroup per managed app, with `cpu.max`, `memory.max` and `memory.high` | Limits can be changed **live, without restarting the app**, which is what the sliders need. Fallback: `systemd-run --scope` plus `systemctl set-property`. |
 | Metrics | `sysinfo` crate for the host; `/proc/<pid>` and cgroup `cpu.stat` / `memory.current` for each app; in-memory ring buffer plus 1-minute rollups in SQLite | No Prometheus required. A `/metrics` Prometheus endpoint is optional later. |
 | Config | New `[web]` section in `aegis.toml` | See §3 |
@@ -174,9 +174,18 @@ Deliberately not included: built-in ACME. It can't be tested without a public do
 
 Evidence: 12 security tests in `core/web/tests/auth.rs` (route-by-route 401, cookie flags and CSRF, throttling, scopes, password change, streams closing on revocation, Host allowlist, signed webhooks deploying a real commit and ignoring replays, HTTPS over HTTP/1.1 and HTTP/2 with certificate renewal), 7 in `core/auth` (including 50 parallel sign-in attempts → exactly 5 allowed), config refusal tests, an independent security review of the diff, and new end-to-end steps (authentication, read-only token, unsafe-config refusals) in `scripts/e2e-smoke.sh`.
 
-### Phase 3 — Web dashboard MVP *(~2–3 weeks)* → **v0.5.0**
+### Phase 3 — Web dashboard MVP ✅ *done* → **v0.5.0**
 
-Pages, served from the embedded assets:
+Delivered: the daemon serves the dashboard at `/` when `[web] enabled = true`. It is a vanilla-JS SPA with no build step (see "Frontend" in the decisions table), with these additions to the API:
+
+- `GET /host`: CPU, memory, swap, disk and load, sampled every 5 s.
+- `POST /detect`: runtime detection for a server directory or a git URL (shallow clone into scratch space).
+- `PUT /projects/{p}/settings`: dashboard overrides for install/build/test/start commands, port and health URL. They are stored as a `ProjectSettingsUpdated` event and merged into each new release's `aegis.toml`, so rollbacks keep the settings a release was built with.
+- `GET /deployments/{id}/log` and `GET /deployments/{id}/events`: the build log and the stage events of one deployment.
+
+Playwright tests (`ui-tests/`, run in CI) drive a real daemon through the scenario below, on desktop and on a phone-sized screen. Every test also fails on any CSP violation or uncaught script error.
+
+Planned scope (all delivered):
 
 1. **Login**
 2. **Overview:** host CPU, memory, disk and load; a card per app with status, current version, uptime, restart count and quick actions.
@@ -274,6 +283,6 @@ memory_mb = 512
 | :--- | :--- | :--- |
 | **M-Core** ✅ | 0 | Deploy/stop/restart/rollback do real work |
 | **M-API** ✅ | 1 + 2 | Secure HTTP API reachable on the VPS |
-| **v0.5.0 — Web MVP** | 3 | Manage all apps from the browser |
+| **v0.5.0 — Web MVP** ✅ | 3 | Manage all apps from the browser |
 | **v0.6.0 — Resource Control** | 4 | Live CPU/memory monitoring and slider limits |
 | **v0.7.0 — Self-serve Ops** | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |

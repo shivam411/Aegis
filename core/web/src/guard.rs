@@ -121,9 +121,12 @@ pub async fn guard(State(st): State<AppState>, req: Request, next: Next) -> Resp
     next.run(req).await
 }
 
-/// Hardening headers on every response. The API serves only JSON and event
-/// streams, so the content security policy allows nothing at all.
+/// Hardening headers on every response. API responses (JSON and event
+/// streams) get a content security policy that allows nothing at all; the
+/// dashboard's own files get one that allows only same-origin resources.
 pub async fn security_headers(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    let dashboard = path == "/" || path.starts_with("/assets/");
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     let set = |h: &mut axum::http::HeaderMap, name: &'static str, value: &'static str| {
@@ -135,7 +138,15 @@ pub async fn security_headers(State(st): State<AppState>, req: Request, next: Ne
     set(
         h,
         "content-security-policy",
-        "default-src 'none'; frame-ancestors 'none'",
+        if dashboard {
+            // The dashboard: same-origin scripts, styles and API calls only;
+            // no inline code, no third-party resources.
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+             connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; \
+             frame-ancestors 'none'"
+        } else {
+            "default-src 'none'; frame-ancestors 'none'"
+        },
     );
     set(h, "cache-control", "no-store");
     if st.settings.https {

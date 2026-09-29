@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-
+tokio = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+sysinfo = { version = "0.32", default-features = false, features = ["system", "disk"] }

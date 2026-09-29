@@ -45,6 +45,7 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
 | `ProjectCreated` | New project initialized | `project_id`, `name`, `repository_url`, `branch`, `runtime`, `source_dir` |
+| `ProjectSettingsUpdated` | Build/run settings edited in the dashboard or API (override aegis.toml from the next deployment) | `project_id`, `settings`, `actor` |
 | `ScheduleConfigured` | Daily auto-deployment time set (UTC) | `project_id`, `hour`, `minute`, `branch` |
 | `ProjectUpdated` | Config or environment updated | `project_id`, `updated_fields` |
 | `ProjectDeleted` | Project removed from workspace | `project_id`, `deleted_at` |
@@ -110,7 +111,7 @@ Every event recorded because of an API call carries `actor`: `user:<name>`, `tok
 | `UserLoginFailed` | Wrong username or password (the attempted password is never recorded) | `username`, `ip` |
 | `UserLoggedOut` | Session ended by the user | `username` |
 | `PasswordChanged` / `PasswordReset` | Password changed in the API / reset on the server; all sessions end | `username` |
-| `ApiTokenCreated` / `ApiTokenRevoked` | API token lifecycle | `token_id`, `name`, `scope` |
+| `ApiTokenCreated` / `ApiTokenRevoked` | API token lifecycle | `token_id`, plus `name` and `scope` when created |
 | `WebhookSecretRotated` | A project's webhook secret was created or replaced | `project_id` |
 
 ---

@@ -261,6 +261,42 @@ impl ProjectFile {
     }
 }
 
+/// Project settings edited in the dashboard. They override the matching
+/// `aegis.toml` values and are written into each release's `aegis.toml`
+/// when it is built, so every release stays self-contained.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ProjectOverrides {
+    pub install_command: Option<String>,
+    pub build_command: Option<String>,
+    pub test_command: Option<String>,
+    pub start_command: Option<String>,
+    pub port: Option<u16>,
+    pub health_check_url: Option<String>,
+}
+
+impl ProjectOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn apply_to(&self, file: &mut ProjectFile) {
+        let set = |target: &mut Option<String>, value: &Option<String>| {
+            if let Some(v) = value {
+                *target = Some(v.clone());
+            }
+        };
+        set(&mut file.build.install_command, &self.install_command);
+        set(&mut file.build.build_command, &self.build_command);
+        set(&mut file.build.test_command, &self.test_command);
+        set(&mut file.build.start_command, &self.start_command);
+        set(&mut file.deploy.health_check_url, &self.health_check_url);
+        if let Some(port) = self.port {
+            file.deploy.port = Some(port);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +403,30 @@ strategy = "GracefulSwitch"
             ..DaemonConfig::default()
         };
         assert!(d.validate().is_err(), "gRPC must stay on loopback");
+    }
+
+    #[test]
+    fn test_overrides_apply_on_top_of_file() {
+        let mut file = ProjectFile::parse(
+            "[build]\nbuild_command = \"make\"\nstart_command = \"./old\"\n[deploy]\nport = 3000\n",
+        )
+        .unwrap();
+        let overrides = ProjectOverrides {
+            start_command: Some("./new".into()),
+            port: Some(4000),
+            health_check_url: Some(String::new()),
+            ..Default::default()
+        };
+        assert!(!overrides.is_empty());
+        assert!(ProjectOverrides::default().is_empty());
+        overrides.apply_to(&mut file);
+        assert_eq!(file.build.build_command.as_deref(), Some("make"));
+        assert_eq!(file.build.start_command.as_deref(), Some("./new"));
+        assert_eq!(file.deploy.port, Some(4000));
+        // An empty string is kept: it means "no health URL" when resolved.
+        assert_eq!(file.deploy.health_check_url.as_deref(), Some(""));
+        let round_trip = ProjectFile::parse(&toml::to_string_pretty(&file).unwrap()).unwrap();
+        assert_eq!(round_trip, file);
     }
 
     #[test]

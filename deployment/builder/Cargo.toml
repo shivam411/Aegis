@@ -12,6 +12,8 @@ aegis-types = { path = "../../core/types" }
 aegis-release = { path = "../release" }
 aegis-artifact-store = { path = "../artifact_store" }
 aegis-engine = { path = "../../runtime/engine" }
+aegis-config = { path = "../../core/config" }
+toml = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

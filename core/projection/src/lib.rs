@@ -26,6 +26,9 @@ pub struct ProjectState {
     pub current_process: Option<ProcessId>,
     /// Daily auto-deployment, if configured.
     pub schedule: Option<ScheduleState>,
+    /// Settings edited in the dashboard, applied on top of aegis.toml.
+    #[serde(default)]
+    pub settings: aegis_config::ProjectOverrides,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -200,9 +203,21 @@ impl ProjectionEngine {
                         source_dir: string_field(&payload, "source_dir"),
                         current_release: previous.as_ref().and_then(|p| p.current_release.clone()),
                         current_process: previous.as_ref().and_then(|p| p.current_process),
-                        schedule: previous.and_then(|p| p.schedule),
+                        schedule: previous.as_ref().and_then(|p| p.schedule.clone()),
+                        settings: previous.map(|p| p.settings).unwrap_or_default(),
                     },
                 );
+            }
+            "ProjectSettingsUpdated" => {
+                if let (Some(project), Some(settings)) = (
+                    id_field::<ProjectId>(&payload, "project_id")
+                        .and_then(|id| st.projects.get_mut(&id)),
+                    payload
+                        .get("settings")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                ) {
+                    project.settings = settings;
+                }
             }
             "ScheduleConfigured" => {
                 if let Some(project) = id_field::<ProjectId>(&payload, "project_id")
@@ -594,6 +609,14 @@ mod tests {
                 branch: "prod".to_string()
             })
         );
+
+        engine.apply_event(&ev(
+            "ProjectSettingsUpdated",
+            serde_json::json!({"project_id": proj_id.to_string(), "settings": {"start_command": "node server.js", "port": 4000}}),
+        ));
+        let settings = engine.get_project(&proj_id).unwrap().settings;
+        assert_eq!(settings.start_command.as_deref(), Some("node server.js"));
+        assert_eq!(settings.port, Some(4000));
 
         let single_proj = engine.get_project(&proj_id);
         assert!(single_proj.is_some());

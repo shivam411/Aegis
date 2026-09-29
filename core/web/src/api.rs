@@ -467,3 +467,96 @@ pub(crate) async fn stream_logs(
     };
     Ok(until_shutdown(&st, credential, history.chain(tail).boxed()))
 }
+
+// ----------------------------------------------------------------------
+// Dashboard support
+// ----------------------------------------------------------------------
+
+#[utoipa::path(get, path = "/api/v1/host", tag = "system",
+    responses((status = 200, description = "Host CPU, memory, disk and load (sampled every few seconds)", body = HostDto)))]
+pub(crate) async fn host(State(st): State<AppState>) -> Json<HostDto> {
+    let monitor = st.host.clone();
+    let snapshot = tokio::task::spawn_blocking(move || monitor.latest())
+        .await
+        .unwrap_or_else(|_| st.host.latest());
+    Json(snapshot.into())
+}
+
+#[utoipa::path(put, path = "/api/v1/projects/{project}/settings", tag = "projects",
+    params(("project" = String, Path, description = "Project id or name")),
+    request_body = ProjectSettingsDto,
+    responses((status = 200, description = "Saved; applies to the next deployment", body = ProjectDto),
+              (status = 400, body = ErrorBody)))]
+pub(crate) async fn update_settings(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+    ApiJson(req): ApiJson<ProjectSettingsDto>,
+) -> ApiResult<Json<ProjectDto>> {
+    let project = st.control.resolve_project(&key)?;
+    st.control
+        .update_project_settings(project.id, req.into())
+        .await?;
+    Ok(Json(project_view(&st, &project.id)?))
+}
+
+#[utoipa::path(post, path = "/api/v1/detect", tag = "projects",
+    request_body = DetectRequest,
+    responses((status = 200, description = "Settings a deployment from this source would use", body = DetectedDto),
+              (status = 409, description = "The source couldn't be read (e.g. clone failed)", body = ErrorBody)))]
+pub(crate) async fn detect(
+    State(st): State<AppState>,
+    ApiJson(req): ApiJson<DetectRequest>,
+) -> ApiResult<Json<DetectedDto>> {
+    let detected = st
+        .control
+        .detect_source(
+            non_empty(req.source_dir).map(PathBuf::from),
+            non_empty(req.repository_url),
+            non_empty(req.branch),
+        )
+        .await?;
+    Ok(Json(detected.into()))
+}
+
+fn deployment_by_id(st: &AppState, id: &str) -> ApiResult<aegis_projection::DeploymentState> {
+    let id: DeploymentId = id
+        .parse()
+        .map_err(|e| ApiError::bad_request(format!("Invalid deployment id: {}", e)))?;
+    st.control.get_deployment(&id).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("Unknown deployment {}", id),
+        )
+    })
+}
+
+#[utoipa::path(get, path = "/api/v1/deployments/{id}/log", tag = "deployments",
+    params(("id" = String, Path, description = "Deployment id"), LogsQuery),
+    responses((status = 200, description = "Output of the build commands", body = BuildLogDto)))]
+pub(crate) async fn deployment_log(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<LogsQuery>,
+) -> ApiResult<Json<BuildLogDto>> {
+    let deployment = deployment_by_id(&st, &id)?;
+    let lines = st
+        .control
+        .deployment_log(&deployment, q.lines.unwrap_or(500).min(5000));
+    Ok(Json(BuildLogDto {
+        deployment_id: deployment.id.to_string(),
+        lines,
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/deployments/{id}/events", tag = "deployments",
+    params(("id" = String, Path, description = "Deployment id")),
+    responses((status = 200, description = "The deployment's stage and outcome events, oldest first", body = [EventDto])))]
+pub(crate) async fn deployment_events(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<EventDto>>> {
+    let deployment = deployment_by_id(&st, &id)?;
+    let events = st.control.deployment_events(&deployment).await?;
+    Ok(Json(events.into_iter().map(Into::into).collect()))
+}

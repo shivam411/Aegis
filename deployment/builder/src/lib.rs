@@ -102,6 +102,8 @@ pub struct BuildRequest {
     pub release_dir: PathBuf,
     /// Output of every command is appended here.
     pub log_path: PathBuf,
+    /// Settings from the dashboard, merged into the release's aegis.toml.
+    pub overrides: aegis_config::ProjectOverrides,
 }
 
 #[derive(Debug)]
@@ -194,6 +196,12 @@ impl<'a> BuildPipeline<'a> {
             Ok(c) => c,
             Err(e) => return Err(self.fail(PipelineStage::Clone, e, &log).await),
         };
+        if !req.overrides.is_empty() {
+            if let Err(e) = write_overrides(&req.release_dir, &req.overrides) {
+                return Err(self.fail(PipelineStage::Clone, e, &log).await);
+            }
+            log.line("==> Applied project settings from the dashboard to aegis.toml");
+        }
         let config = match ResolvedProjectConfig::load(&req.release_dir) {
             Ok(c) => c,
             Err(e) => {
@@ -383,6 +391,55 @@ async fn commit_info(dir: &Path, fallback_sha: &str) -> CommitInfo {
         message,
         author,
     }
+}
+
+/// Merges dashboard settings into `dir/aegis.toml`, creating it if needed.
+fn write_overrides(
+    dir: &Path,
+    overrides: &aegis_config::ProjectOverrides,
+) -> Result<(), anyhow::Error> {
+    let mut file = aegis_config::ProjectFile::load_from_dir(dir)?.unwrap_or_default();
+    overrides.apply_to(&mut file);
+    std::fs::write(
+        dir.join("aegis.toml"),
+        format!(
+            "# Settings from the Aegis dashboard were merged into this file.\n{}",
+            toml::to_string_pretty(&file)?
+        ),
+    )?;
+    Ok(())
+}
+
+/// Fetches a source into a scratch directory and reports the settings a
+/// deployment would use (aegis.toml plus runtime detection), for previewing
+/// a project before it is registered. `scratch` is removed afterwards.
+pub async fn detect_source(
+    source: &SourceSpec,
+    scratch: &Path,
+) -> Result<ResolvedProjectConfig, anyhow::Error> {
+    if let SourceSpec::LocalDir(dir) = source {
+        if !dir.is_dir() {
+            anyhow::bail!("Directory {} does not exist", dir.display());
+        }
+        return ResolvedProjectConfig::load(dir);
+    }
+    let _ = std::fs::remove_dir_all(scratch);
+    let checkout = scratch.join("checkout");
+    let mut log = BuildLog::new(scratch.join("detect.log"))?;
+    let result = async {
+        fetch_source(source, &checkout, &mut log).await?;
+        ResolvedProjectConfig::load(&checkout)
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(scratch);
+    result.map_err(|e| {
+        let detail = log.tail().join("\n");
+        if detail.is_empty() {
+            e
+        } else {
+            anyhow::anyhow!("{}\n{}", e, detail)
+        }
+    })
 }
 
 /// Rejects repository URLs git could interpret as options or as
@@ -755,6 +812,7 @@ mod tests {
             source,
             release_dir: root.join("releases/r1"),
             log_path: root.join("logs/build.log"),
+            overrides: Default::default(),
         }
     }
 
@@ -863,6 +921,83 @@ GREETING = "hi"
                 PipelineStage::Verify
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_settings_are_written_into_the_release() {
+        let src = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("aegis.toml"),
+            "[build]\nbuild_command = \"echo from-file\"\nstart_command = \"./old\"\n",
+        )
+        .unwrap();
+        let store = ArtifactStore::new(out.path().join("artifacts"));
+        let recorder = Recorder::default();
+        let mut req = request(SourceSpec::LocalDir(src.path().to_path_buf()), out.path());
+        req.overrides = aegis_config::ProjectOverrides {
+            start_command: Some("./new".into()),
+            port: Some(4321),
+            ..Default::default()
+        };
+        let output = BuildPipeline::new(&store, &recorder)
+            .run(&req)
+            .await
+            .unwrap();
+        assert_eq!(output.config.start_command, "./new");
+        assert_eq!(output.config.port, Some(4321));
+        assert_eq!(
+            output.config.build_command.as_deref(),
+            Some("echo from-file")
+        );
+        // The release carries the merged settings for later restarts/rollbacks.
+        let written = ResolvedProjectConfig::load(&req.release_dir).unwrap();
+        assert_eq!(written.start_command, "./new");
+        // The source directory is untouched.
+        let original = std::fs::read_to_string(src.path().join("aegis.toml")).unwrap();
+        assert!(original.contains("./old"));
+    }
+
+    #[tokio::test]
+    async fn test_detect_source_from_git_and_directory() {
+        let repo = TempDir::new().unwrap();
+        git(repo.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("package.json"), "{}").unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-q", "-m", "init"]);
+        let scratch = TempDir::new().unwrap();
+        let scratch_dir = scratch.path().join("detect");
+        let cfg = detect_source(
+            &SourceSpec::Git {
+                url: repo.path().to_string_lossy().to_string(),
+                reference: "main".into(),
+            },
+            &scratch_dir,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cfg.runtime, "Node.js");
+        assert_eq!(cfg.port, Some(3000));
+        assert!(!scratch_dir.exists(), "scratch checkout removed");
+
+        let local = detect_source(
+            &SourceSpec::LocalDir(repo.path().to_path_buf()),
+            &scratch_dir,
+        )
+        .await
+        .unwrap();
+        assert_eq!(local.start_command, "npm start");
+
+        let err = detect_source(
+            &SourceSpec::Git {
+                url: repo.path().to_string_lossy().to_string(),
+                reference: "no-such-branch".into(),
+            },
+            &scratch_dir,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("exited"), "{err}");
     }
 
     #[tokio::test]

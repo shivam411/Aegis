@@ -37,7 +37,7 @@ Every change made over the API is a domain event with an `actor` field: `user:ad
 
 - **Host:** only loopback names or names in `web.allowed_hosts` are accepted. This blocks DNS-rebinding attacks.
 - **Origin / Sec-Fetch-Site:** cross-site requests are rejected.
-- **Headers on every response:** `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`, plus `Strict-Transport-Security` over HTTPS.
+- **Headers on every response:** `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` on the API (the dashboard's own files get a policy that allows only same-origin scripts, styles, images and connections, with no inline code), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`, plus `Strict-Transport-Security` over HTTPS.
 
 ## Exposing the web API
 
@@ -119,3 +119,7 @@ Only pushes to the project's branch deploy, and always from the project's **conf
 - Credentials embedded in a repository URL (`https://user:token@…`) are stored in events that `read` tokens can see; they are redacted only in build logs. Prefer SSH deploy keys.
 - Apps run as the same user as the daemon, so a compromised app can read the daemon's database. Per-app users are future work.
 - No built-in ACME; use certbot or a reverse proxy.
+
+## The web dashboard
+
+The dashboard's HTML, JavaScript and CSS are compiled into the daemon and served without authentication, because they contain no data. Everything it shows comes from `/api/v1` with the session cookie, and every change it makes carries the CSRF token, so it has exactly the access the signed-in user has. It builds pages from DOM nodes (never `innerHTML` with data), loads nothing from third parties, and runs under a policy that blocks inline scripts. The CSRF token is kept only in memory: the page fetches it from `/auth/session` after a reload.

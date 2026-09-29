@@ -234,6 +234,121 @@
         }
       }
     },
+    "/api/v1/deployments/{id}/events": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "deployment_events",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Deployment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deployment's stage and outcome events, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/deployments/{id}/log": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "deployment_log",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Deployment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Number of lines (default 100, max 5000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Output of the build commands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuildLogDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/detect": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "detect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Settings a deployment from this source would use",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectedDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The source couldn't be read (e.g. clone failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/events": {
       "get": {
         "tags": [
@@ -300,6 +415,26 @@
             "description": "One SSE message per new event: `event:` is the event type, `data:` an EventDto. A `lagged` message means some events were dropped for this client.",
             "content": {
               "text/event-stream": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/host": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "host",
+        "responses": {
+          "200": {
+            "description": "Host CPU, memory, disk and load (sampled every few seconds)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostDto"
+                }
+              }
             }
           }
         }
@@ -797,6 +932,57 @@
         }
       }
     },
+    "/api/v1/projects/{project}/settings": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "update_settings",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectSettingsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; applies to the next deployment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/webhook": {
       "post": {
         "tags": [
@@ -1032,6 +1218,24 @@
   },
   "components": {
     "schemas": {
+      "BuildLogDto": {
+        "type": "object",
+        "required": [
+          "deployment_id",
+          "lines"
+        ],
+        "properties": {
+          "deployment_id": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ChangePasswordRequest": {
         "type": "object",
         "required": [
@@ -1249,6 +1453,91 @@
           }
         }
       },
+      "DetectRequest": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "...a git repository to clone (shallow) for detection.",
+            "default": null
+          },
+          "source_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A directory on the server, or...",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "DetectedDto": {
+        "type": "object",
+        "description": "The settings a deployment from this source would use.",
+        "required": [
+          "name",
+          "runtime",
+          "start_command",
+          "strategy"
+        ],
+        "properties": {
+          "build_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health_check_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "install_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "runtime": {
+            "type": "string"
+          },
+          "start_command": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "test_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "required": [
@@ -1296,6 +1585,92 @@
           },
           "payload": {
             "type": "object"
+          }
+        }
+      },
+      "HostDto": {
+        "type": "object",
+        "required": [
+          "hostname",
+          "os",
+          "uptime_secs",
+          "cpu_count",
+          "cpu_percent",
+          "load_average",
+          "memory_total_bytes",
+          "memory_used_bytes",
+          "swap_total_bytes",
+          "swap_used_bytes",
+          "disk_mount_point",
+          "disk_total_bytes",
+          "disk_available_bytes",
+          "sampled_at"
+        ],
+        "properties": {
+          "cpu_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cpu_percent": {
+            "type": "number",
+            "format": "float",
+            "description": "0-100, averaged over all cores."
+          },
+          "disk_available_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disk_mount_point": {
+            "type": "string",
+            "description": "Filesystem holding the data directory."
+          },
+          "disk_total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "load_average": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "1, 5 and 15 minute load averages."
+          },
+          "memory_total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "os": {
+            "type": "string"
+          },
+          "sampled_at": {
+            "type": "string"
+          },
+          "swap_total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "swap_used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "uptime_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -1440,7 +1815,8 @@
           "name",
           "repository_url",
           "branch",
-          "created_at"
+          "created_at",
+          "settings"
         ],
         "properties": {
           "branch": {
@@ -1492,6 +1868,10 @@
               }
             ]
           },
+          "settings": {
+            "$ref": "#/components/schemas/ProjectSettingsDto",
+            "description": "Settings edited in the dashboard (override aegis.toml)."
+          },
           "source_dir": {
             "type": [
               "string",
@@ -1499,6 +1879,57 @@
             ]
           }
         }
+      },
+      "ProjectSettingsDto": {
+        "type": "object",
+        "description": "Settings that override aegis.toml for future deployments. Omitted\nfields fall back to aegis.toml and runtime detection. An empty\n`health_check_url` means \"healthy while the process stays up\".",
+        "properties": {
+          "build_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "health_check_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "install_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "default": null,
+            "minimum": 0
+          },
+          "start_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "test_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "additionalProperties": false
       },
       "ReleaseDto": {
         "type": "object",

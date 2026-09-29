@@ -101,3 +101,31 @@ jobs:
         # failed builds, auto-rollback of unhealthy releases, manual rollback
         # and daemon restarts against the real binaries.
         run: BIN_DIR=target/release scripts/e2e-smoke.sh
+
+      - name: Install dashboard test dependencies
+        working-directory: ui-tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Dashboard browser tests
+        # Drives the web dashboard in Chromium against the same release
+        # build: sign-in, new-app wizard, live deploy pipeline, logs,
+        # process control, rollback, timeline, audit log, API tokens, and a
+        # phone-sized viewport. Any CSP violation or script error fails it.
+        working-directory: ui-tests
+        env:
+          BIN_DIR: target/release
+          CI: 'true'
+        run: npx playwright test
+
+      - name: Upload dashboard test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            ui-tests/playwright-report
+            ui-tests/test-results
+            ui-tests/.work/daemon.log
+          retention-days: 7

@@ -167,6 +167,20 @@ For a deep dive, see the [**Architecture Documentation**](https://shivam411.gith
 
 `target` is a process id or a project id/name; without it, commands use the project in `./aegis.toml`.
 
+### Web dashboard
+
+With `[web] enabled = true`, open `http://127.0.0.1:8420/` (through an SSH tunnel, a reverse proxy, or built-in TLS) and sign in as `admin`. From the browser you can:
+
+- **Overview:** host CPU, memory, disk and load, plus every app's status, version, uptime and restarts.
+- **Deploy:** choose a branch, commit and strategy, and watch the 7-stage pipeline and build log live.
+- **Operate:** start, stop and restart apps, and roll back from the release history.
+- **Logs:** follow, pause, search and download live logs.
+- **Audit:** browse the deployments timeline and a filterable event log showing who did what.
+- **Add apps:** a wizard goes from repo URL to auto-detected settings to a first deploy.
+- **Manage:** edit app settings, set daily schedules, create webhook secrets and API tokens.
+
+The dashboard has light and dark themes, works on a phone, and has keyboard shortcuts (press `?`).
+
 ### HTTP API
 
 Set `[web] enabled = true` and the daemon also serves an authenticated JSON API, with live Server-Sent Events, on `127.0.0.1:8420`. Sign in as `admin` (the first password is in `<data_dir>/initial-admin-password`) or use API tokens. Reach it through an SSH tunnel, a reverse proxy with HTTPS, or built-in TLS. See [docs/http_api.md](docs/http_api.md), [docs/security.md](docs/security.md) and [docs/openapi.json](docs/openapi.json).
@@ -221,6 +235,10 @@ cargo check --workspace          # Compile check
 cargo test --workspace           # Run all tests
 cargo clippy --workspace         # Lint
 cargo fmt --all                  # Format
+
+# Dashboard browser tests (needs Node 18+; uses a debug build of the daemon)
+cargo build -p aegis-daemon
+cd ui-tests && npm ci && npx playwright install chromium && npx playwright test
 ```
 
 ### Repository Layout
@@ -234,6 +252,7 @@ Aegis/
 ├── ui/             # CLI (clap + tonic), TUI (ratatui + crossterm)
 ├── integrations/   # Slack, GitHub, Docker plugins
 ├── docs/           # Documentation (GitHub Pages)
+├── ui-tests/       # Playwright tests for the web dashboard
 ├── scripts/        # Install/uninstall helpers
 ├── install.sh      # One-line installer
 └── .github/        # CI, release, and pages workflows

@@ -24,6 +24,9 @@ aegis-projection = { path = "../projection" }
 aegis-process = { path = "../../runtime/process" }
 aegis-types = { path = "../types" }
 aegis-webhook = { path = "../../git/webhook" }
+aegis-metrics = { path = "../../runtime/metrics" }
+aegis-config = { path = "../config" }
+aegis-engine = { path = "../../runtime/engine" }
 
 [dev-dependencies]
 hyper = { version = "1", features = ["client", "http2"] }

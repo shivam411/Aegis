@@ -1,6 +1,6 @@
 # HTTP API
 
-The daemon can serve a JSON API alongside gRPC. It exposes everything the CLI does: projects, deployments, rollbacks, process control, logs, schedules and events, plus live **Server-Sent Events** streams. The web dashboard (roadmap Phase 3) will be built on it.
+The daemon can serve a JSON API alongside gRPC. It exposes everything the CLI does: projects, deployments, rollbacks, process control, logs, schedules and events, plus live **Server-Sent Events** streams. The web dashboard, served at `/` on the same port, is built entirely on it.
 
 The full schema is in [`openapi.json`](openapi.json). The running daemon also serves it at `/api/v1/openapi.json`.
 
@@ -47,15 +47,20 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | Method & path | Does |
 | :--- | :--- |
 | `GET /status` | Version, project count, running apps, event count |
+| `GET /host` | Host CPU %, memory, swap, disk (the data directory's filesystem) and load average, sampled every 5 s |
+| `POST /detect` | Detect runtime and default commands: `{"source_dir"}` or `{"repository_url", "branch"?}` (shallow clone into scratch space) |
 | `GET /projects` | Projects with their live release, schedule and process |
 | `POST /projects` | Register a project: `{"name", "source_dir"?, "repository_url"?, "branch"?, "project_id"?}` |
 | `GET /projects/{project}` | One project |
 | `POST /projects/{project}/deploy` | Queue a deployment (**202**): `{"version"?, "strategy"?, "branch"?, "commit"?, "source_dir"?, "repository_url"?}` |
 | `POST /projects/{project}/rollback` | Switch to the previous (or `{"version"}`) release; returns once it's live |
 | `PUT /projects/{project}/schedule` | Daily auto-deploy: `{"hour", "minute"?, "branch"?}` (UTC) |
+| `PUT /projects/{project}/settings` | Override aegis.toml for future deployments: `{"install_command"?, "build_command"?, "test_command"?, "start_command"?, "port"?, "health_check_url"?}`. Omitted fields follow aegis.toml; an empty command skips that stage; an empty `health_check_url` means "healthy while the process stays up". Replaces all previous overrides |
 | `GET /projects/{project}/releases` | Release history |
 | `GET /deployments?project=` | Deployment history |
 | `GET /deployments/{id}` | One deployment: status, current stage, error |
+| `GET /deployments/{id}/log?lines=` | The deployment's build log (default 500 lines, max 5000) |
+| `GET /deployments/{id}/events` | The deployment's events (queued, each pipeline stage, outcome), oldest first |
 | `GET /processes?project=` | Processes |
 | `POST /processes/{target}/{start\|stop\|restart}` | Process control |
 | `GET /processes/{target}/logs?lines=` | Recent log lines |
@@ -75,6 +80,7 @@ Outside `/api/v1`:
 | Method & path | Does |
 | :--- | :--- |
 | `GET /healthz` | `ok` (public; for load balancers and proxies) |
+| `GET /` · `GET /assets/{file}` | The web dashboard's static files (public; they contain no data, and every API call they make needs a session) |
 | `POST /hooks/github/{project-id}` | GitHub push webhook, authenticated by `X-Hub-Signature-256` |
 
 Raw event injection (`aegis emit-event`) is deliberately not offered over HTTP.
@@ -126,4 +132,4 @@ Follow an app's logs:
 curl -N -H "$AUTH" "$API/processes/shop/logs/stream?lines=50"
 ```
 
-In a browser, `new EventSource('/api/v1/events/stream')` works from a same-origin page (the future dashboard); the session cookie authenticates it.
+In a browser, `new EventSource('/api/v1/events/stream')` works from a same-origin page such as the dashboard; the session cookie authenticates it.
