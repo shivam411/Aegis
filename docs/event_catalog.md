@@ -49,6 +49,8 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | `ResourceLimitsChanged` | CPU/memory/process limits changed (applied live) | `project_id`, `limits`, `previous`, `applied_to_processes`, `forced`, `actor` |
 | `ResourcePressureDetected` | An alert: `kind` is `oom_kill`, `cpu_throttled` (≥50% of periods for 30 s), `memory_pressure` (≥90% of the limit for 30 s) or `disk_low` (<10% free) | `kind`, `message`, `project_id` (not for `disk_low`), and figures such as `oom_kills`, `memory_limit_bytes` |
 | `ScheduleConfigured` | Daily auto-deployment time set (UTC) | `project_id`, `hour`, `minute`, `branch` |
+| `DomainMapped` | The built-in proxy serves the project on a domain (re-mapping an existing domain changes its TLS mode) | `project_id`, `domain` (lowercase), `tls` (`acme`, `files` or `off`), `cert_path` and `key_path` (files mode), `actor` |
+| `DomainUnmapped` | The domain is no longer served | `project_id`, `domain`, `actor` |
 | `ProjectUpdated` | Config or environment updated | `project_id`, `updated_fields` |
 | `ProjectDeleted` | Project removed from workspace | `project_id`, `deleted_at` |
 
@@ -57,7 +59,7 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
 | `ReleaseCreated` | A build finished and the release is ready to start | `release_id`, `project_id`, `deployment_id`, `version`, `commit_sha`, `commit_message`, `checksum`, `path` |
-| `ReleasePromoted` | The release passed its health check and is now live | `release_id`, `project_id`, `version`, `previous_version` |
+| `ReleasePromoted` | The release passed its health check and is now live | `release_id`, `project_id`, `version`, `previous_version`, `process_id` (the process now serving), `port` (where the proxy sends its traffic) |
 | `ReleaseArchived` | The release directory was removed by retention | `project_id`, `version` |
 
 ### Deployment Aggregate
@@ -87,14 +89,14 @@ Each stage reports `Started`, then `Success`, `Skipped` (no command configured) 
 | `BuildStageTest` | `build.test_command` | `deployment_id`, `project_id`, `stage`, `status`, `detail` |
 | `BuildStagePackage` | Content checksum of the release recorded | `deployment_id`, `project_id`, `stage`, `status`, `detail` (sha256) |
 | `BuildStageVerify` | Artifact metadata and files present | `deployment_id`, `project_id`, `stage`, `status` |
-| `BuildStagePromote` | Cutover: old process stopped, new process started and health-checked | `deployment_id`, `project_id`, `stage`, `status`, `detail` |
+| `BuildStagePromote` | Cutover: the new process started and health-checked, the old one stopped (behind the proxy: new started next to the old, traffic switched, old drained) | `deployment_id`, `project_id`, `stage`, `status`, `detail` |
 
 ### Process Aggregate
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
 | `ProcessStartRequested` / `ProcessStopRequested` / `ProcessRestartRequested` | An operator action (audit record) | `process_id`, `project_id` |
-| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd` |
+| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd`, `port` (its `PORT`), `proxied` (port allocated for the proxy), `candidate` (a new release starting next to the live one) |
 | `ProcessCrashed` | The process exited without being asked to | `process_id`, `project_id`, `exit_code`, `will_restart`, `restart_delay_ms` |
 | `ProcessFailed` | Crash loop or spawn failure; the supervisor stopped restarting it | `process_id`, `project_id`, `reason` |
 | `ProcessStopped` | The process was stopped | `process_id`, `project_id`, `reason` (`requested`, `replaced`, `restart`, `shutdown`), `exit_code` |
@@ -122,5 +124,6 @@ Every event recorded because of an API call carries `actor`: `user:<name>`, `tok
 1. `ProjectCreated` creates or updates `ProjectState`.
 2. `DeploymentQueued` → `Queued`, `DeploymentStarted` → `InProgress`, `DeploymentCompleted` → `Success`, `DeploymentFailed` → `Failed`, `DeploymentRolledBack` → `RolledBack`. `BuildStage*` events update the deployment's current stage.
 3. `ReleaseCreated` → release `Built`. `ReleasePromoted` makes the release `Active`, marks the project's previously active release `Inactive`, records when it went live, and sets the project's current release. The time it went live, not build order, decides the default rollback target and which releases retention keeps. A built release whose deployment fails becomes `Failed`. `ReleaseArchived` → `Archived`.
-4. `ProcessStarted` sets the project's current process. Process events update status, PID, exit code and desired state.
-5. Events are applied in insertion order (`seq`), synchronously as they are stored, and replayed in the same order on startup.
+4. `ProcessStarted` sets the project's current process, unless it is a `candidate`: then `ReleasePromoted` (via `process_id`) makes it current once it is healthy. Process events update status, PID, port, exit code and desired state.
+5. `DomainMapped` adds the domain to the project (removing it from any other project); `DomainUnmapped` removes it. On boot, the proxy's routes are rebuilt from the projects' domains and their current processes' ports.
+6. Events are applied in insertion order (`seq`), synchronously as they are stored, and replayed in the same order on startup.

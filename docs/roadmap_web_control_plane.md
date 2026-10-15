@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phases 0–4 complete · Phase 5 next · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phases 0–4 complete · Phase 5 in progress (domains and reverse proxy done) · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
 
 ---
 
@@ -50,7 +50,7 @@ These passed tests but didn't do what the docs and CLI claimed. Phase 0 fixed th
 
 ### Still open after Phase 0 (tracked in later phases)
 
-- **Cutover has a brief gap.** Without a reverse proxy, the old and new process can't share a port, so there is a gap between stopping the old process and the new one accepting connections. The gap lasts as long as the app takes to start listening: about 0.5 s for `examples/node-app`, and several seconds for slow-starting apps such as JVM services. It will be removed by the Phase 5 proxy, which also enables `Rolling`/`BlueGreen`.
+- ~~**Cutover has a brief gap.**~~ *Fixed in Phase 5 for apps with a domain on the built-in proxy; apps without one keep the gap described here.* Without a reverse proxy, the old and new process can't share a port, so there is a gap between stopping the old process and the new one accepting connections. The gap lasts as long as the app takes to start listening: about 0.5 s for `examples/node-app`, and several seconds for slow-starting apps such as JVM services. It will be removed by the Phase 5 proxy, which also enables `Rolling`/`BlueGreen`.
 - ~~**Superseded crates.**~~ `deployment/strategy` and `deployment/rollback` were removed in Phase 1.
 - **Stub crates.** `metrics`, `auth`, `secrets`, `ssh`, `state`, `analytics`, `action`, `docker` and `github` are still stubs; they are scheduled in Phases 2, 4 and 5.
 - **Experimental CLI commands.** `replay`, `incident`, `investigate`, `inspect --at` and `upgrade` still print placeholder output.
@@ -170,7 +170,7 @@ Delivered (details in [security.md](security.md)):
 - **Audit log:** attempted usernames are recorded only for existing accounts.
 - **Documentation:** the proxy's `X-Forwarded-For` requirement, and the fact that a deploy token is admin-equivalent.
 
-Deliberately not included: built-in ACME. It can't be tested without a public domain, so the recommended path is Caddy (automatic HTTPS) or certbot with `[web.tls]`. Multiple users and roles remain Phase 6.
+Deliberately not included in Phase 2: built-in ACME. *(Added in Phase 5 with the built-in proxy; Caddy or certbot with `[web.tls]` still work.)* Multiple users and roles remain Phase 6.
 
 Evidence: 12 security tests in `core/web/tests/auth.rs` (route-by-route 401, cookie flags and CSRF, throttling, scopes, password change, streams closing on revocation, Host allowlist, signed webhooks deploying a real commit and ignoring replays, HTTPS over HTTP/1.1 and HTTP/2 with certificate renewal), 7 in `core/auth` (including 50 parallel sign-in attempts → exactly 5 allowed), config refusal tests, an independent security review of the diff, and new end-to-end steps (authentication, read-only token, unsafe-config refusals) in `scripts/e2e-smoke.sh`.
 
@@ -258,7 +258,13 @@ This is the "drag CPU and memory" feature.
 ### Phase 5 — App configuration from the UI *(~2–3 weeks)*
 
 - **Environment variables and secrets:** implement `core/secrets` (encrypted at rest with a key file outside the database). Edit them in the UI; values are masked; applying changes triggers a restart or redeploy.
-- **Domains and reverse proxy:** map a domain to an app, with automatic TLS. Either embed a small `hyper`-based proxy or generate Caddy config. This enables true zero-downtime switching by flipping the upstream port and completes the "Ingress Engine" item from the public roadmap.
+- **Domains and reverse proxy** ✅ *done*. Delivered:
+  - **`runtime/ingress` (`aegis-ingress`):** a `hyper` reverse proxy embedded in the daemon, enabled with `[proxy]`. It routes by `Host` to each app's live process, with a 404 page for unknown hosts and 502 when the app is down. It sets `X-Forwarded-For`/`-Proto`/`-Host` and strips hop-by-hop headers. Upgrades (WebSocket) pass through, bodies stream, and it has connect, header and response timeouts.
+  - **HTTPS:** a certificate per domain, picked by SNI. Certificates come either from ACME HTTP-01 (`instant-acme`; the challenge is answered on port 80) or from PEM files that are reloaded when they change. ACME certificates are stored in `data_dir/certs` (keys 0600) and renewed in the background when fewer than 30 days remain. Once a domain has a certificate, HTTP redirects to HTTPS. Optionally the dashboard can be served on its own domain (`[proxy.dashboard]`).
+  - **Domains as events:** `DomainMapped`/`DomainUnmapped` (validated RFC 1123 names, unique across apps) in the projection. API: `GET/POST /projects/{p}/domains`, `DELETE /projects/{p}/domains/{d}` (users only; tokens are refused) and `GET /proxy`. A Domains card in the app's Settings tab shows the certificate state.
+  - **Zero-downtime cutover:** for apps with a domain, each release gets its own port (`PORT`), and the health check is pointed at it. The new release starts next to the old one. Once it is healthy, the proxy's upstream flips in one step; the old process finishes its in-flight requests and is then stopped. An unhealthy release never receives traffic. Ports are recorded in `ProcessStarted`/`ReleasePromoted`, so routes come back after a daemon restart.
+  - Evidence: proxy integration tests (routing, 404/502, forwarded headers, chunked bodies, upgrades, HTTPS from files with SNI, redirect and reload, ACME challenge), unit tests (hostnames, routing table, headers, expiry parsing and the renewal decision, ACME challenge store), and a control-plane test that hammers the proxy through three deployments, a failed deployment, a rollback and a daemon restart with zero failed requests.
+  - Not done: `Rolling`/`BlueGreen` (they need several instances per app), wildcard domains (DNS-01) and TLS-ALPN-01. ACME issuance against a real CA is untested in CI (no public domain); the challenge handler and renewal logic are unit-tested.
 - **Schedules:** manage daily auto-deploys (`SchedulerEngine`) from the UI; persist and replay them on restart.
 - **Webhook setup:** show the webhook URL and secret for each app, with a "test delivery" button.
 - **Configuration as code:** the UI edits and `aegis.toml` stay in sync; the UI shows the diff before saving.
@@ -301,7 +307,7 @@ memory_mb = 512
 
 ## 4. New domain events
 
-`ProcessStopRequested`, `ProcessRestartRequested`, `RollbackRequested`, `ResourceLimitsChanged`, `ResourcePressureDetected`, `UserLoggedIn`, `UserLoginFailed`, `ApiTokenCreated`, `ApiTokenRevoked`, `SecretUpdated` (the value is never stored in the event), `DomainMapped`. Every event triggered from the web gains an `actor` field. Add each to `docs/event_catalog.md` when it is implemented.
+`ProcessStopRequested`, `ProcessRestartRequested`, `RollbackRequested`, `ResourceLimitsChanged`, `ResourcePressureDetected`, `UserLoggedIn`, `UserLoginFailed`, `ApiTokenCreated`, `ApiTokenRevoked`, `SecretUpdated` (the value is never stored in the event), `DomainMapped` / `DomainUnmapped` (done). Every event triggered from the web gains an `actor` field. Add each to `docs/event_catalog.md` when it is implemented.
 
 ## 5. Risks
 

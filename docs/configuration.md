@@ -44,8 +44,8 @@ NODE_ENV = "production"
 | `build.test_command` | None | Runs after build. A non-zero exit code fails the deployment. |
 | `build.start_command` | Detected | Run with `sh -c` in the release directory, in its own process group. |
 | `build.timeout_secs` | `1800` | Each install/build/test command is killed after this long. |
-| `deploy.strategy` | `GracefulSwitch` | `GracefulSwitch` sends SIGTERM and waits up to `drain_timeout_secs`. `Immediate` doesn't wait. `Rolling` and `BlueGreen` need multiple instances behind a proxy, which is planned for roadmap Phase 5. |
-| `deploy.port` | Detected | Exported as `PORT` unless `[env]` sets `PORT`. |
+| `deploy.strategy` | `GracefulSwitch` | `GracefulSwitch` sends SIGTERM and waits up to `drain_timeout_secs`. `Immediate` doesn't wait. For apps with a domain on the built-in proxy, `GracefulSwitch` is zero-downtime (see `[proxy]` below). `Rolling` and `BlueGreen` need several instances per app and aren't supported yet. |
+| `deploy.port` | Detected | Exported as `PORT` unless `[env]` sets `PORT`. Behind the built-in proxy each release gets its own `PORT` instead. |
 | `deploy.health_check_url` | `http://127.0.0.1:<port>/health` | Any HTTP response below 500 counts as healthy. Use `tcp://host:port` for a TCP-only check. With an empty string, the release counts as healthy if its process stays up for 3 seconds. |
 | `deploy.health_check_timeout_secs` | `30` | How long a new release may take to become healthy before it is rolled back. |
 | `deploy.drain_timeout_secs` | `10` | Grace period between SIGTERM and SIGKILL when stopping the app. |
@@ -136,6 +136,64 @@ When set, Aegis posts to Slack when:
 - an app crash-loops;
 - a resource alert fires: out-of-memory kill, sustained CPU throttling, memory near its limit, or low disk.
 
+### Domains and the built-in reverse proxy (`[proxy]`)
+
+```toml
+[proxy]
+enabled = false            # off by default
+host = "0.0.0.0"           # address both listeners bind to
+http_port = 80             # HTTP, ACME challenges, redirects to HTTPS
+https_port = 443           # HTTPS; certificates chosen by SNI
+
+[proxy.acme]               # automatic certificates
+enabled = false
+email = "ops@example.com"  # optional contact for the CA
+directory_url = "production"   # "production" or "staging" (Let's Encrypt), or an ACME directory URL
+
+[proxy.dashboard]          # optional: the dashboard and API on their own domain
+domain = "aegis.example.com"
+tls = "acme"               # or "files" with cert_path / key_path
+```
+
+With the proxy on, the daemon serves each app on the domains mapped to it (dashboard Settings tab, or `POST /api/v1/projects/{p}/domains`). Requests are routed by `Host` to the app's live process on `127.0.0.1`. Unknown hosts get a 404 page, and an app that isn't running gets a 502. The proxy:
+
+- forwards `X-Forwarded-For` (the client address is appended, so apps should trust only the last entry), `X-Forwarded-Proto` and `X-Forwarded-Host`, and keeps the original `Host`;
+- removes hop-by-hop headers;
+- passes WebSocket and other `Upgrade` connections through;
+- streams request and response bodies;
+- times out connections to the app after 5 s and response headers after 120 s.
+
+Each domain has its own TLS mode:
+
+| Mode | Certificate |
+| :--- | :--- |
+| `acme` | Requested from the ACME CA with the HTTP-01 challenge, which the proxy answers on `http_port` (so port 80 must be reachable from the internet and DNS must point here). Stored under `<data_dir>/certs/<domain>/`: `key.pem` is mode 0600 and the directory 0700. Renewed in the background when fewer than 30 days remain. A failed request is retried after an hour. |
+| `files` | PEM chain and key at absolute paths you manage (e.g. certbot). They are checked when the domain is mapped and reloaded within a minute of changing. |
+| `off` | Plain HTTP only. |
+
+Once a domain has a certificate, HTTP requests to it are redirected (308) to HTTPS.
+
+**Zero-downtime deployments.** For an app with at least one domain, each release gets its own free local port, passed to the app as `PORT`. This overrides `deploy.port` and any `PORT` in `[env]`, so the app must listen on `$PORT`. If the health check URL names the app's configured port, it is probed on the release's port instead. A URL naming another port is left alone.
+
+A deployment (or rollback):
+
+1. starts the new release while the old one keeps serving;
+2. waits until the new release is healthy;
+3. switches the proxy to it in one step;
+4. lets the old process finish its in-flight requests (up to `drain_timeout_secs`), then stops it.
+
+If the new release never becomes healthy, it is stopped and the old one goes on serving untouched. Apps without a domain keep the previous behaviour: they use their configured port, and the old process stops before the new one starts. The port of every process is recorded in its events, so routes come back on a daemon restart.
+
+**Ports 80 and 443** need root or `CAP_NET_BIND_SERVICE`; the systemd unit installed by `install.sh --server` grants the capability.
+
+**`[proxy.dashboard]`** puts the dashboard behind the proxy on its own domain, always over HTTPS. It requires `[web] enabled = true` without `[web.tls]` (keep `web.host` on loopback). The domain is added to `web.allowed_hosts`, and the proxy is trusted for `X-Forwarded-For` and Secure cookies.
+
+The daemon refuses a proxy configuration that:
+
+- uses the same port twice, or a port of the HTTP or gRPC API;
+- has an invalid `host`, ACME email or directory URL;
+- sets up a dashboard domain without HTTPS.
+
 ### Data directory layout
 
 ```
@@ -146,7 +204,9 @@ When set, Aegis posts to Slack when:
 │   └── logs/
 │       ├── <process-id>.log     # app stdout/stderr, rotated at 10 MiB
 │       └── deploy-<id>.log      # output of each deployment's build commands
-└── artifacts/releases/<release-id>/metadata.json   # content checksums
+├── artifacts/releases/<release-id>/metadata.json   # content checksums
+└── certs/                       # [proxy] ACME account(s) and certificates (0700)
+    └── <domain>/cert.pem, key.pem   # key.pem is 0600
 ```
 
 ---
@@ -155,4 +215,5 @@ When set, Aegis posts to Slack when:
 
 - `AEGIS_*` environment variable overrides for individual settings (only `AEGIS_CONFIG` exists today).
 - A global `~/.aegis/config.toml` merged underneath project settings.
-- Built-in ACME (automatic Let's Encrypt). Use certbot with `[web.tls]`, or a reverse proxy.
+- `Rolling` and `BlueGreen` strategies (several instances per app behind the proxy).
+- Wildcard domains and the DNS-01 challenge.

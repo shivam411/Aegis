@@ -81,9 +81,13 @@ impl ControlPlane {
                         "The release for this process is no longer on disk".into(),
                     ));
                 };
-                this.start_release_process(project.id, id, &release, &dir, &config)
+                let port = this.restart_port(&id);
+                let port = this
+                    .start_release_process(project.id, id, &release, &dir, &config, port)
                     .await
-                    .map_err(ControlError::Internal)
+                    .map_err(ControlError::Internal)?;
+                this.route_upstream(project.id, port);
+                Ok(())
             }
         };
 
@@ -149,6 +153,8 @@ impl ControlPlane {
             } => {
                 let info = self.inner.supervisor.get(&id);
                 let release = self.inner.process_release.lock().unwrap().get(&id).cloned();
+                let port = self.inner.process_ports.lock().unwrap().get(&id).copied();
+                let candidate = self.inner.candidates.lock().unwrap().contains(&id);
                 (
                     "ProcessStarted",
                     json!({
@@ -159,6 +165,9 @@ impl ControlPlane {
                         "release_version": release,
                         "command": info.as_ref().map(|i| i.command.clone()),
                         "cwd": info.as_ref().map(|i| i.cwd.to_string_lossy().to_string()),
+                        "port": port.and_then(|p| p.port),
+                        "proxied": port.is_some_and(|p| p.proxied),
+                        "candidate": candidate,
                     }),
                 )
             }
@@ -264,11 +273,13 @@ impl ControlPlane {
                     continue;
                 }
             };
+            let port = self.restart_port(&process.id);
             match self
-                .start_release_process(project.id, process.id, &version, &dir, &config)
+                .start_release_process(project.id, process.id, &version, &dir, &config, port)
                 .await
             {
-                Ok(()) => {
+                Ok(port) => {
+                    self.route_upstream(project.id, port);
                     restarted += 1;
                     tracing::info!(project = %project.name, version = %version, "Restored app process");
                 }

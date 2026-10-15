@@ -873,6 +873,172 @@
         }
       }
     },
+    "/api/v1/projects/{project}/domains": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "operationId": "list_domains",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DomainDto"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "domains"
+        ],
+        "operationId": "map_domain",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MapDomainRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Mapped. With tls = \"acme\", the certificate is requested in the background; the domain's DNS must point to this server and port 80 must be reachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid domain, TLS mode or certificate files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "API tokens can't change domains",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The domain belongs to another app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/domains/{domain}": {
+      "delete": {
+        "tags": [
+          "domains"
+        ],
+        "operationId": "unmap_domain",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The mapped domain",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No longer served"
+          },
+          "403": {
+            "description": "API tokens can't change domains",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/metrics": {
       "get": {
         "tags": [
@@ -1272,6 +1438,26 @@
         }
       }
     },
+    "/api/v1/proxy": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "operationId": "proxy_status",
+        "responses": {
+          "200": {
+            "description": "Listeners, routes and certificates of the built-in proxy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProxyStatusDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/resources": {
       "get": {
         "tags": [
@@ -1500,6 +1686,32 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "CertStatusDto": {
+        "type": "object",
+        "description": "The certificate state of a domain.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "not_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the served certificate expires (RFC 3339)."
+          },
+          "state": {
+            "type": "string",
+            "description": "\"valid\", \"expiring\" (renewal due), \"expired\", \"pending\" (being\nrequested), \"error\", \"disabled\" (ACME is off) or \"off\" (HTTP only)."
           }
         }
       },
@@ -1805,6 +2017,50 @@
           }
         }
       },
+      "DomainDto": {
+        "type": "object",
+        "required": [
+          "domain",
+          "tls",
+          "created_at"
+        ],
+        "properties": {
+          "cert": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CertStatusDto",
+                "description": "Absent while the proxy is disabled."
+              }
+            ]
+          },
+          "cert_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "string",
+            "description": "Lowercase hostname."
+          },
+          "key_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tls": {
+            "type": "string",
+            "description": "\"acme\", \"files\" or \"off\"."
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "required": [
@@ -1992,6 +2248,39 @@
           },
           "process_id": {
             "type": "string"
+          }
+        }
+      },
+      "MapDomainRequest": {
+        "type": "object",
+        "required": [
+          "domain"
+        ],
+        "properties": {
+          "cert_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PEM certificate chain on the server, for tls = \"files\"."
+          },
+          "domain": {
+            "type": "string",
+            "description": "e.g. \"app.example.com\"; no wildcards."
+          },
+          "key_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PEM private key on the server, for tls = \"files\"."
+          },
+          "tls": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "\"acme\" (automatic certificate, default), \"files\" or \"off\"."
           }
         }
       },
@@ -2323,6 +2612,105 @@
           }
         },
         "additionalProperties": false
+      },
+      "ProxyRouteDto": {
+        "type": "object",
+        "required": [
+          "domain",
+          "target",
+          "cert"
+        ],
+        "properties": {
+          "cert": {
+            "$ref": "#/components/schemas/CertStatusDto"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "type": "string",
+            "description": "\"project\" or \"dashboard\"."
+          },
+          "upstream_port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Local port requests go to right now.",
+            "minimum": 0
+          }
+        }
+      },
+      "ProxyStatusDto": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "acme_enabled",
+          "routes"
+        ],
+        "properties": {
+          "acme_directory": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "acme_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "acme_enabled": {
+            "type": "boolean",
+            "description": "Automatic certificates (`[proxy.acme]`)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the built-in proxy runs (`[proxy] enabled`)."
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "http_port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "https_port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProxyRouteDto"
+            }
+          }
+        }
       },
       "ReleaseDto": {
         "type": "object",
@@ -2857,6 +3245,9 @@
     },
     {
       "name": "resources"
+    },
+    {
+      "name": "domains"
     }
   ]
 }

@@ -20,6 +20,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 rustls-pemfile = "2"
 aegis-auth = { path = "../auth" }
 aegis-control = { path = "../control" }
+aegis-ingress = { path = "../../runtime/ingress" }
 aegis-projection = { path = "../projection" }
 aegis-process = { path = "../../runtime/process" }
 aegis-types = { path = "../types" }
