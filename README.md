@@ -18,14 +18,16 @@ curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | b
 | Feature | Description |
 | :--- | :--- |
 | ⚡ **Zero-Dependency** | Single daemon binary with embedded SQLite. No PostgreSQL, Redis, or Docker required. |
-| 🚀 **Zero-Downtime Deployments** | Build in isolation, health-check, atomically switch. Live traffic is never interrupted. |
+| 🚀 **Safe Deployments** | Build in isolation (a failed build never touches the live app), health-check the new release, and roll back automatically if it doesn't come up. Fully zero-downtime cutover needs the planned reverse proxy ([roadmap](docs/roadmap_web_control_plane.md)). |
 | 🧹 **Automated Version Retention** | Keeps the last N releases on disk (default: 2). Older versions auto-pruned after each deploy. |
 | ⏰ **Scheduled Auto-Deployments** | Background scheduler triggers builds at specific daily hours (e.g. `02:00 AM`). |
 | 🛠️ **Polyglot Runtime Detection** | Auto-detects Node.js, Rust, Go, Python, Bun, Deno from project files. |
 | 🖥️ **Terminal UI (TUI)** | Real-time interactive dashboard powered by `ratatui` + `crossterm`. |
 | 🔒 **Event-Sourced Audit Trail** | Every mutation is an immutable domain event. Full replay on startup. |
-| 🔄 **Instant Rollbacks** | Roll back to any previous release without rebuilding from source. |
-| 🔌 **Plugin System** | Extensible event bus with Slack, GitHub, and webhook integrations. |
+| 🔄 **Instant Rollbacks** | Roll back to any retained release without rebuilding from source. |
+| 🎛️ **Live Resource Limits** | Per-app CPU and memory limits with Linux cgroups (v2 or v1), changed from dashboard sliders without restarting the app. Live and 7-day charts, OOM and throttling alerts. |
+| 🌐 **Web Dashboard** | Deploy, roll back, stream logs, watch resources and audit everything from the browser. |
+| 🔌 **Plugin System** | Extensible event bus; Slack alerts for failed deploys, crashes and resource pressure. |
 
 ---
 
@@ -78,7 +80,7 @@ aegis init
 # 2. Verify project configuration
 aegis validate
 
-# 3. Trigger zero-downtime deployment
+# 3. Build, health-check and deploy (rolls back automatically on failure)
 aegis deploy
 
 # 4. Investigate outages & root cause
@@ -150,17 +152,49 @@ For a deep dive, see the [**Architecture Documentation**](https://shivam411.gith
 
 | Command | Description |
 | :--- | :--- |
-| `aegis-cli status` | Query daemon health and version |
-| `aegis-cli init` | Initialize a project with runtime auto-detection |
-| `aegis-cli deploy` | Trigger a zero-downtime deployment |
+| `aegis-cli status` | Daemon version, project count, running apps |
+| `aegis-cli init` | Detect the runtime, write `aegis.toml`, register the project |
+| `aegis-cli validate` | Check `aegis.toml` and show the effective settings |
+| `aegis-cli deploy [project]` | Build and deploy, showing each stage; `--release`, `--repo`, `--commit`, `--detach` |
+| `aegis-cli rollback [project]` | Switch back to the previous (or `--version`) release without rebuilding |
+| `aegis-cli list` | Projects with status, live release, PID and restart count |
+| `aegis-cli logs [target] [-n N] [-f]` | App output (stdout, stderr and supervisor messages) |
+| `aegis-cli start` / `stop` / `restart [target]` | Control an app's process; a stopped app stays stopped across daemon restarts |
+| `aegis-cli releases [project]` | Release history with status and commit |
+| `aegis-cli deployments [project]` | Deployment history with status, failing stage and reason |
+| `aegis-cli timeline [project]` | The project's recent events |
 | `aegis-cli schedule` | Configure daily auto-deployment (`--hour 0-23`) |
-| `aegis-cli rollback` | Roll back to a previous release version |
-| `aegis-cli list` | List active projects and running processes |
-| `aegis-cli logs` | Tail real-time process logs |
-| `aegis-cli stop` | Gracefully stop a process |
-| `aegis-cli restart` | Restart a monitored process |
 | `aegis-cli emit-event` | Emit a custom event to the event store |
 | `aegis-cli stream-events` | Stream live event bus notifications |
+
+`target` is a process id or a project id/name; without it, commands use the project in `./aegis.toml`.
+
+### Web dashboard
+
+With `[web] enabled = true`, open `http://127.0.0.1:8420/` (through an SSH tunnel, a reverse proxy, or built-in TLS) and sign in as `admin`. From the browser you can:
+
+- **Overview:** host CPU, memory, disk and load, plus every app's status, version, uptime and restarts.
+- **Deploy:** choose a branch, commit and strategy, and watch the 7-stage pipeline and build log live.
+- **Operate:** start, stop and restart apps, and roll back from the release history.
+- **Logs:** follow, pause, search and download live logs.
+- **Audit:** browse the deployments timeline and a filterable event log showing who did what.
+- **Add apps:** a wizard goes from repo URL to auto-detected settings to a first deploy.
+- **Resources:** watch live and historical CPU and memory for each app, with its limit drawn on the chart. Drag the CPU and memory sliders to change limits on the running app with no restart. See when an app is throttled or killed for running out of memory.
+- **Manage:** edit app settings, set daily schedules, create webhook secrets and API tokens.
+
+The dashboard has light and dark themes, works on a phone, and has keyboard shortcuts (press `?`).
+
+### HTTP API
+
+Set `[web] enabled = true` and the daemon also serves an authenticated JSON API, with live Server-Sent Events, on `127.0.0.1:8420`. Sign in as `admin` (the first password is in `<data_dir>/initial-admin-password`) or use API tokens. Reach it through an SSH tunnel, a reverse proxy with HTTPS, or built-in TLS. See [docs/http_api.md](docs/http_api.md), [docs/security.md](docs/security.md) and [docs/openapi.json](docs/openapi.json).
+
+### Server install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | sudo bash -s -- --server
+```
+
+This installs Aegis as a hardened systemd service running as a dedicated `aegis` user, with the web API enabled on loopback. Add `--domain aegis.example.com` to prepare it for a reverse proxy such as Caddy.
 
 ---
 
@@ -204,6 +238,10 @@ cargo check --workspace          # Compile check
 cargo test --workspace           # Run all tests
 cargo clippy --workspace         # Lint
 cargo fmt --all                  # Format
+
+# Dashboard browser tests (needs Node 18+; uses a debug build of the daemon)
+cargo build -p aegis-daemon
+cd ui-tests && npm ci && npx playwright install chromium && npx playwright test
 ```
 
 ### Repository Layout
@@ -217,6 +255,7 @@ Aegis/
 ├── ui/             # CLI (clap + tonic), TUI (ratatui + crossterm)
 ├── integrations/   # Slack, GitHub, Docker plugins
 ├── docs/           # Documentation (GitHub Pages)
+├── ui-tests/       # Playwright tests for the web dashboard
 ├── scripts/        # Install/uninstall helpers
 ├── install.sh      # One-line installer
 └── .github/        # CI, release, and pages workflows

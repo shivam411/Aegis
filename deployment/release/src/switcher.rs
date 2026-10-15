@@ -26,8 +26,26 @@ impl ReleaseSwitcher {
         self.base_dir.join("current.json")
     }
 
+    /// Rejects version names that could escape the releases directory.
+    pub fn validate_version(version: &str) -> Result<(), anyhow::Error> {
+        let valid = !version.is_empty()
+            && version.len() <= 128
+            && !version.starts_with('.')
+            && version
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'));
+        if !valid {
+            anyhow::bail!(
+                "Invalid release version '{}': use letters, digits, '.', '_', '-' or '+'",
+                version
+            );
+        }
+        Ok(())
+    }
+
     /// Creates the directory structure for a new release version without affecting active deployments.
     pub async fn prepare_version_dir(&self, version: &str) -> Result<PathBuf, anyhow::Error> {
+        Self::validate_version(version)?;
         let version_dir = self.get_version_dir(version);
         fs::create_dir_all(&version_dir).await?;
         tracing::info!(
@@ -41,6 +59,7 @@ impl ReleaseSwitcher {
 
     /// Atomically switches the active release version pointer to the new target version.
     pub async fn switch_to_version(&self, version: &str) -> Result<PathBuf, anyhow::Error> {
+        Self::validate_version(version)?;
         let version_dir = self.get_version_dir(version);
         if !version_dir.exists() {
             anyhow::bail!(
@@ -83,6 +102,38 @@ impl ReleaseSwitcher {
             .get("active_version")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()))
+    }
+
+    /// Deletes every release directory except the ones in `keep` and the
+    /// active one. Returns the versions that were removed.
+    pub async fn prune_versions(&self, keep: &[String]) -> Result<Vec<String>, anyhow::Error> {
+        let releases_dir = self.base_dir.join("releases");
+        if !releases_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let active_version = self.get_active_version().await?.unwrap_or_default();
+        let mut removed = Vec::new();
+        let mut dir = fs::read_dir(&releases_dir).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == active_version || keep.contains(&name) {
+                continue;
+            }
+            match fs::remove_dir_all(entry.path()).await {
+                Ok(()) => {
+                    tracing::info!(project_id = %self.project_id, version = %name, "Pruned old release");
+                    removed.push(name);
+                }
+                Err(e) => {
+                    tracing::warn!(version = %name, error = %e, "Failed to prune release directory")
+                }
+            }
+        }
+        removed.sort();
+        Ok(removed)
     }
 
     /// Automatically prunes old release version directories exceeding the retention limit (default: 2).
@@ -197,5 +248,33 @@ mod tests {
         assert!(!v2.exists());
         assert!(v3.exists());
         assert!(v4.exists());
+    }
+
+    #[tokio::test]
+    async fn test_prune_versions_keeps_listed_and_active() {
+        let temp = TempDir::new().unwrap();
+        let switcher = ReleaseSwitcher::new(temp.path().to_path_buf(), ProjectId::new());
+        for v in ["r1", "r2", "r3", "r4"] {
+            switcher.prepare_version_dir(v).await.unwrap();
+        }
+        switcher.switch_to_version("r1").await.unwrap();
+        let removed = switcher
+            .prune_versions(&["r3".to_string(), "r4".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(removed, vec!["r2".to_string()]);
+        assert!(switcher.get_version_dir("r1").exists());
+        assert!(switcher.get_version_dir("r3").exists());
+    }
+
+    #[tokio::test]
+    async fn test_version_names_cannot_escape() {
+        let temp = TempDir::new().unwrap();
+        let switcher = ReleaseSwitcher::new(temp.path().to_path_buf(), ProjectId::new());
+        for bad in ["", "..", "../x", "a/b", ".hidden", "v 1"] {
+            assert!(switcher.prepare_version_dir(bad).await.is_err(), "{bad}");
+        }
+        assert!(ReleaseSwitcher::validate_version("20260928-051203-ab12cd3").is_ok());
+        assert!(ReleaseSwitcher::validate_version("v1.2.3+build.5").is_ok());
     }
 }

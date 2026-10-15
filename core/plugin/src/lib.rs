@@ -2,6 +2,8 @@ use aegis_types::Event;
 use async_trait::async_trait;
 use std::sync::Arc;
 
+// async-trait marks the boxed futures #[must_use] (clippy::double_must_use since Rust 1.99).
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;

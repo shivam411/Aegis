@@ -1,0 +1,2862 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Aegis HTTP API",
+    "description": "Control Aegis deployments over HTTP. Authenticate with a session (POST /api/v1/auth/login; send X-CSRF-Token on changes) or an API token (Authorization: Bearer). Requests that change state must send `Content-Type: application/json`.",
+    "license": {
+      "name": ""
+    },
+    "version": "1"
+  },
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; sets the aegis_session cookie",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong username or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts; see Retry-After",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "logout",
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Session ended; cookie cleared"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Changed; all sessions (including this one) are ended"
+          },
+          "400": {
+            "description": "New password too short",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current password is wrong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "session_info",
+        "responses": {
+          "200": {
+            "description": "Who is calling; includes the CSRF token for sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/deployments": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "list_deployments",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Project id or name; all projects when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeploymentDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/deployments/{id}": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "get_deployment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Deployment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/deployments/{id}/events": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "deployment_events",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Deployment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deployment's stage and outcome events, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/deployments/{id}/log": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "deployment_log",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Deployment id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Number of lines (default 100, max 5000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Output of the build commands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuildLogDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/detect": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "detect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Settings a deployment from this source would use",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectedDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The source couldn't be read (e.g. clone failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "operationId": "list_events",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Project id or name; all projects when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Most recent N events (default 50, max 1000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events/stream": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "operationId": "stream_events",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Project id or name; all projects when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One SSE message per new event: `event:` is the event type, `data:` an EventDto. A `lagged` message means some events were dropped for this client.",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/host": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "host",
+        "responses": {
+          "200": {
+            "description": "Host CPU, memory, disk and load (sampled every few seconds)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/host/metrics": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "host_metrics",
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "description": "How far back: e.g. `5m`, `15m` (default), `1h`, `6h`, `24h`, `7d`.\nUp to an hour uses 2-second samples; longer uses per-minute rollups.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "points",
+            "in": "query",
+            "description": "Maximum number of points (default 300, max 2000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Host CPU (in cores) and memory history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/metrics/stream": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "stream_metrics",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Only this project (id or name); every app and the host when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "With `project`, also send host samples.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`sample` messages, `{\"series\": <project id or \"host\">, \"sample\": SampleDto}`, every sample interval (2 s by default)",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/processes": {
+      "get": {
+        "tags": [
+          "processes"
+        ],
+        "operationId": "list_processes",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "description": "Project id or name; all projects when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProcessDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/processes/{target}/logs": {
+      "get": {
+        "tags": [
+          "processes"
+        ],
+        "operationId": "get_logs",
+        "parameters": [
+          {
+            "name": "target",
+            "in": "path",
+            "description": "Process id, or a project id/name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Number of lines (default 100, max 5000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogsDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/processes/{target}/logs/stream": {
+      "get": {
+        "tags": [
+          "processes"
+        ],
+        "operationId": "stream_logs",
+        "parameters": [
+          {
+            "name": "target",
+            "in": "path",
+            "description": "Process id, or a project id/name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Number of lines (default 100, max 5000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`log` messages (LogLineDto): first the requested history, then new lines as they are written (including after a later start). An `end` message follows the history when the daemon isn't supervising the process, so no new lines can arrive.",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/processes/{target}/{action}": {
+      "post": {
+        "tags": [
+          "processes"
+        ],
+        "operationId": "process_action",
+        "parameters": [
+          {
+            "name": "target",
+            "in": "path",
+            "description": "Process id, or a project id/name for its current process",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "path",
+            "description": "start, stop or restart",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "E.g. already running, or not the live release",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "list_projects",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "create_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "get_project",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/deploy": {
+      "post": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "deploy",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued; follow it via /deployments/{id} or the event stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/metrics": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "project_metrics",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "description": "How far back: e.g. `5m`, `15m` (default), `1h`, `6h`, `24h`, `7d`.\nUp to an hour uses 2-second samples; longer uses per-minute rollups.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "points",
+            "in": "query",
+            "description": "Maximum number of points (default 300, max 2000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CPU and memory history with the limits in effect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/releases": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "list_releases",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReleaseDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "get_resources",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResourcesDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "set_resources",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetResourcesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied to the running app at once (no restart) and to every later start",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResourcesDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`confirmation_required`: repeat with `force: true`; `failed_precondition`: not supported on this host or refused by the kernel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/rollback": {
+      "post": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "rollback",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The earlier release is live",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollbackResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing to roll back to, or the release didn't become healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/schedule": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "set_schedule",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/settings": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "update_settings",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectSettingsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; applies to the next deployment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/webhook": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "rotate_webhook_secret",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "New secret, shown only in this response; the previous secret stops working",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSecretDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/resources": {
+      "get": {
+        "tags": [
+          "resources"
+        ],
+        "operationId": "capabilities",
+        "responses": {
+          "200": {
+            "description": "Whether this host can enforce limits, and how much is committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceCapabilitiesDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "list_tokens",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TokenDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "create_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The token is shown only in this response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewTokenDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "revoke_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Token id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/hooks/github/{project}": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "github_webhook",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "GitHub webhook payload, signed with X-Hub-Signature-256",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ping, or a redelivery that was already handled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Push to the project's branch: deployment queued (or event ignored)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown project or no webhook configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BuildLogDto": {
+        "type": "object",
+        "required": [
+          "deployment_id",
+          "lines"
+        ],
+        "properties": {
+          "deployment_id": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ChangePasswordRequest": {
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string",
+            "description": "At least 12 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateProjectRequest": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "name": {
+            "type": "string",
+            "default": ""
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reuse an existing project id (e.g. from aegis.toml).",
+            "default": null
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "runtime": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "source_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Directory on the server that deployments copy code from.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateTokenRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "scope"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "description": "\"read\" (GET requests only) or \"deploy\" (everything except managing tokens and passwords)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeployAccepted": {
+        "type": "object",
+        "required": [
+          "deployment_id",
+          "project_id",
+          "project_name"
+        ],
+        "properties": {
+          "deployment_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string"
+          }
+        }
+      },
+      "DeployRequest": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Clone this repository instead of the project's default source.",
+            "default": null
+          },
+          "source_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Copy code from this server directory instead of the project's default source.",
+            "default": null
+          },
+          "strategy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "GracefulSwitch (default) or Immediate.",
+            "default": null
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Release name; generated from the current time when omitted.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeploymentDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "strategy",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "release_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last pipeline stage reached."
+          },
+          "status": {
+            "type": "string",
+            "description": "Queued, InProgress, Success, Failed or RolledBack."
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "trigger": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DetectRequest": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "...a git repository to clone (shallow) for detection.",
+            "default": null
+          },
+          "source_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A directory on the server, or...",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "DetectedDto": {
+        "type": "object",
+        "description": "The settings a deployment from this source would use.",
+        "required": [
+          "name",
+          "runtime",
+          "start_command",
+          "strategy"
+        ],
+        "properties": {
+          "build_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health_check_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "install_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "runtime": {
+            "type": "string"
+          },
+          "start_command": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "test_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "not_found, invalid_argument, failed_precondition, forbidden or internal."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "EventDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "event_type",
+          "created_at",
+          "payload"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          }
+        }
+      },
+      "HostDto": {
+        "type": "object",
+        "required": [
+          "hostname",
+          "os",
+          "uptime_secs",
+          "cpu_count",
+          "cpu_percent",
+          "load_average",
+          "memory_total_bytes",
+          "memory_used_bytes",
+          "swap_total_bytes",
+          "swap_used_bytes",
+          "disk_mount_point",
+          "disk_total_bytes",
+          "disk_available_bytes",
+          "sampled_at"
+        ],
+        "properties": {
+          "cpu_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cpu_percent": {
+            "type": "number",
+            "format": "float",
+            "description": "0-100, averaged over all cores."
+          },
+          "disk_available_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disk_mount_point": {
+            "type": "string",
+            "description": "Filesystem holding the data directory."
+          },
+          "disk_total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "load_average": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "1, 5 and 15 minute load averages."
+          },
+          "memory_total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "os": {
+            "type": "string"
+          },
+          "sampled_at": {
+            "type": "string"
+          },
+          "swap_total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "swap_used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "uptime_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LogLineDto": {
+        "type": "object",
+        "required": [
+          "timestamp",
+          "stream",
+          "line"
+        ],
+        "properties": {
+          "line": {
+            "type": "string"
+          },
+          "stream": {
+            "type": "string",
+            "description": "\"out\", \"err\" or \"sys\" (messages from the supervisor)."
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LogsDto": {
+        "type": "object",
+        "required": [
+          "process_id",
+          "lines"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogLineDto"
+            }
+          },
+          "process_id": {
+            "type": "string"
+          }
+        }
+      },
+      "MetricsDto": {
+        "type": "object",
+        "required": [
+          "series",
+          "range_secs",
+          "points"
+        ],
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PointDto"
+            },
+            "description": "Oldest first."
+          },
+          "range_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "series": {
+            "type": "string",
+            "description": "A project id, or \"host\"."
+          }
+        }
+      },
+      "NewTokenDto": {
+        "type": "object",
+        "required": [
+          "token",
+          "info"
+        ],
+        "properties": {
+          "info": {
+            "$ref": "#/components/schemas/TokenDto"
+          },
+          "token": {
+            "type": "string",
+            "description": "Shown once. Send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "PointDto": {
+        "type": "object",
+        "description": "A chart point: average and peak over the bucket starting at `at`.",
+        "required": [
+          "at",
+          "cpu_cores",
+          "cpu_cores_max",
+          "memory_bytes",
+          "memory_bytes_max",
+          "throttled_ratio"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cpu_cores": {
+            "type": "number",
+            "format": "double"
+          },
+          "cpu_cores_max": {
+            "type": "number",
+            "format": "double"
+          },
+          "cpu_limit_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_bytes_max": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_limit_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "throttled_ratio": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "ProcessDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "status",
+          "desired",
+          "restart_count"
+        ],
+        "properties": {
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "desired": {
+            "type": "string",
+            "description": "\"running\" or \"stopped\": what the operator last asked for."
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "last_start": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "release_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restart_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "Running, Backoff, Stopping, Stopped, Exited or Failed."
+          }
+        }
+      },
+      "ProjectDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "repository_url",
+          "branch",
+          "created_at",
+          "settings",
+          "resources"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "current_release": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Version of the live release."
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "process": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProcessDto",
+                "description": "The process serving the live release."
+              }
+            ]
+          },
+          "repository_url": {
+            "type": "string"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/ResourceLimitsDto",
+            "description": "CPU, memory and process limits."
+          },
+          "runtime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schedule": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ScheduleDto"
+              }
+            ]
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ProjectSettingsDto",
+            "description": "Settings edited in the dashboard (override aegis.toml)."
+          },
+          "source_dir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SampleDto",
+                "description": "The latest measurement, while the app runs."
+              }
+            ]
+          }
+        }
+      },
+      "ProjectResourcesDto": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "limits",
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/ResourceCapabilitiesDto"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ResourceLimitsDto"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SampleDto"
+              }
+            ]
+          }
+        }
+      },
+      "ProjectSettingsDto": {
+        "type": "object",
+        "description": "Settings that override aegis.toml for future deployments. Omitted\nfields fall back to aegis.toml and runtime detection. An empty\n`health_check_url` means \"healthy while the process stays up\".",
+        "properties": {
+          "build_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "health_check_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "install_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "default": null,
+            "minimum": 0
+          },
+          "start_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "test_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReleaseDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "version",
+          "status",
+          "commit_sha",
+          "commit_message",
+          "created_at"
+        ],
+        "properties": {
+          "checksum": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit_message": {
+            "type": "string"
+          },
+          "commit_sha": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Built, Active, Inactive, Failed or Archived."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ResourceCapabilitiesDto": {
+        "type": "object",
+        "required": [
+          "backend",
+          "cpu",
+          "memory",
+          "pids",
+          "host_cpu_cores",
+          "host_memory_bytes",
+          "committed_memory_bytes",
+          "committed_cpu_cores"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "\"cgroup2\", \"cgroup1\" or \"none\"."
+          },
+          "committed_cpu_cores": {
+            "type": "number",
+            "format": "double"
+          },
+          "committed_memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sums of all apps' limits.",
+            "minimum": 0
+          },
+          "cpu": {
+            "type": "boolean"
+          },
+          "host_cpu_cores": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "host_memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where app cgroups are created."
+          },
+          "memory": {
+            "type": "boolean"
+          },
+          "pids": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why limits are unavailable, or partly so."
+          }
+        }
+      },
+      "ResourceLimitsDto": {
+        "type": "object",
+        "description": "Limits for one app; `null` means unlimited.",
+        "properties": {
+          "cpu_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "CPU time in cores (0.5 = half of one core)."
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hard memory limit in bytes; the soft limit is 90% of it.",
+            "minimum": 0
+          },
+          "pids_max": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Maximum number of processes and threads.",
+            "minimum": 0
+          }
+        }
+      },
+      "RollbackRequest": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to the release that was live before the current one.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "RollbackResult": {
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "The release that is now live."
+          }
+        }
+      },
+      "SampleDto": {
+        "type": "object",
+        "description": "One measurement.",
+        "required": [
+          "at",
+          "cpu_cores",
+          "memory_bytes",
+          "throttled_ratio",
+          "threads",
+          "fds",
+          "procs",
+          "restarts",
+          "oom_kills"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds."
+          },
+          "cpu_cores": {
+            "type": "number",
+            "format": "double",
+            "description": "CPU in use, in cores."
+          },
+          "cpu_limit_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "fds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Open file descriptors.",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_limit_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "oom_kills": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Out-of-memory kills in the current process's cgroup.",
+            "minimum": 0
+          },
+          "procs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "restarts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "threads": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "throttled_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "Share of CPU periods held back by the CPU limit, 0-1."
+          }
+        }
+      },
+      "ScheduleDto": {
+        "type": "object",
+        "required": [
+          "hour",
+          "minute",
+          "branch"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "UTC hour, 0-23.",
+            "minimum": 0
+          },
+          "minute": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ScheduleRequest": {
+        "type": "object",
+        "required": [
+          "hour"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to the project's branch."
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "UTC hour, 0-23.",
+            "minimum": 0
+          },
+          "minute": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionDto": {
+        "type": "object",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "properties": {
+          "csrf_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Send as `X-CSRF-Token` on requests that change state (sessions only)."
+          },
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the session expires if left idle (unix seconds; sessions only)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "\"user\" (session cookie) or \"token\" (API token)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Username or token name."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "\"read\" or \"deploy\" (tokens only)."
+          }
+        }
+      },
+      "SetResourcesRequest": {
+        "type": "object",
+        "description": "New limits. Omitted or `null` fields become unlimited.",
+        "properties": {
+          "cpu_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "default": null
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Apply even if the memory limit is below current use or more memory\nis promised to apps than the host has (otherwise 409\n`confirmation_required`).",
+            "default": false
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "default": null,
+            "minimum": 0
+          },
+          "pids_max": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "default": null,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "StatusDto": {
+        "type": "object",
+        "required": [
+          "version",
+          "project_count",
+          "running_processes",
+          "event_count",
+          "data_dir"
+        ],
+        "properties": {
+          "data_dir": {
+            "type": "string"
+          },
+          "event_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "project_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "running_processes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "TokenDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "scope",
+          "created_at",
+          "revoked"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          }
+        }
+      },
+      "WebhookResult": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "deployment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "\"queued\", \"ignored\", \"duplicate\" or \"pong\"."
+          }
+        }
+      },
+      "WebhookSecretDto": {
+        "type": "object",
+        "required": [
+          "path",
+          "secret",
+          "content_type",
+          "events"
+        ],
+        "properties": {
+          "content_type": {
+            "type": "string",
+            "description": "\"application/json\""
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Events Aegis acts on (\"push\"; \"ping\" is acknowledged)."
+          },
+          "path": {
+            "type": "string",
+            "description": "Payload URL path; prefix it with the API's public base URL."
+          },
+          "secret": {
+            "type": "string",
+            "description": "Shown once. Paste into the GitHub webhook's \"Secret\" field."
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "aegis_session",
+        "description": "Session cookie from POST /api/v1/auth/login. Requests that change state also need the X-CSRF-Token header."
+      },
+      "token": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API token created with POST /api/v1/tokens"
+      }
+    }
+  },
+  "security": [
+    {
+      "session": []
+    },
+    {
+      "token": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "auth"
+    },
+    {
+      "name": "system"
+    },
+    {
+      "name": "projects"
+    },
+    {
+      "name": "deployments"
+    },
+    {
+      "name": "processes"
+    },
+    {
+      "name": "events"
+    },
+    {
+      "name": "webhooks"
+    },
+    {
+      "name": "resources"
+    }
+  ]
+}

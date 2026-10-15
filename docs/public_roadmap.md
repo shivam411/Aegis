@@ -2,6 +2,8 @@
 
 This document provides a clean, operator-focused overview of the Aegis product roadmap using the **Now / Next / Later** framework.
 
+> **New direction:** a web control plane served by the daemon on your VPS (deployments, logs, live CPU/memory limits from the browser). See the phased plan in [`roadmap_web_control_plane.md`](roadmap_web_control_plane.md).
+
 ---
 
 ## 🟢 NOW (Active Focus — Milestone M2 & Proof Phase)

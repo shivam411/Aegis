@@ -9,4 +9,5 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 aegis-types = { path = "../types" }
+aegis-config = { path = "../config" }
 aegis-event-bus = { path = "../event_bus" }

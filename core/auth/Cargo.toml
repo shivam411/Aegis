@@ -4,4 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+argon2 = "0.5"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+subtle = "2.6"
+aegis-types = { path = "../types" }
 
+[dev-dependencies]
+aegis-event-store = { path = "../event_store" }
