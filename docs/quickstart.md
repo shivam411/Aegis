@@ -51,9 +51,9 @@ Aegis scans for `package.json` (Node.js), `Cargo.toml` (Rust), `go.mod` (Go), `r
 
 ---
 
-## 3. Deploy (Zero-Downtime)
+## 3. Deploy
 
-Trigger a zero-downtime deployment:
+Trigger a health-checked deployment:
 
 ```bash
 aegis-cli deploy --project <PROJECT_ID> --branch main
@@ -71,7 +71,7 @@ What happens behind the scenes:
 7. Promote   → Atomically switch the active version pointer
 ```
 
-The previous version keeps running until the new version passes health checks. If anything fails, the live version remains untouched.
+A failed build never touches the live version. At cutover the old process is stopped and the new one started, so there is a short gap while the app starts listening (removed once the planned reverse proxy lands). If the new version fails its health check, the previous release is started again.
 
 ---
 

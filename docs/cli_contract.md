@@ -12,7 +12,7 @@ Commands classified as **Stable** are guaranteed backwards-compatible public int
 | :--- | :--- | :--- |
 | **`aegis status`** | `[STABLE]` | Query daemon health, version, loaded plugins, and event count. |
 | **`aegis init`** | `[STABLE]` | Initialize project with runtime auto-detection or template (`--template`). |
-| **`aegis deploy`** | `[STABLE]` | Trigger build and zero-downtime deployment. |
+| **`aegis deploy`** | `[STABLE]` | Build, health-check and deploy, with automatic rollback. |
 | **`aegis rollback`** | `[STABLE]` | Revert project to a previous release version. |
 | **`aegis list`** | `[STABLE]` | List active projects and monitored processes. |
 | **`aegis logs`** | `[STABLE]` | Tail process logs with search and follow filters. |

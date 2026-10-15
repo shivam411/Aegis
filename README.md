@@ -5,7 +5,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue?style=flat-square)](https://shivam411.github.io/Aegis/)
 
-**Aegis** is production operations from your terminal. Zero-dependency, event-sourced process supervision and zero-downtime deployment platform written in Rust.
+**Aegis** deploys and supervises apps on your own server. A single Rust daemon with embedded SQLite gives you health-checked deploys with automatic rollback, process supervision, a web dashboard and an HTTP API.
+
+> [!NOTE]
+> Aegis is pre-1.0 and early. Deploys, rollbacks, the HTTP API, the dashboard and resource limits are tested in CI on Linux; there are no production, soak or benchmark results yet. See the [scorecard](docs/scorecard.md) and [feature maturity](docs/feature_maturity.md).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
@@ -17,17 +20,17 @@ curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | b
 
 | Feature | Description |
 | :--- | :--- |
-| ⚡ **Zero-Dependency** | Single daemon binary with embedded SQLite. No PostgreSQL, Redis, or Docker required. |
+| ⚡ **Single Binary** | Daemon with embedded SQLite. No PostgreSQL, Redis, or Docker required. |
 | 🚀 **Safe Deployments** | Build in isolation (a failed build never touches the live app), health-check the new release, and roll back automatically if it doesn't come up. Fully zero-downtime cutover needs the planned reverse proxy ([roadmap](docs/roadmap_web_control_plane.md)). |
 | 🧹 **Automated Version Retention** | Keeps the last N releases on disk (default: 2). Older versions auto-pruned after each deploy. |
 | ⏰ **Scheduled Auto-Deployments** | Background scheduler triggers builds at specific daily hours (e.g. `02:00 AM`). |
-| 🛠️ **Polyglot Runtime Detection** | Auto-detects Node.js, Rust, Go, Python, Bun, Deno from project files. |
-| 🖥️ **Terminal UI (TUI)** | Real-time interactive dashboard powered by `ratatui` + `crossterm`. |
+| 🛠️ **Runtime Detection** | Detects Node.js, Rust, Go, Python, Bun, Deno from project files. CI deploys Node.js apps; other stacks aren't deploy-tested yet. |
+| 🖥️ **Terminal Monitor** *(experimental)* | `aegis-tui` shows daemon status and streams live events. A full terminal dashboard is planned. |
 | 🔒 **Event-Sourced Audit Trail** | Every mutation is an immutable domain event. Full replay on startup. |
 | 🔄 **Instant Rollbacks** | Roll back to any retained release without rebuilding from source. |
 | 🎛️ **Live Resource Limits** | Per-app CPU and memory limits with Linux cgroups (v2 or v1), changed from dashboard sliders without restarting the app. Live and 7-day charts, OOM and throttling alerts. |
 | 🌐 **Web Dashboard** | Deploy, roll back, stream logs, watch resources and audit everything from the browser. |
-| 🔌 **Plugin System** | Extensible event bus; Slack alerts for failed deploys, crashes and resource pressure. |
+| 🔌 **Notifications & Webhooks** | Slack alerts for failed deploys, crashes and resource pressure; signed GitHub push webhooks trigger deploys. |
 
 ---
 
@@ -83,34 +86,33 @@ aegis validate
 # 3. Build, health-check and deploy (rolls back automatically on failure)
 aegis deploy
 
-# 4. Investigate outages & root cause
-aegis investigate
+# 4. Follow the app's output
+aegis logs -f
 
-# 5. Execute instant rollback if needed
+# 5. Roll back if needed
 aegis rollback
 ```
 
-For an interactive 2-minute tour, run: `aegis demo`.
-See the public operational metrics on the [**Public Scorecard**](docs/scorecard.md).
+See what is tested today on the [**Scorecard**](docs/scorecard.md).
 
 ---
 
-## 📊 Feature Maturity & Empirical Evidence
+## 📊 Feature Maturity
 
-Every capability in Aegis is assigned a Feature Maturity Level:
+Features are tiered as **Experimental**, **Validated** (tested in CI), **Dogfooded** or **Production Proven**. No feature is Dogfooded or Production Proven yet. Full list with links to the tests: [`docs/feature_maturity.md`](docs/feature_maturity.md).
 
-| Feature / Capability | Maturity Level | Empirical Validation Report |
+| Feature / Capability | Maturity Level | Evidence |
 | :--- | :---: | :--- |
-| **Event Store & Event Bus** | 🟢 **Dogfooded** | [`validation/dogfood/dogfood-report.md`](validation/dogfood/dogfood-report.md) |
-| **Detector Pipeline** | 🟡 **Validated** | [`validation/compatibility/compatibility-report.md`](validation/compatibility/compatibility-report.md) |
-| **Runtime Supervisor Engine** | 🟡 **Validated** | [`validation/soak/72h-report.md`](validation/soak/72h-report.md) |
-| **Atomic Release Switcher** | 🟡 **Validated** | [`validation/chaos/chaos-report.md`](validation/chaos/chaos-report.md) |
-| **PM2 & Systemd Migration Engine** | 🟡 **Validated** | [`validation/migration/migration-report.md`](validation/migration/migration-report.md) |
-| **Deployment Replay (`aegis replay`)** | 🧪 **Experimental** | [`docs/proof_phase.md`](docs/proof_phase.md) |
-| **Time Travel Inspection (`aegis inspect --at`)** | 🧪 **Experimental** | [`docs/proof_phase.md`](docs/proof_phase.md) |
-| **Outage Investigation Engine (`aegis investigate`)** | 🧪 **Experimental** | [`docs/proof_phase.md`](docs/proof_phase.md) |
+| **Deploy pipeline, health checks, automatic and manual rollback** | 🟡 **Validated** | [`lifecycle.rs`](core/control/tests/lifecycle.rs), [`e2e-smoke.sh`](scripts/e2e-smoke.sh) |
+| **Process supervisor, logs, daemon restart recovery** | 🟡 **Validated** | [`runtime/process`](runtime/process/src/lib.rs) tests, [`e2e-smoke.sh`](scripts/e2e-smoke.sh) |
+| **Event store & event bus** | 🟡 **Validated** | [`core/event_store`](core/event_store/src/lib.rs) tests |
+| **HTTP API, auth, API tokens, TLS, GitHub webhooks** | 🟡 **Validated** | [`core/web/tests/`](core/web/tests/) |
+| **Web dashboard** | 🟡 **Validated** | [`ui-tests/tests/`](ui-tests/tests/) (Playwright) |
+| **Live CPU/memory limits (cgroup v2)** | 🟡 **Validated** | [`kernel.rs`](runtime/resources/tests/kernel.rs), [`resources.spec.js`](ui-tests/tests/resources.spec.js) |
+| **PM2 & systemd migration (`aegis migrate`)** | 🧪 **Experimental** | Minimal; untested |
+| **`replay`, `inspect --at`, `incident`, `investigate`, `upgrade`** | 🧪 **Experimental** | Placeholder output today; being reworked |
 
-For complete empirical evidence, see the [`validation/`](validation/) evidence repository.
+Templates for soak, chaos, performance, migration, compatibility and dogfooding reports are in [`validation/_templates/`](validation/_templates/). None of those runs has been done yet.
 
 ---
 
@@ -213,17 +215,21 @@ max_retained_versions = 2
 
 ---
 
-## 🗺️ Product Roadmap & Production Themes
+## 🗺️ Roadmap
 
 > [!NOTE]
-> Aegis is currently in **Beta Readiness (`v0.4.0-beta`)**. New architectural changes follow the [RFC Process](docs/rfcs/0001-rfc-process.md).
+> Aegis is pre-1.0 and has not had a beta yet. New architectural changes follow the [RFC Process](docs/rfcs/0001-rfc-process.md). Summary: [`public_roadmap.md`](docs/public_roadmap.md); detailed plan: [`roadmap_web_control_plane.md`](docs/roadmap_web_control_plane.md).
 
-| Production Theme | Key Focus & Customer Outcome | Status |
+| Phase | Scope | Status |
 | :--- | :--- | :--- |
-| **Theme 1: Production Reliability** | Crash recovery, health verification, restart backoff, rollback safety ([`slo_targets.md`](docs/slo_targets.md)) | ✅ Complete |
-| **Theme 2: Production Visibility** | Live dashboard, deployment timeline, event explorer, incident diagnosis (`aegis incident`) | ▶ **In Progress** |
-| **Theme 3: Production Automation** | GitHub Actions CI/CD, auto-deploy, scheduled auto-deploys, environment promotion | 📅 Planned |
-| **Theme 4: Production Fleet** | Multi-node rolling deployments, node agent coordination, fleet management | 📅 Planned |
+| **0–1** | Real deploys, health checks, rollback, supervision; HTTP API | ✅ Shipped (tested in CI) |
+| **2** | Authentication, TLS, GitHub webhooks, hardened server install | ✅ Shipped (tested in CI) |
+| **3–4** | Web dashboard; live CPU/memory monitoring and limits | ✅ Shipped (tested in CI) |
+| **5** | Env vars and secrets, domains + reverse proxy + TLS, webhook setup and config-as-code in the UI | ▶ **Now** |
+| **6** | Users and roles, backup/restore, self-update, terminal UI, Docker runtime | 📅 Next |
+| **Later** | Multi-node fleet | 📅 Planned |
+
+Not yet measured: production use, soak tests, benchmarks and migration accuracy. See the [scorecard](docs/scorecard.md).
 
 
 ---
@@ -256,7 +262,8 @@ Aegis/
 ├── integrations/   # Slack, GitHub, Docker plugins
 ├── docs/           # Documentation (GitHub Pages)
 ├── ui-tests/       # Playwright tests for the web dashboard
-├── scripts/        # Install/uninstall helpers
+├── scripts/        # Uninstall helper and the end-to-end CI script
+├── validation/     # Report templates (no results recorded yet)
 ├── install.sh      # One-line installer
 └── .github/        # CI, release, and pages workflows
 ```

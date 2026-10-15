@@ -1,61 +1,58 @@
-# Aegis The Proof Phase Specification
+# Aegis Proof Gates
 
-This document establishes the 5 Proof Gates for Aegis.
+This document defines the gates Aegis must pass to show it is reliable, easy to migrate to, easy to use, fast, and used by real people.
 
-With the architecture and public API contracts frozen, engineering priorities shift from feature building to **proving operational reliability, ease of migration, usability, performance, and adoption**.
-
----
-
-## 1. The 5 Proof Gates
-
-```
-[Proof 1] Operational Reliability (24h/72h/168h Soak Tests & Chaos Scenarios)
-      ↓
-[Proof 2] Migration Simplicity (Zero-Touch PM2 & Systemd Conversion)
-      ↓
-[Proof 3] Onboarding Usability (Sub-5 Minute Installation & Detection)
-      ↓
-[Proof 4] Performance Compliance (Enforced SLO Targets & Zero Regression)
-      ↓
-[Proof 5] Real-World Adoption (Closed & Public Production Beta Feedback)
-```
+> **Status (2026-10):** none of these gates has been passed. An earlier version of this page checked every box and linked to reports that were not based on real runs; those reports are now templates in [`validation/_templates/`](../validation/_templates/). A box is checked only when a report produced by a checked-in script (or a documented real deployment) is linked next to it. See the [scorecard](scorecard.md) for what CI verifies today.
 
 ---
 
-## 2. Gate Exit Criteria
+## 1. The Gates
+
+```
+[Proof 1] Operational Reliability (soak tests and chaos scenarios)
+      ↓
+[Proof 2] Migration Simplicity (PM2 and systemd conversion)
+      ↓
+[Proof 3] Onboarding Usability (install to first deploy)
+      ↓
+[Proof 4] Performance Compliance (SLO targets, no regressions)
+      ↓
+[Proof 5] Real-World Adoption (beta users in production)
+      ↓
+[Proof 6] System Recoverability
+```
+
+---
+
+## 2. Exit Criteria
 
 ### Proof 1 — Operational Reliability
-**Exit Criteria**:
-- [x] 7-day (168h) continuous soak test completed with zero crashes ([`validation/soak/72h-report.md`](../validation/soak/72h-report.md)).
-- [x] All 10 chaos fault-injection scenarios pass cleanly ([`validation/chaos/chaos-report.md`](../validation/chaos/chaos-report.md)).
-- [x] Zero memory leaks (daemon RSS growth `< 5%`).
-- [x] Restart recovery time meets SLO (`< 2s`).
+- [ ] 7-day (168 h) soak test with zero crashes. Not run. Protocol: [`soak_testing.md`](soak_testing.md); template: [`soak-report.md`](../validation/_templates/soak/soak-report.md).
+- [ ] All 10 chaos scenarios pass. Partly covered by CI (see [`chaos_testing.md`](chaos_testing.md)); template: [`chaos-report.md`](../validation/_templates/chaos/chaos-report.md).
+- [ ] No memory leaks (daemon RSS growth `< 5%` over the soak). Not measured.
+- [ ] Restart recovery meets the SLO (`< 2 s`). Not measured.
 
 ### Proof 2 — Migration Simplicity
-**Exit Criteria**:
-- [x] 20 real-world PM2 ecosystem configurations converted without error.
-- [x] 10 real-world systemd service units converted without error ([`validation/migration/migration-report.md`](../validation/migration/migration-report.md)).
-- [x] Zero critical field mapping failures.
+- [ ] 20 real-world PM2 ecosystem files converted without error. Not run; `aegis migrate pm2` doesn't parse ecosystem fields yet.
+- [ ] 10 real-world systemd units converted without error. Not run; `aegis migrate systemd` reads only `ExecStart=`. Template: [`migration-report.md`](../validation/_templates/migration/migration-report.md).
+- [ ] No critical field-mapping failures.
 
 ### Proof 3 — Onboarding Usability
-**Exit Criteria**:
-- [x] New users complete install to first deploy in `< 5 minutes`.
-- [x] Unassisted quickstart success rate `> 95%`.
+- [ ] New users go from install to first deploy in `< 5 minutes`. Not measured.
+- [ ] Unassisted quickstart success rate `> 95%`. Not measured.
 
 ### Proof 4 — Performance Compliance
-**Exit Criteria**:
-- [x] Daemon startup time `< 500ms`.
-- [x] CLI command latency `< 100ms`.
-- [x] Event propagation latency `< 10ms`.
-- [x] All published SLOs consistently met ([`validation/performance/performance-report.md`](../validation/performance/performance-report.md)).
+- [ ] Daemon startup `< 500 ms`. Not measured.
+- [ ] CLI command latency `< 100 ms`. Not measured.
+- [ ] Event propagation latency `< 10 ms`. Not measured.
+- [ ] All published SLOs met ([`slo_targets.md`](slo_targets.md)). Benchmarks compile in CI but aren't run. Template: [`performance-report.md`](../validation/_templates/performance/performance-report.md).
 
 ### Proof 5 — Real-World Adoption
-**Exit Criteria**:
-- [x] 10–20 external production beta deployments verified.
-- [x] Documented user feedback collected and addressed.
+- [ ] 10–20 external production beta deployments. None yet ([`beta_program.md`](beta_program.md)).
+- [ ] User feedback collected and addressed.
 
 ### Proof 6 — System Recoverability
-**Exit Criteria**:
-- [x] Verified automated WAL log recovery after power loss ([`docs/disaster_recovery.md`](disaster_recovery.md)).
-- [x] Verified zero-downtime recovery after failed deployment.
-- [x] Verified manual fallback path for unmonitored release binaries.
+- [ ] Database recovery after power loss ([`disaster_recovery.md`](disaster_recovery.md)). Not tested.
+- [x] A failed deployment leaves the live release serving. Tested in CI: failed builds and unhealthy releases ([`lifecycle.rs`](../core/control/tests/lifecycle.rs), [`e2e-smoke.sh`](../scripts/e2e-smoke.sh)). Cutover itself still has a short gap until the Phase 5 reverse proxy.
+- [x] Apps come back after a daemon restart, and stopped apps stay stopped. Tested in CI (same files).
+- [ ] Manual fallback path for release binaries outside Aegis's control. Not tested.

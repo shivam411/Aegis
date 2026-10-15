@@ -1,6 +1,8 @@
 # Aegis Long-Running Soak Testing Protocol
 
-This document defines the soak testing protocol for Aegis to verify long-term stability under production workloads.
+This document defines how to soak-test Aegis to check long-term stability under continuous load.
+
+> **Status: no soak test has been run yet.** There is no soak script in the repository. Results go in a report based on [`soak-report.md`](../validation/_templates/soak/soak-report.md), together with the script that produced them.
 
 ---
 
@@ -8,16 +10,22 @@ This document defines the soak testing protocol for Aegis to verify long-term st
 
 | Duration | Goal | Acceptance Criteria |
 | :--- | :--- | :--- |
-| **24 Hours** | Short-Term Stability | Zero process crashes, zero memory leaks, RSS memory delta `< 5%` |
-| **72 Hours** | Medium-Term Reliability | Zero zombie processes, event bus propagation latency `< 10ms` |
-| **168 Hours (7 Days)** | Production Certification | Zero scheduler drift, SQLite WAL log bounded, 100% health probe accuracy |
+| **24 Hours** | Short-term stability | No daemon crashes, daemon RSS growth `< 5%` |
+| **72 Hours** | Medium-term reliability | No zombie processes, event propagation latency `< 10 ms` |
+| **168 Hours (7 Days)** | Release readiness | No scheduler drift, database and WAL size bounded, health checks accurate |
 
 ---
 
-## 2. Monitored System Metrics
-During soak testing, the following metrics are recorded continuously:
-1. **Resident Set Size (RSS) Memory**: Tracked for daemon process and managed child processes.
-2. **CPU Utilization**: Idle CPU usage must remain `< 1%`.
-3. **Zombie Process Count**: Monitored via OS process tree traversal (`ps` / Task Manager).
-4. **SQLite WAL Storage**: Database file size must remain bounded.
-5. **gRPC Channel Health**: Connection ping latency must remain `< 5ms`.
+## 2. Monitored Metrics
+Record these continuously during the run:
+1. **Resident set size (RSS):** the daemon and each supervised app.
+2. **CPU:** daemon idle CPU must stay `< 1%`.
+3. **Zombie processes:** count from the process tree (`ps`).
+4. **SQLite storage:** database and WAL file sizes must stay bounded.
+5. **API responsiveness:** gRPC `GetStatus` and HTTP `/healthz` latency.
+
+## 3. Suggested workload
+- Two or more apps (for example `examples/node-app`) with health checks.
+- A deploy every few minutes, with some failing builds and unhealthy releases mixed in.
+- Periodic `kill -9` of an app process and occasional daemon restarts.
+- Resource-limit changes through the API on Linux.

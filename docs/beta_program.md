@@ -2,6 +2,8 @@
 
 This document outlines the evaluation framework for closed beta participants testing Aegis.
 
+> **Status: not started.** No beta participants have been recruited yet. Cohort sizes below are targets.
+
 ---
 
 ## 1. Beta Cohort Distribution

@@ -21,8 +21,6 @@ labs/
 # Dev-only scripts
 scripts/generate_scorecard.py
 
-# Fabricated validation artifacts (not real telemetry)
+# Fabricated validation artifacts (not real telemetry). Never commit these;
+# real results go in validation/<area>/ with the script that produced them.
 validation/artifacts/
-
-# Generated docs (derived from validation/artifacts)
-docs/scorecard.md

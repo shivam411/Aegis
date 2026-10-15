@@ -2,6 +2,8 @@
 
 This document defines disaster recovery procedures, failure recovery objectives, and manual fallback steps for Aegis.
 
+> **Status:** the recovery time objectives below are targets, not measurements. Of these scenarios, only restart recovery (apps restored after a daemon restart) is tested in CI. See [`chaos_testing.md`](chaos_testing.md).
+
 ---
 
 ## 1. Disaster Recovery Matrix
