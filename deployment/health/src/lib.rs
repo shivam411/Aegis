@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use std::time::Duration;
 use tokio::net::TcpStream;
 
+// async-trait marks the boxed futures #[must_use] (clippy::double_must_use since Rust 1.99).
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait HealthChecker: Send + Sync {
     fn name(&self) -> &str;

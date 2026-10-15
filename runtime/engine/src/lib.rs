@@ -11,6 +11,8 @@ use std::path::Path;
 /// Build, install and start commands come from `aegis.toml` (with defaults
 /// supplied by [`DetectorPipeline`]); process lifecycle is owned by the
 /// process supervisor. This trait only answers "what kind of project is this?".
+// async-trait marks the boxed futures #[must_use] (clippy::double_must_use since Rust 1.99).
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Runtime: Send + Sync {
     fn name(&self) -> &str;

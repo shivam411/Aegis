@@ -76,6 +76,8 @@ impl StageStatus {
 }
 
 /// Receives stage progress. Reports are awaited, so they are delivered in order.
+// async-trait marks the boxed futures #[must_use] (clippy::double_must_use since Rust 1.99).
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait StageReporter: Send + Sync {
     async fn report(&self, stage: PipelineStage, status: StageStatus, detail: Option<String>);

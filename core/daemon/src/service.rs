@@ -1,5 +1,8 @@
 //! gRPC adapter: translates requests into [`ControlPlane`] calls.
 
+// The trait methods return tonic::Status, which is large by design.
+#![allow(clippy::result_large_err)]
+
 use aegis_api::aegis::aegis_daemon_server::AegisDaemon;
 use aegis_api::aegis::{
     self as pb, ConfigureScheduleRequest, ControlProcessRequest, DeployRequest, DeployResponse,
