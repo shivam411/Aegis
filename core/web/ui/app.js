@@ -1247,10 +1247,206 @@ function settingsInputs(values, placeholders = {}) {
   return { inputs, layout };
 }
 
+/** Rows of NAME = value inputs; `read()` returns an object or throws. */
+function envEditor(values, idPrefix) {
+  const rows = h('div', { class: 'env-rows' });
+  const addRow = (name = '', value = '') => {
+    const n = rows.children.length;
+    const nameIn = h('input', { class: 'mono', value: name, placeholder: 'NAME', 'aria-label': `Variable ${n + 1} name`, id: `${idPrefix}-name-${n}` });
+    const valueIn = h('input', { class: 'mono', value, placeholder: 'value', 'aria-label': `Variable ${n + 1} value` });
+    const row = h('div', { class: 'env-row' }, nameIn, h('span', { class: 'muted' }, '='), valueIn,
+      h('button', { class: 'btn small', type: 'button', 'aria-label': 'Remove variable', onclick: () => row.remove() }, 'Remove'));
+    rows.append(row);
+    return nameIn;
+  };
+  for (const [k, v] of Object.entries(values || {})) addRow(k, v);
+  const addBtn = h('button', { class: 'btn small', type: 'button', onclick: () => addRow().focus() }, 'Add variable');
+  const read = () => {
+    const out = {};
+    for (const row of rows.children) {
+      const [nameIn, , valueIn] = row.children;
+      const name = nameIn.value.trim();
+      if (!name && !valueIn.value) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`'${name}' is not a valid variable name`);
+      if (name in out) throw new Error(`${name} is listed twice`);
+      out[name] = valueIn.value;
+    }
+    return out;
+  };
+  return { el: h('div', {}, rows, addBtn), read };
+}
+
+function diffView(diff) {
+  return h('pre', { class: 'diff', 'aria-label': 'Changes to aegis.toml' },
+    diff.map((l) => h('span', { class: l.op === '+' ? 'add' : l.op === '-' ? 'del' : '' }, `${l.op} ${l.text}\n`)));
+}
+
+const CONFIG_BASE = {
+  source: 'the aegis.toml in the project directory',
+  release: "the live release's aegis.toml",
+  none: 'a new aegis.toml (the project has none yet)',
+};
+
+/** Shows the aegis.toml diff; resolves true when the operator saves. */
+async function confirmConfigChange(preview) {
+  const result = await modal(() =>
+    h('form', { method: 'dialog', class: 'wide' },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, 'Review changes to aegis.toml'),
+        h('p', { class: 'muted small' }, `Based on ${CONFIG_BASE[preview.base] || preview.base}. Every new release gets this file; copy it into your repository to keep the two in sync.`),
+        diffView(preview.diff)),
+      h('div', { class: 'form-actions' },
+        copyButton(preview.proposed),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn', value: 'cancel', type: 'submit' }, 'Cancel'),
+        h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Save settings'))));
+  return result === 'ok';
+}
+
+async function showConfigFile(project, btn) {
+  const preview = await run(btn, () => api('POST', `/projects/${enc(project.id)}/settings/preview`, project.settings || {}));
+  if (!preview) return;
+  await modal(() =>
+    h('form', { method: 'dialog', class: 'wide' },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, 'aegis.toml for the next deployment'),
+        h('p', { class: 'muted small' }, `Based on ${CONFIG_BASE[preview.base] || preview.base}, with the dashboard settings merged in. Secrets are not included.`),
+        h('pre', { class: 'diff' }, preview.current)),
+      h('div', { class: 'form-actions' },
+        copyButton(preview.current),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn', value: 'close', type: 'submit' }, 'Close'))));
+}
+
+async function restartToApply(project, message) {
+  if (!project.process || !['Running', 'Backoff'].includes(project.process.status)) return;
+  const ok = await confirmDialog({ title: 'Restart the app now?', message, confirmLabel: 'Restart' });
+  if (ok) await run(null, () => api('POST', `/processes/${enc(project.id)}/restart`), 'Restarted with the new values');
+}
+
+function secretsCard(ctx) {
+  const project = ctx.project();
+  const listBody = h('tbody');
+  const nameIn = h('input', { id: 'secret-name', class: 'mono', placeholder: 'DATABASE_URL', required: true, autocomplete: 'off' });
+  const valueIn = h('input', { id: 'secret-value', class: 'mono', type: 'password', required: true, autocomplete: 'new-password' });
+  const load = async () => {
+    const secrets = await api('GET', `/projects/${enc(project.id)}/secrets`);
+    const started = parseTime(ctx.project().process?.last_start);
+    replace(listBody, secrets.length
+      ? secrets.map((s) => {
+        const stale = started !== null && parseTime(s.updated_at) > started;
+        return h('tr', {},
+          h('td', { 'data-label': 'Name', class: 'mono' }, s.name),
+          h('td', { 'data-label': 'Updated' }, timeEl(s.updated_at, fmtAgo(s.updated_at)), stale ? [' ', pill('Restart to apply', 'warn')] : null),
+          h('td', { class: 'actions' },
+            h('button', { class: 'btn small', type: 'button', onclick: () => { nameIn.value = s.name; valueIn.focus(); } }, 'Replace'),
+            ' ',
+            h('button', {
+              class: 'btn small danger',
+              type: 'button',
+              'data-action': 'delete-secret',
+              onclick: async (e) => {
+                const btn = e.currentTarget;
+                const ok = await confirmDialog({ title: `Delete ${s.name}?`, message: 'The running app keeps the value until it restarts.', confirmLabel: 'Delete', danger: true });
+                if (!ok) return;
+                const done = await run(btn, () => api('DELETE', `/projects/${enc(project.id)}/secrets/${enc(s.name)}`), `${s.name} deleted`);
+                if (done !== undefined) load().catch(() => {});
+              },
+            }, 'Delete')));
+      })
+      : h('tr', {}, h('td', { colspan: 3, class: 'muted small' }, 'No secrets yet.')));
+  };
+  const saveBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'save-secret' }, 'Save secret');
+  const form = h('form', {
+    class: 'card-body',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const name = nameIn.value.trim();
+      const res = await run(saveBtn, () => api('PUT', `/projects/${enc(project.id)}/secrets/${enc(name)}`, { value: valueIn.value }), `${name} saved`);
+      if (!res) return;
+      nameIn.value = '';
+      valueIn.value = '';
+      await load().catch(() => {});
+      if (res.restart_required) await restartToApply(ctx.project(), `${name} reaches the app when it restarts.`);
+    },
+  },
+  h('div', { class: 'row' },
+    h('div', { class: 'field' }, h('label', { for: 'secret-name' }, 'Name'), nameIn),
+    h('div', { class: 'field' }, h('label', { for: 'secret-value' }, 'Value'), valueIn)),
+  h('div', { class: 'form-actions' }, saveBtn));
+  const card = h('section', { class: 'card' },
+    h('div', { class: 'card-header' }, h('h2', {}, 'Secrets')),
+    h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Environment variables stored encrypted on the server and passed to the app when it starts. Values can be replaced but never read back.')),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['Name', 'Updated', ''].map((t) => h('th', {}, t)))),
+      listBody)),
+    form);
+  load().catch((err) => replace(listBody, h('tr', {}, h('td', { colspan: 3 }, errorBox(err)))));
+  return card;
+}
+
+const DELIVERY_KIND = { queued: 'ok', pong: 'ok', ignored: '', duplicate: '', error: 'bad' };
+
+function webhookCard(ctx) {
+  const project = ctx.project();
+  if (!project.repository_url) {
+    return h('section', { class: 'card' },
+      h('div', { class: 'card-header' }, h('h2', {}, 'GitHub webhook')),
+      h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Webhooks need a git repository as the source.')));
+  }
+  const status = h('div', {}, h('p', { class: 'muted small' }, 'Loading…'));
+  const hookOut = h('div');
+  const hookBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'webhook' }, 'Generate secret');
+  const load = async () => {
+    const hook = await api('GET', `/projects/${enc(project.id)}/webhook`);
+    const testBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'test-webhook', disabled: !hook.configured }, 'Send test delivery');
+    testBtn.addEventListener('click', async () => {
+      const res = await run(testBtn, () => api('POST', `/projects/${enc(project.id)}/webhook/test`));
+      if (res) toast(res.status === 'pong' ? 'Test delivery accepted' : `Test delivery: ${res.status}`, res.status === 'pong' ? '' : 'bad');
+      load().catch(() => {});
+    });
+    hookBtn.textContent = hook.configured ? 'Rotate secret' : 'Generate secret';
+    replace(status,
+      h('dl', { class: 'facts' },
+        h('div', {}, h('dt', {}, 'Status'), h('dd', {}, hook.configured ? pill('Configured', 'ok') : pill('No secret yet', 'warn'))),
+        h('div', {}, h('dt', {}, 'Deploys on push to'), h('dd', { class: 'mono' }, hook.branch))),
+      h('div', { class: 'field' }, h('span', { class: 'small muted' }, 'Payload URL'), secretBox(`${location.origin}${hook.path}`, 'Payload URL')),
+      h('p', { class: 'muted small' }, `Content type ${hook.content_type}; events: ${hook.events.join(', ')}. The server must be reachable from GitHub.`),
+      h('div', { class: 'form-actions' }, testBtn, hookBtn),
+      hook.recent.length
+        ? h('div', {}, h('h3', { class: 'small' }, 'Recent deliveries'),
+          h('ul', { class: 'deliveries' }, hook.recent.map((d) => h('li', {},
+            timeEl(d.received_at, fmtAgo(d.received_at)), ' ',
+            h('span', { class: 'mono' }, d.event), ' ',
+            pill(d.status, DELIVERY_KIND[d.status] ?? ''),
+            d.reason ? h('span', { class: 'muted small' }, ` ${d.reason}`) : null))))
+        : h('p', { class: 'muted small' }, 'No deliveries yet.'));
+  };
+  hookBtn.addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'Generate a new webhook secret?',
+      message: 'If this app already has a secret, it stops working; update the webhook on GitHub with the new one.',
+      confirmLabel: 'Generate',
+    });
+    if (!ok) return;
+    const res = await run(hookBtn, () => api('POST', `/projects/${enc(project.id)}/webhook`));
+    if (!res) return;
+    replace(hookOut, h('div', { class: 'grid' },
+      h('div', { class: 'alert warn' }, 'Copy the secret now; it is not shown again.'),
+      h('div', {}, h('div', { class: 'small muted' }, 'Secret'), secretBox(res.secret, 'Webhook secret'))));
+    load().catch(() => {});
+  });
+  load().catch((err) => replace(status, errorBox(err)));
+  return h('section', { class: 'card' },
+    h('div', { class: 'card-header' }, h('h2', {}, 'GitHub webhook')),
+    h('div', { class: 'card-body' }, status, hookOut));
+}
+
 async function settingsTab(body, ctx) {
   const project = ctx.project();
   const s = project.settings || {};
   const { inputs, layout } = settingsInputs(s);
+  const env = envEditor(s.env, 'env');
   const processOnly = h('input', { type: 'checkbox', id: 'set-process-only', checked: s.health_check_url === '' });
   const syncHealth = () => {
     inputs.health_check_url.disabled = processOnly.checked;
@@ -1269,6 +1465,8 @@ async function settingsTab(body, ctx) {
     inputs.health_check_url.placeholder = detected.health_check_url || '(process check only)';
     toast(`Detected a ${detected.runtime} app; defaults shown as placeholders`);
   });
+  const fileBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'show-config' }, 'View aegis.toml');
+  fileBtn.addEventListener('click', () => showConfigFile(ctx.project(), fileBtn));
 
   const settingsForm = h('form', {
     class: 'card',
@@ -1282,15 +1480,33 @@ async function settingsTab(body, ctx) {
       if (inputs.port.value) req.port = Number(inputs.port.value);
       if (processOnly.checked) req.health_check_url = '';
       else if (inputs.health_check_url.value.trim()) req.health_check_url = inputs.health_check_url.value.trim();
+      try {
+        req.env = env.read();
+      } catch (err) {
+        toast(err.message, 'bad');
+        return;
+      }
+      // Show what the change does to aegis.toml before saving it.
+      const preview = await run(saveBtn, () => api('POST', `/projects/${enc(project.id)}/settings/preview`, req));
+      if (!preview) return;
+      if (!preview.changed) {
+        toast('Nothing to save');
+        return;
+      }
+      if (!(await confirmConfigChange(preview))) return;
       await run(saveBtn, () => api('PUT', `/projects/${enc(project.id)}/settings`, req), 'Settings saved; they apply to the next deployment');
       ctx.refreshProject();
     },
   },
-  h('div', { class: 'card-header' }, h('h2', {}, 'Build & run'), h('span', { class: 'spacer' }), detectBtn),
+  h('div', { class: 'card-header' }, h('h2', {}, 'Build & run'), h('span', { class: 'spacer' }), fileBtn, detectBtn),
   h('div', { class: 'card-body' },
     h('p', { class: 'muted small' }, 'Leave a field blank to use the value from aegis.toml or auto-detection. Changes take effect on the next deployment; older releases keep the settings they were built with.'),
     layout,
     h('label', { class: 'small', for: 'set-process-only' }, processOnly, ' No HTTP health check (healthy while the process stays up)'),
+    h('fieldset', { class: 'field env' },
+      h('legend', {}, 'Environment variables'),
+      h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and written into each release. Use Secrets for passwords and keys.'),
+      env.el),
     h('div', { class: 'form-actions' }, saveBtn)));
 
   // Daily deploy.
@@ -1321,31 +1537,6 @@ async function settingsTab(body, ctx) {
       project.repository_url ? h('div', { class: 'field' }, h('label', { for: 'sched-branch' }, 'Branch'), schedBranch) : null),
     h('div', { class: 'form-actions' }, schedBtn)));
 
-  // Webhook.
-  const hookOut = h('div');
-  const hookBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'webhook' }, 'Generate webhook secret');
-  hookBtn.addEventListener('click', async () => {
-    const ok = await confirmDialog({
-      title: 'Generate a new webhook secret?',
-      message: 'If this app already has a secret, it stops working; update the webhook on GitHub with the new one.',
-      confirmLabel: 'Generate',
-    });
-    if (!ok) return;
-    const res = await run(hookBtn, () => api('POST', `/projects/${enc(project.id)}/webhook`));
-    if (!res) return;
-    replace(hookOut, h('div', { class: 'grid' },
-      h('div', { class: 'alert warn' }, 'Copy the secret now; it is not shown again.'),
-      h('div', {}, h('div', { class: 'small muted' }, 'Payload URL'), secretBox(`${location.origin}${res.path}`, 'Payload URL')),
-      h('div', {}, h('div', { class: 'small muted' }, 'Secret'), secretBox(res.secret, 'Webhook secret')),
-      h('div', { class: 'small muted' }, `Content type ${res.content_type}; events: ${res.events.join(', ')}.`)));
-  });
-  const hookCard = h('section', { class: 'card' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'GitHub webhook')),
-    h('div', { class: 'card-body' },
-      project.repository_url
-        ? [h('p', { class: 'muted small' }, `Deploy automatically when ${project.branch} is pushed. The server must be reachable from GitHub.`), hookBtn, hookOut]
-        : h('p', { class: 'muted small' }, 'Webhooks need a git repository as the source.')));
-
   const info = h('section', { class: 'card' },
     h('div', { class: 'card-header' }, h('h2', {}, 'About')),
     h('div', { class: 'card-body' },
@@ -1355,7 +1546,7 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, domainsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, hookCard), info));
+  append(body, h('div', { class: 'grid' }, settingsForm, domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info));
 }
 
 // --- Domains (Settings tab) --------------------------------------------

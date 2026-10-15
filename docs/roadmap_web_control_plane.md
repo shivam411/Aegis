@@ -257,7 +257,7 @@ This is the "drag CPU and memory" feature.
 
 ### Phase 5 — App configuration from the UI *(~2–3 weeks)*
 
-- **Environment variables and secrets:** implement `core/secrets` (encrypted at rest with a key file outside the database). Edit them in the UI; values are masked; applying changes triggers a restart or redeploy.
+- ✅ **Environment variables and secrets:** `core/secrets` seals values with ChaCha20-Poly1305 under a key in `<data_dir>/secrets.key` (0600, outside the database), bound to their project and name. Secrets are write-only in the API and UI, injected when the process starts (never written to a release or an event), and a restart picks up changes; the UI offers it. Plain variables are dashboard settings, merged over `[env]` and written into each release.
 - **Domains and reverse proxy** ✅ *done*. Delivered:
   - **`runtime/ingress` (`aegis-ingress`):** a `hyper` reverse proxy embedded in the daemon, enabled with `[proxy]`. It routes by `Host` to each app's live process, with a 404 page for unknown hosts and 502 when the app is down. It sets `X-Forwarded-For`/`-Proto`/`-Host` and strips hop-by-hop headers. Upgrades (WebSocket) pass through, bodies stream, and it has connect, header and response timeouts.
   - **HTTPS:** a certificate per domain, picked by SNI. Certificates come either from ACME HTTP-01 (`instant-acme`; the challenge is answered on port 80) or from PEM files that are reloaded when they change. ACME certificates are stored in `data_dir/certs` (keys 0600) and renewed in the background when fewer than 30 days remain. Once a domain has a certificate, HTTP redirects to HTTPS. Optionally the dashboard can be served on its own domain (`[proxy.dashboard]`).
@@ -265,9 +265,9 @@ This is the "drag CPU and memory" feature.
   - **Zero-downtime cutover:** for apps with a domain, each release gets its own port (`PORT`), and the health check is pointed at it. The new release starts next to the old one. Once it is healthy, the proxy's upstream flips in one step; the old process finishes its in-flight requests and is then stopped. An unhealthy release never receives traffic. Ports are recorded in `ProcessStarted`/`ReleasePromoted`, so routes come back after a daemon restart.
   - Evidence: proxy integration tests (routing, 404/502, forwarded headers, chunked bodies, upgrades, HTTPS from files with SNI, redirect and reload, ACME challenge), unit tests (hostnames, routing table, headers, expiry parsing and the renewal decision, ACME challenge store), and a control-plane test that hammers the proxy through three deployments, a failed deployment, a rollback and a daemon restart with zero failed requests.
   - Not done: `Rolling`/`BlueGreen` (they need several instances per app), wildcard domains (DNS-01) and TLS-ALPN-01. ACME issuance against a real CA is untested in CI (no public domain); the challenge handler and renewal logic are unit-tested.
-- **Schedules:** manage daily auto-deploys (`SchedulerEngine`) from the UI; persist and replay them on restart.
-- **Webhook setup:** show the webhook URL and secret for each app, with a "test delivery" button.
-- **Configuration as code:** the UI edits and `aegis.toml` stay in sync; the UI shows the diff before saving.
+- ✅ **Schedules:** daily auto-deploys are set in the Settings tab, recorded as `ScheduleConfigured` and restored from the event log when the daemon starts.
+- ✅ **Webhook setup:** the Settings tab shows the payload URL, whether a secret exists, the last 10 signed deliveries (`WebhookReceived`), and a "Send test delivery" button that pushes a signed ping through the real endpoint. Secrets are shown once, on rotation.
+- ✅ **Configuration as code:** saving settings first shows the line diff of the `aegis.toml` the next release will get (`POST /projects/{p}/settings/preview`); "View aegis.toml" shows and copies the whole file so it can be committed back to the repository. Aegis never writes to the repository itself.
 
 ### Phase 6 — Operations polish *(ongoing)*
 

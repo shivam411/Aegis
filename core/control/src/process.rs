@@ -118,6 +118,20 @@ impl ControlPlane {
             }
             ProcessAction::Start => start(self).await?,
             ProcessAction::Restart if running => {
+                // Pick up secrets changed since the process started, keeping
+                // the port the proxy routes to.
+                if let Some(config) = &config {
+                    let mut env = self.process_env(process.project_id, config);
+                    let port = self.inner.process_ports.lock().unwrap().get(&id).copied();
+                    if let Some(super::ProcessPort {
+                        port: Some(port),
+                        proxied: true,
+                    }) = port
+                    {
+                        env.insert("PORT".to_string(), port.to_string());
+                    }
+                    self.inner.supervisor.set_env(&id, env);
+                }
                 self.inner.supervisor.restart(&id, drain).await?;
             }
             ProcessAction::Restart => start(self).await?,

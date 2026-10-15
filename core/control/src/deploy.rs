@@ -489,8 +489,7 @@ impl ControlPlane {
         config: &ResolvedProjectConfig,
         proxied_port: Option<u16>,
     ) -> ProcessSpec {
-        let mut env: std::collections::HashMap<String, String> =
-            config.process_env().into_iter().collect();
+        let mut env = self.process_env(project_id, config);
         if let Some(port) = proxied_port {
             env.insert("PORT".to_string(), port.to_string());
         }

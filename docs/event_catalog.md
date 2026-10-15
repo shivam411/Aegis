@@ -51,6 +51,8 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | `ScheduleConfigured` | Daily auto-deployment time set (UTC) | `project_id`, `hour`, `minute`, `branch` |
 | `DomainMapped` | The built-in proxy serves the project on a domain (re-mapping an existing domain changes its TLS mode) | `project_id`, `domain` (lowercase), `tls` (`acme`, `files` or `off`), `cert_path` and `key_path` (files mode), `actor` |
 | `DomainUnmapped` | The domain is no longer served | `project_id`, `domain`, `actor` |
+| `SecretUpdated` | A secret environment variable was created or replaced. The value is never recorded; it is stored encrypted outside the event log | `project_id`, `name`, `created`, `actor` |
+| `SecretDeleted` | A secret environment variable was removed | `project_id`, `name`, `actor` |
 | `ProjectUpdated` | Config or environment updated | `project_id`, `updated_fields` |
 | `ProjectDeleted` | Project removed from workspace | `project_id`, `deleted_at` |
 
@@ -117,6 +119,7 @@ Every event recorded because of an API call carries `actor`: `user:<name>`, `tok
 | `PasswordChanged` / `PasswordReset` | Password changed in the API / reset on the server; all sessions end | `username` |
 | `ApiTokenCreated` / `ApiTokenRevoked` | API token lifecycle | `token_id`, plus `name` and `scope` when created |
 | `WebhookSecretRotated` | A project's webhook secret was created or replaced | `project_id` |
+| `WebhookReceived` | A delivery with a valid signature was handled (including dashboard test deliveries) | `project_id`, `delivery`, `event`, `status` (`queued`, `ignored`, `duplicate`, `pong`, `error`), `reason`, `deployment_id`, `actor` |
 
 ---
 

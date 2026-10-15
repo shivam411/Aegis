@@ -524,6 +524,10 @@ pub struct ProjectOverrides {
     pub start_command: Option<String>,
     pub port: Option<u16>,
     pub health_check_url: Option<String>,
+    /// Plain (non-secret) environment variables, merged over `[env]`.
+    /// Secrets are kept elsewhere, encrypted, and never written to a release.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 impl ProjectOverrides {
@@ -545,6 +549,8 @@ impl ProjectOverrides {
         if let Some(port) = self.port {
             file.deploy.port = Some(port);
         }
+        file.env
+            .extend(self.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 }
 
@@ -716,8 +722,11 @@ strategy = "GracefulSwitch"
             start_command: Some("./new".into()),
             port: Some(4000),
             health_check_url: Some(String::new()),
+            env: BTreeMap::from([("MODE".to_string(), "dashboard".to_string())]),
             ..Default::default()
         };
+        file.env.insert("MODE".into(), "file".into());
+        file.env.insert("KEEP".into(), "yes".into());
         assert!(!overrides.is_empty());
         assert!(ProjectOverrides::default().is_empty());
         overrides.apply_to(&mut file);
@@ -726,6 +735,8 @@ strategy = "GracefulSwitch"
         assert_eq!(file.deploy.port, Some(4000));
         // An empty string is kept: it means "no health URL" when resolved.
         assert_eq!(file.deploy.health_check_url.as_deref(), Some(""));
+        assert_eq!(file.env["MODE"], "dashboard");
+        assert_eq!(file.env["KEEP"], "yes");
         let round_trip = ProjectFile::parse(&toml::to_string_pretty(&file).unwrap()).unwrap();
         assert_eq!(round_trip, file);
     }
