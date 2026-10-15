@@ -23,7 +23,7 @@ To maintain total transparency and build operational trust with maintainers and 
 | **Detector Pipeline** | 🟡 | [`validation/compatibility/compatibility-report.md`](../validation/compatibility/compatibility-report.md) |
 | **Runtime Process Supervisor** | 🟡 | [`validation/soak/72h-report.md`](../validation/soak/72h-report.md) |
 | **Atomic Release Switcher** | 🟡 | [`validation/chaos/chaos-report.md`](../validation/chaos/chaos-report.md) |
-| **PM2 & Systemd Migration Engine** | 🟡 | [`validation/migration/migration-report.md`](../validation/migration/migration-report.md) |
+| **PM2 & Systemd Migration (`aegis migrate`)** | 🧪 | [`validation/migration/migration-report.md`](../validation/migration/migration-report.md) |
 | **Deployment Replay (`aegis replay`)** | 🧪 | [`docs/proof_phase.md`](proof_phase.md) |
 | **Time Travel Inspection (`aegis inspect --at`)** | 🧪 | [`docs/proof_phase.md`](proof_phase.md) |
 | **Outage Investigation Engine (`aegis investigate`)** | 🧪 | [`docs/proof_phase.md`](proof_phase.md) |

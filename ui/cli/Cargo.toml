@@ -10,9 +10,11 @@ prost = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
+toml = { workspace = true }
 
 aegis-config = { path = "../../core/config" }
 aegis-api = { path = "../../core/api" }
 aegis-types = { path = "../../core/types" }
 aegis-engine = { path = "../../runtime/engine" }
-
+aegis-projection = { path = "../../core/projection" }

@@ -90,12 +90,15 @@ dependencies = [
  "aegis-api",
  "aegis-config",
  "aegis-engine",
+ "aegis-projection",
  "aegis-types",
  "anyhow",
+ "chrono",
  "clap",
  "prost",
  "serde_json",
  "tokio",
+ "toml",
  "tonic",
 ]
 

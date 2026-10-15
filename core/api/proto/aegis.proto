@@ -231,7 +231,10 @@ message StreamLogsRequest {
 
 message ListEventsRequest {
   string project = 1;
+  // Most recent events to return (default 50).
   uint32 limit = 2;
+  // Return every matching event, oldest first; limit is ignored.
+  bool all = 3;
 }
 
 message ListEventsResponse {

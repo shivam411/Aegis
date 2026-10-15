@@ -1,9 +1,10 @@
 use aegis_api::aegis::aegis_daemon_client::AegisDaemonClient;
 use aegis_api::aegis::{
-    ConfigureScheduleRequest, ControlProcessRequest, DeployRequest, EmitEventRequest,
-    GetLogsRequest, ListDeploymentsRequest, ListEventsRequest, ListProjectsRequest,
-    ListReleasesRequest, LogLine, ProcessAction, ProcessInfo, RegisterProjectRequest,
-    RollbackRequest, StatusRequest, StatusResponse, StreamEventsRequest, StreamLogsRequest,
+    ConfigureScheduleRequest, ControlProcessRequest, DeployRequest, DeploymentInfo,
+    EmitEventRequest, GetLogsRequest, ListDeploymentsRequest, ListEventsRequest,
+    ListProjectsRequest, ListReleasesRequest, LogLine, ProcessAction, ProcessInfo,
+    RegisterProjectRequest, RollbackRequest, StatusRequest, StatusResponse, StreamEventsRequest,
+    StreamLogsRequest,
 };
 use aegis_config::{Config, ProjectFile};
 use aegis_engine::ResolvedProjectConfig;
@@ -12,6 +13,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 use tonic::transport::Channel;
+
+mod diagnose;
+mod history;
+mod migrate;
+mod upgrade;
 
 #[derive(Parser)]
 #[command(name = "aegis")]
@@ -132,11 +138,12 @@ enum Commands {
     },
     /// Validate project aegis.toml configuration and show the effective settings
     Validate,
-    /// Detailed diagnostic inspect of project resources and releases [STABLE]
+    /// Show a project's state: releases, process, schedule, settings, limits
+    /// and recent deployments, now or as it was at a past time [EXPERIMENTAL]
     Inspect {
-        /// Project ID to inspect (reads from aegis.toml if omitted)
+        /// Project id or name (defaults to ./aegis.toml)
         project_id: Option<String>,
-        /// Time-travel historical timestamp (RFC-3339 format, e.g. 2026-08-03T09:15:00Z)
+        /// Replay history up to this time (RFC 3339, e.g. 2026-08-03T09:15:00Z; UTC if no offset)
         #[arg(short, long)]
         at: Option<String>,
     },
@@ -162,51 +169,83 @@ enum Commands {
         #[arg(short = 'n', long, default_value = "50")]
         limit: u32,
     },
-    /// Step-by-step event-sourced deployment replay signature feature [STABLE]
+    /// Show what happened during a deployment, step by step [EXPERIMENTAL]
     Replay {
-        /// Target release version or ID (e.g. release-153 or v1.1.0)
-        release: String,
+        /// Deployment id (or its short form), release version or release id
+        target: String,
+        /// Only look in this project (id or name)
+        #[arg(short, long)]
+        project: Option<String>,
     },
-    /// Operational incident diagnostic and auto-rollback advisor [EXPERIMENTAL]
+    /// Diagnose a project's process, crashes and failed deployments, and
+    /// suggest what to do [EXPERIMENTAL]
     Incident {
-        /// Target project ID to analyze
+        /// Project id or name (defaults to ./aegis.toml)
         project_id: Option<String>,
+        /// How far back to look for crashes and alerts (e.g. 30m, 2h, 1d)
+        #[arg(short, long, default_value = "24h")]
+        since: String,
     },
-    /// Comprehensive operational outage investigation tool [EXPERIMENTAL]
+    /// Timeline of a project's recent events with the likely trigger of
+    /// any problems [EXPERIMENTAL]
     Investigate {
-        /// Target project ID to investigate
+        /// Project id or name (defaults to ./aegis.toml)
         project_id: Option<String>,
+        /// How far back to look (e.g. 30m, 2h, 1d)
+        #[arg(short, long, default_value = "24h")]
+        since: String,
     },
-    /// Migrate legacy process configurations (PM2, systemd) to aegis.toml [STABLE]
+    /// Generate aegis.toml from a PM2 ecosystem file or a systemd unit [EXPERIMENTAL]
     Migrate {
         #[command(subcommand)]
         target: MigrateSubcommand,
     },
-    /// Perform zero-downtime self-update of Aegis daemon and CLI binaries [STABLE]
+    /// Update the Aegis binaries to the latest GitHub release with install.sh
+    /// (Linux and macOS) [EXPERIMENTAL]
     Upgrade {
-        /// Only check for available updates without applying
+        /// Only report whether a newer release exists
         #[arg(short, long)]
         check: bool,
-        /// Force re-installation of current version
+        /// Reinstall even if this version is current
         #[arg(short, long)]
         force: bool,
+        /// Don't ask for confirmation
+        #[arg(short, long)]
+        yes: bool,
     },
 }
 
 #[derive(Subcommand)]
 enum MigrateSubcommand {
-    /// Migrate PM2 ecosystem configuration (ecosystem.config.js / json) to aegis.toml
+    /// Read a PM2 ecosystem file (.json, or .js on a best-effort basis)
     Pm2 {
-        /// Path to PM2 ecosystem configuration file
-        #[arg(short, long, default_value = "ecosystem.config.js")]
-        file: String,
+        /// Ecosystem file (defaults to ./ecosystem.config.{js,cjs,json})
+        #[arg(short, long)]
+        file: Option<String>,
+        /// App to migrate when the file defines several
+        #[arg(short, long)]
+        app: Option<String>,
+        #[command(flatten)]
+        output: MigrateOutput,
     },
-    /// Migrate systemd service unit file to aegis.toml
+    /// Read a systemd service unit
     Systemd {
-        /// Path to systemd service unit file
+        /// Path to the .service file
         #[arg(short, long)]
         service: String,
+        #[command(flatten)]
+        output: MigrateOutput,
     },
+}
+
+#[derive(clap::Args)]
+struct MigrateOutput {
+    /// Print the generated aegis.toml instead of writing it
+    #[arg(long)]
+    dry_run: bool,
+    /// Overwrite an existing aegis.toml (its project id is kept)
+    #[arg(long)]
+    force: bool,
 }
 
 /// Connects to the daemon on first use, so commands that work offline
@@ -304,6 +343,115 @@ fn describe_process(p: &ProcessInfo) -> String {
         },
         p.restart_count
     )
+}
+
+/// 536870912 -> "512 MiB"
+fn bytes(n: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let mib = n as f64 / MIB;
+    if mib >= 1024.0 {
+        format!("{:.1} GiB", mib / 1024.0)
+    } else {
+        format!("{:.0} MiB", mib)
+    }
+}
+
+/// Every recorded event of a project, oldest first.
+async fn project_history(daemon: &mut Daemon, project: &str) -> anyhow::Result<Vec<history::Ev>> {
+    let events = rpc(daemon
+        .client()
+        .await?
+        .list_events(ListEventsRequest {
+            project: project.to_string(),
+            // Daemons that predate `all` treat this as "everything".
+            limit: u32::MAX,
+            all: true,
+        })
+        .await)?
+    .events;
+    Ok(history::from_responses(events))
+}
+
+/// The one project in a replayed single-project history.
+fn only_project(
+    engine: &aegis_projection::ProjectionEngine,
+    key: &str,
+) -> anyhow::Result<aegis_projection::ProjectState> {
+    engine
+        .get_projects()
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No history recorded for project '{}'", key))
+}
+
+/// Deployments matching a deployment id (full, or as shown by `short`) or a
+/// release version. Id matches win over version matches.
+fn match_deployments<'a>(
+    deployments: &'a [DeploymentInfo],
+    target: &str,
+) -> Vec<&'a DeploymentInfo> {
+    let by_id: Vec<_> = deployments
+        .iter()
+        .filter(|d| {
+            d.id == target
+                || (target.len() >= 6 && d.id.ends_with(target))
+                || (target.len() >= 8 && d.id.starts_with(target))
+        })
+        .collect();
+    if !by_id.is_empty() {
+        return by_id;
+    }
+    let by_version: Vec<_> = deployments.iter().filter(|d| d.version == target).collect();
+    // A version is only built once; prefer the deployment that succeeded.
+    match by_version.iter().rev().find(|d| d.status == "Success") {
+        Some(d) => vec![*d],
+        None => by_version.last().map(|d| vec![*d]).unwrap_or_default(),
+    }
+}
+
+/// Asks a yes/no question on the terminal; anything but "y"/"yes" is no.
+fn confirm(question: &str) -> bool {
+    use std::io::Write;
+    print!("{} [y/N] ", question);
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+/// Prints or writes a migrated aegis.toml.
+fn write_migration(mut m: migrate::Migration, output: &MigrateOutput) -> anyhow::Result<()> {
+    let path = std::env::current_dir()?.join("aegis.toml");
+    let exists = path.exists();
+    if exists && !output.force && !output.dry_run {
+        anyhow::bail!(
+            "aegis.toml already exists in this directory. Use --dry-run to see the result or --force to overwrite it."
+        );
+    }
+    // Keep the project's identity when replacing its aegis.toml.
+    if exists {
+        if let Some(id) = ProjectFile::load(&path).ok().and_then(|f| f.project.id) {
+            m.file.project.id = Some(id);
+        }
+    }
+    for warning in &m.warnings {
+        eprintln!("  ! {}", warning);
+    }
+    let text = m.render()?;
+    if output.dry_run {
+        print!("{}", text);
+        return Ok(());
+    }
+    std::fs::write(&path, text)?;
+    println!(
+        "Wrote aegis.toml from {} (start: {}).",
+        m.source,
+        m.file.build.start_command.as_deref().unwrap_or("-")
+    );
+    println!("  Next: 'aegis validate', then 'aegis deploy'.");
+    Ok(())
 }
 
 fn json_str<'a>(payload: &'a serde_json::Value, key: &str) -> &'a str {
@@ -884,6 +1032,7 @@ async fn run() -> Result<(), anyhow::Error> {
                 .list_events(ListEventsRequest {
                     project: key.clone(),
                     limit,
+                    all: false,
                 })
                 .await)?
             .events;
@@ -966,32 +1115,7 @@ async fn run() -> Result<(), anyhow::Error> {
             }
         }
         Commands::Inspect { project_id, at } => {
-            let pid = project_id
-                .or_else(local_project_id)
-                .unwrap_or_else(|| "(no project)".to_string());
-            if let Some(ts) = at {
-                println!(
-                    "Time-Travel Historical State Inspection for Project '{}' at {}:",
-                    pid, ts
-                );
-                println!("  ├── Id: {}", pid);
-                println!("  ├── Historical Snapshot Query: Replayed from EventStore");
-            } else {
-                let status = daemon.status().await;
-                println!("Project Resource Tree:");
-                println!("  ├── Id: {}", pid);
-                println!(
-                    "  ├── Daemon Version: {}",
-                    status
-                        .as_ref()
-                        .map(|s| s.version.as_str())
-                        .unwrap_or("0.1.0")
-                );
-                println!(
-                    "  └── Total System Events: {}",
-                    status.as_ref().map(|s| s.event_count).unwrap_or(0)
-                );
-            }
+            inspect(&mut daemon, target_or_local(project_id)?, at).await?;
         }
         Commands::Explain => {
             println!("Aegis Runtime & Capability Auto-Detection:");
@@ -1021,117 +1145,106 @@ async fn run() -> Result<(), anyhow::Error> {
             }
             println!("\n  [✓] Feature Tour Complete!");
         }
-        Commands::Replay { release } => {
-            println!(
-                "▶ Replaying Event History for Release / Target '{}'...",
-                release
-            );
-            let status = daemon.status().await;
-            println!(
-                "  Replayed against EventStore with {} total events.",
-                status.as_ref().map(|s| s.event_count).unwrap_or(0)
-            );
+        Commands::Replay { target, project } => {
+            replay(&mut daemon, &target, project).await?;
         }
-        Commands::Incident { project_id } => {
-            let pid = project_id.unwrap_or_else(|| "current-project".to_string());
-            println!(
-                "Aegis Incident Response & Root Cause Diagnostics for Project '{}':",
-                pid
-            );
-            let status = daemon.status().await;
-            if status.is_some() {
-                println!("  [✓] Daemon Status: Operational");
-                println!("  [✓] EventStore: Connected");
-            } else {
-                println!("  [!] Daemon Status: Offline / Unreachable");
-            }
+        Commands::Incident { project_id, since } => {
+            incident(&mut daemon, target_or_local(project_id)?, &since).await?;
         }
-        Commands::Investigate { project_id } => {
-            let pid = project_id.unwrap_or_else(|| "current-project".to_string());
-            println!(
-                "🔎 Aegis Operational Outage Investigation for Project '{}':",
-                pid
-            );
-            let status = daemon.status().await;
-            println!(
-                "  Current System Event Log Size: {}",
-                status.as_ref().map(|s| s.event_count).unwrap_or(0)
-            );
+        Commands::Investigate { project_id, since } => {
+            investigate(&mut daemon, target_or_local(project_id)?, &since).await?;
         }
         Commands::Migrate { target } => match target {
-            MigrateSubcommand::Pm2 { file } => {
-                println!("Parsing PM2 ecosystem configuration file '{}'...", file);
-                let current_dir = std::env::current_dir()?;
-                let path = Path::new(&file);
-                let service_name = if path.exists() {
-                    let text = std::fs::read_to_string(path).unwrap_or_default();
-                    if text.contains("name:") || text.contains("\"name\"") {
-                        "pm2-app"
-                    } else {
-                        "imported-app"
-                    }
-                } else {
-                    "imported-app"
+            MigrateSubcommand::Pm2 { file, app, output } => {
+                let file = match file {
+                    Some(f) => f,
+                    None => [
+                        "ecosystem.config.js",
+                        "ecosystem.config.cjs",
+                        "ecosystem.config.json",
+                        "ecosystem.json",
+                    ]
+                    .into_iter()
+                    .find(|f| Path::new(f).exists())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "No ecosystem.config.{{js,cjs,json}} here. Pass the file with --file."
+                        )
+                    })?
+                    .to_string(),
                 };
-
-                let pipeline = aegis_engine::DetectorPipeline::new();
-                let mut config = pipeline.detect_all(&current_dir);
-                config.project_name = service_name.to_string();
-                let toml_content =
-                    pipeline.generate_toml(&config, &aegis_types::ProjectId::new().to_string());
-                let toml_path = current_dir.join("aegis.toml");
-                let _ = std::fs::write(&toml_path, toml_content);
-
-                println!("  [✓] Imported service: '{}'", service_name);
-                println!("Successfully generated aegis.toml from PM2 ecosystem!");
+                let text = std::fs::read_to_string(&file)
+                    .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", file, e))?;
+                write_migration(migrate::from_pm2(&file, &text, app.as_deref())?, &output)?;
             }
-            MigrateSubcommand::Systemd { service } => {
-                println!("Parsing systemd service unit file '{}'...", service);
-                let current_dir = std::env::current_dir()?;
+            MigrateSubcommand::Systemd { service, output } => {
                 let path = Path::new(&service);
-                let mut start_cmd = "java -jar app.jar".to_string();
-                if path.exists() {
-                    if let Ok(text) = std::fs::read_to_string(path) {
-                        for line in text.lines() {
-                            if line.starts_with("ExecStart=") {
-                                start_cmd = line.trim_start_matches("ExecStart=").to_string();
-                            }
-                        }
-                    }
-                }
-
-                let pipeline = aegis_engine::DetectorPipeline::new();
-                let mut config = pipeline.detect_all(&current_dir);
-                config.start_command = start_cmd.clone();
-                let toml_content =
-                    pipeline.generate_toml(&config, &aegis_types::ProjectId::new().to_string());
-                let toml_path = current_dir.join("aegis.toml");
-                let _ = std::fs::write(&toml_path, toml_content);
-
-                println!("  [✓] ExecStart mapped -> '{}'", start_cmd);
-                println!("Successfully generated aegis.toml from systemd unit!");
+                let text = std::fs::read_to_string(path)
+                    .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", service, e))?;
+                let read = |p: &Path| std::fs::read_to_string(p).ok();
+                write_migration(migrate::from_systemd(path, &text, &read)?, &output)?;
             }
         },
-        Commands::Upgrade { check, force } => {
-            println!("Checking Aegis platform self-update status...");
-            let status = daemon.status().await;
-            let daemon_ver = status
-                .as_ref()
-                .map(|s| s.version.as_str())
-                .unwrap_or(env!("CARGO_PKG_VERSION"));
-            println!("  CLI Version:     v{}", env!("CARGO_PKG_VERSION"));
-            println!("  Daemon Version:  v{}", daemon_ver);
+        Commands::Upgrade { check, force, yes } => {
+            let current = env!("CARGO_PKG_VERSION");
+            println!("This CLI:       v{}", current);
+            if let Some(status) = daemon.status().await {
+                println!("Daemon:         v{}", status.version);
+            }
+            let latest = upgrade::fetch_latest_tag()?;
+            println!("Latest release: {}", latest);
+            let plan = upgrade::plan(&latest, current)?;
+            match plan {
+                upgrade::Plan::UpToDate => println!("Aegis is up to date."),
+                upgrade::Plan::Upgrade => println!("A newer release is available."),
+                upgrade::Plan::Ahead => {
+                    println!("This build is newer than the latest release (development build).")
+                }
+            }
             if check {
-                println!("  [✓] Check complete: Platform version is synchronized.");
-            } else if force {
-                println!("  [!] Version re-sync requested.");
-                println!("  [✓] Binary version status updated.");
-            } else {
-                println!(
-                    "  [✓] Aegis is running on version v{}",
-                    env!("CARGO_PKG_VERSION")
+                if plan == upgrade::Plan::Upgrade {
+                    println!("Install it with 'aegis upgrade'.");
+                }
+                return Ok(());
+            }
+            if plan != upgrade::Plan::Upgrade && !force {
+                return Ok(());
+            }
+            if cfg!(windows) {
+                anyhow::bail!(
+                    "Self-update is not supported on Windows. Download {} from https://github.com/{}/releases",
+                    latest,
+                    upgrade::REPO
                 );
             }
+            let exe = std::env::current_exe()?;
+            if upgrade::is_server_install(&exe) {
+                println!(
+                    "Aegis is installed as a system service ({}). Upgrade it with:",
+                    exe.display()
+                );
+                println!(
+                    "  curl -fsSL {} | sudo bash -s -- --server   (add --domain NAME if you used it)",
+                    upgrade::INSTALL_SCRIPT_URL
+                );
+                println!("  sudo systemctl restart aegis");
+                return Ok(());
+            }
+            println!(
+                "This downloads {} and runs it with bash; it installs {} into ~/.local/bin.",
+                upgrade::INSTALL_SCRIPT_URL,
+                latest
+            );
+            println!("  (this binary: {})", exe.display());
+            if !yes && !confirm("Continue?") {
+                println!("Cancelled. Pass --yes to skip this question.");
+                return Ok(());
+            }
+            upgrade::run_installer()?;
+            println!(
+                "Installed {}. Restart the daemon (stop it, then run 'aegis-daemon') to use the new version.",
+                latest
+            );
         }
     }
 
@@ -1152,6 +1265,398 @@ async fn control_process(
             action: action as i32,
         })
         .await)
+}
+
+/// `aegis inspect`: the project's state folded from its event history,
+/// either all of it or only what was recorded up to `at`.
+async fn inspect(daemon: &mut Daemon, key: String, at: Option<String>) -> anyhow::Result<()> {
+    let at = at.as_deref().map(history::parse_at).transpose()?;
+    let events = project_history(daemon, &key).await?;
+    let (engine, used) = history::replay_until(&events, at);
+    let Some(project) = engine.get_projects().into_iter().next() else {
+        let created = events
+            .iter()
+            .find(|e| e.event_type == "ProjectCreated")
+            .or(events.first());
+        match (at, created) {
+            (Some(t), Some(c)) => anyhow::bail!(
+                "Project '{}' did not exist yet at {} (it was registered at {}).",
+                key,
+                t.format("%Y-%m-%d %H:%M:%S UTC"),
+                c.at.format("%Y-%m-%d %H:%M:%S UTC")
+            ),
+            _ => anyhow::bail!("No history recorded for project '{}'", key),
+        }
+    };
+
+    match at {
+        Some(t) => {
+            println!(
+                "Project {} as of {} (replayed {} of {} events)",
+                project.name,
+                t.format("%Y-%m-%d %H:%M:%S UTC"),
+                used,
+                events.len()
+            );
+            if t > chrono::Utc::now() {
+                println!("  (that time is in the future: this is the current state)");
+            }
+        }
+        None => println!("Project {} (replayed {} events)", project.name, used),
+    }
+    println!("  Id:           {}", project.id);
+    println!("  Registered:   {}", short_time(&project.created_at));
+    if !project.repository_url.is_empty() {
+        println!(
+            "  Repository:   {} (branch {})",
+            project.repository_url, project.branch
+        );
+    }
+    if let Some(dir) = &project.source_dir {
+        println!("  Source dir:   {}", dir);
+    }
+    println!(
+        "  Runtime:      {}",
+        project.runtime.as_deref().unwrap_or("(detected at build)")
+    );
+    println!(
+        "  Live release: {}",
+        project.current_release.as_deref().unwrap_or("none")
+    );
+    let process = project
+        .current_process
+        .and_then(|id| engine.get_process(&id));
+    match &process {
+        Some(p) => {
+            println!(
+                "  Process:      {} (pid {}, wanted {}, restarts {}, last exit code {})",
+                p.status,
+                p.pid.map_or("-".to_string(), |pid| pid.to_string()),
+                p.desired,
+                p.restart_count,
+                p.last_exit_code.map_or("-".to_string(), |c| c.to_string())
+            );
+            println!(
+                "                {} since {}",
+                p.command.as_deref().unwrap_or("-"),
+                p.last_start.as_deref().map(short_time).unwrap_or_default()
+            );
+        }
+        None => println!("  Process:      none"),
+    }
+    match &project.schedule {
+        Some(s) => println!(
+            "  Schedule:     daily at {:02}:{:02} UTC (branch {})",
+            s.hour, s.minute, s.branch
+        ),
+        None => println!("  Schedule:     none"),
+    }
+    let settings = serde_json::to_value(&project.settings).unwrap_or_default();
+    let overrides: Vec<String> = settings
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| match v {
+                    serde_json::Value::String(s) => format!("{}={}", k, s),
+                    other => format!("{}={}", k, other),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if overrides.is_empty() {
+        println!("  Settings:     from aegis.toml (no overrides)");
+    } else {
+        println!("  Settings:     {}", overrides.join(", "));
+    }
+    let r = &project.resources;
+    if r.is_unlimited() {
+        println!("  Limits:       unlimited");
+    } else {
+        println!(
+            "  Limits:       cpu {}, memory {}, processes {}",
+            r.cpu_cores
+                .map_or("unlimited".to_string(), |c| format!("{} cores", c)),
+            r.memory_bytes.map_or("unlimited".to_string(), bytes),
+            r.pids_max
+                .map_or("unlimited".to_string(), |p| p.to_string())
+        );
+    }
+
+    let releases = engine.get_project_releases(&project.id);
+    println!("Releases ({}):", releases.len());
+    for rel in releases.iter().rev() {
+        println!(
+            "  {:<22} {:<9} {:<9} {}",
+            rel.version,
+            rel.status,
+            short(&rel.commit_sha),
+            short_time(&rel.created_at)
+        );
+    }
+    let deployments: Vec<_> = engine
+        .get_deployments()
+        .into_iter()
+        .filter(|d| d.project_id == project.id)
+        .collect();
+    let skip = deployments.len().saturating_sub(5);
+    println!("Recent deployments ({} total):", deployments.len());
+    for d in &deployments[skip..] {
+        println!(
+            "  {}  {}  {:<22} {:<10} {:<8} {}",
+            short_time(&d.created_at),
+            short(&d.id.to_string()),
+            d.version.as_deref().unwrap_or("-"),
+            d.status,
+            d.stage.as_deref().unwrap_or(""),
+            d.error.as_deref().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+/// `aegis replay`: one deployment's events with time offsets.
+async fn replay(daemon: &mut Daemon, target: &str, project: Option<String>) -> anyhow::Result<()> {
+    let client = daemon.client().await?;
+    let deployments = rpc(client
+        .list_deployments(ListDeploymentsRequest {
+            project: project.clone().unwrap_or_default(),
+        })
+        .await)?
+    .deployments;
+    let projects = rpc(client.list_projects(ListProjectsRequest {}).await)?.projects;
+    let mut found = match_deployments(&deployments, target);
+
+    // Maybe a release id: find its version, then the deployment that built it.
+    if found.is_empty() {
+        for p in &projects {
+            if project.as_ref().is_some_and(|k| *k != p.id && *k != p.name) {
+                continue;
+            }
+            let releases = rpc(client
+                .list_releases(ListReleasesRequest {
+                    project: p.id.clone(),
+                })
+                .await)?
+            .releases;
+            if let Some(r) = releases
+                .iter()
+                .find(|r| r.id == target || (target.len() >= 6 && r.id.ends_with(target)))
+            {
+                let own: Vec<DeploymentInfo> = deployments
+                    .iter()
+                    .filter(|d| d.project_id == p.id)
+                    .cloned()
+                    .collect();
+                let matched: Vec<DeploymentInfo> = match_deployments(&own, &r.version)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                if let Some(d) = matched.into_iter().next() {
+                    found = deployments.iter().filter(|x| x.id == d.id).collect();
+                }
+                break;
+            }
+        }
+    }
+    let deployment = match found.as_slice() {
+        [] => anyhow::bail!(
+            "No deployment, release version or release id matches '{}'. See 'aegis deployments'.",
+            target
+        ),
+        [one] => (*one).clone(),
+        many => anyhow::bail!(
+            "'{}' matches several deployments: {}. Use more of the id.",
+            target,
+            many.iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let name = projects
+        .iter()
+        .find(|p| p.id == deployment.project_id)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| deployment.project_id.clone());
+    let events = project_history(daemon, &deployment.project_id).await?;
+    println!(
+        "Deployment {} of {}: release {}, strategy {}, trigger {}, queued {}",
+        short(&deployment.id),
+        name,
+        if deployment.version.is_empty() {
+            "-"
+        } else {
+            &deployment.version
+        },
+        deployment.strategy,
+        if deployment.trigger.is_empty() {
+            "-"
+        } else {
+            &deployment.trigger
+        },
+        short_time(&deployment.created_at)
+    );
+    match diagnose::replay_lines(&events, &deployment.id) {
+        Some(lines) => {
+            for line in lines {
+                println!("{}", line);
+            }
+        }
+        None => println!("No events were recorded for this deployment."),
+    }
+    Ok(())
+}
+
+/// `aegis incident`: what is wrong with a project right now, and what to do.
+async fn incident(daemon: &mut Daemon, key: String, since: &str) -> anyhow::Result<()> {
+    let span = history::parse_duration(since)?;
+    let from = chrono::Utc::now() - span;
+    let events = project_history(daemon, &key).await?;
+    let (engine, _) = history::replay_until(&events, None);
+    let project = only_project(&engine, &key)?;
+    let report = diagnose::analyze_incident(&engine, &project, &events, from);
+    let p = &project.name;
+
+    println!("Incident report for {} (last {})", p, since);
+    match &report.process {
+        Some(proc) => {
+            println!(
+                "  Process:      {} (pid {}, release {}, restarts {}, last exit code {})",
+                proc.status,
+                proc.pid.map_or("-".to_string(), |pid| pid.to_string()),
+                proc.release_version.as_deref().unwrap_or("-"),
+                proc.restart_count,
+                proc.last_exit_code
+                    .map_or("-".to_string(), |c| c.to_string())
+            );
+            if proc.desired == "stopped" {
+                println!("                stopped on purpose by an operator");
+            }
+        }
+        None => println!("  Process:      none (never deployed)"),
+    }
+    println!(
+        "  Live release: {}{}",
+        project.current_release.as_deref().unwrap_or("none"),
+        report
+            .rollback_target
+            .as_ref()
+            .map_or(String::new(), |r| format!(" (previous: {})", r))
+    );
+
+    let alerts = report
+        .problems
+        .iter()
+        .filter(|e| e.event_type == "ResourcePressureDetected")
+        .count();
+    println!(
+        "  In window:    {} crash(es), {} crash-loop failure(s), {} resource alert(s), {} failed deployment(s)",
+        report.crashes,
+        report
+            .problems
+            .iter()
+            .filter(|e| e.event_type == "ProcessFailed")
+            .count(),
+        alerts,
+        report
+            .problems
+            .iter()
+            .filter(|e| e.event_type == "DeploymentFailed")
+            .count()
+    );
+    if !report.problems.is_empty() {
+        let skip = report.problems.len().saturating_sub(10);
+        println!("Recent problems:");
+        for e in &report.problems[skip..] {
+            println!("  {}", diagnose::timeline_line(e));
+        }
+    }
+
+    if let Some((d, event)) = &report.failed_deployment {
+        println!(
+            "Last failed deployment{}: {} ({}) at {}, stage {}: {}",
+            if report.latest_deployment_failed {
+                " (the latest one)"
+            } else {
+                ""
+            },
+            short(&d.id.to_string()),
+            d.version.as_deref().unwrap_or("-"),
+            short_time(d.completed_at.as_deref().unwrap_or(&d.created_at)),
+            d.stage.as_deref().unwrap_or("-"),
+            d.error.as_deref().unwrap_or("-")
+        );
+        let tail = event.as_ref().map(|e| e.log_tail()).unwrap_or_default();
+        for line in tail.iter().skip(tail.len().saturating_sub(10)) {
+            println!("    | {}", line);
+        }
+    }
+
+    if report.process.is_some() {
+        let logs = daemon
+            .client()
+            .await?
+            .get_logs(GetLogsRequest {
+                target: project.id.to_string(),
+                lines: 15,
+            })
+            .await;
+        if let Ok(logs) = logs {
+            let lines = logs.into_inner().lines;
+            if !lines.is_empty() {
+                println!("Last process output:");
+                for line in &lines {
+                    print!("  ");
+                    print_log_line(line);
+                }
+            }
+        }
+    }
+
+    println!("What to do:");
+    for (i, advice) in report.advice.iter().enumerate() {
+        println!("  {}. {}", i + 1, advice);
+    }
+    Ok(())
+}
+
+/// `aegis investigate`: a project's events in a window, with the change that
+/// most likely set off any problems.
+async fn investigate(daemon: &mut Daemon, key: String, since: &str) -> anyhow::Result<()> {
+    let span = history::parse_duration(since)?;
+    let from = chrono::Utc::now() - span;
+    let events = project_history(daemon, &key).await?;
+    let (engine, _) = history::replay_until(&events, None);
+    let project = only_project(&engine, &key)?;
+    // Successful build steps are noise here; `aegis replay` shows them.
+    let shown: Vec<&history::Ev> = history::window(&events, from)
+        .iter()
+        .filter(|e| !e.event_type.starts_with("BuildStage") || e.str("status") == "Failed")
+        .collect();
+
+    println!(
+        "Timeline for {} since {} ({}); * marks changes, ! marks problems:",
+        project.name,
+        from.format("%Y-%m-%d %H:%M:%S UTC"),
+        since
+    );
+    if shown.is_empty() {
+        println!("  (no events)");
+    }
+    const MAX_ROWS: usize = 200;
+    let skip = shown.len().saturating_sub(MAX_ROWS);
+    if skip > 0 {
+        println!("  ... {} earlier events not shown", skip);
+    }
+    for e in &shown[skip..] {
+        println!("{}", diagnose::timeline_line(e));
+    }
+    println!("Summary:");
+    for line in diagnose::investigate_summary(&events, from) {
+        println!("  {}", line);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1175,5 +1680,48 @@ mod tests {
             short_time("2026-09-28T05:12:03.123+00:00"),
             "2026-09-28 05:12:03"
         );
+    }
+    #[test]
+    fn test_match_deployments() {
+        let dep = |id: &str, version: &str, status: &str| DeploymentInfo {
+            id: id.to_string(),
+            version: version.to_string(),
+            status: status.to_string(),
+            ..Default::default()
+        };
+        let deps = vec![
+            dep("01a0e66a-2697-73c0-bff5-3346fccc6ad3", "r1", "Success"),
+            dep("01a0e66a-2697-73c0-bff5-3346fccc7777", "r2", "Failed"),
+            dep("01a0e66a-2697-73c0-bff5-3346fccc8888", "r2", "Success"),
+            dep("01a0e66a-2697-73c0-bff5-3346fccc9999", "r3", "Failed"),
+        ];
+        let ids = |m: Vec<&DeploymentInfo>| m.iter().map(|d| d.id.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            ids(match_deployments(&deps, "fccc6ad3")),
+            vec![deps[0].id.clone()]
+        );
+        assert_eq!(
+            ids(match_deployments(&deps, &deps[1].id)),
+            vec![deps[1].id.clone()]
+        );
+        assert_eq!(
+            ids(match_deployments(&deps, "r2")),
+            vec![deps[2].id.clone()]
+        );
+        assert_eq!(
+            ids(match_deployments(&deps, "r3")),
+            vec![deps[3].id.clone()]
+        );
+        // A shared prefix is ambiguous.
+        assert_eq!(match_deployments(&deps, "01a0e66a-2697").len(), 4);
+        assert!(match_deployments(&deps, "nope").is_empty());
+        // Too short to be an id.
+        assert!(match_deployments(&deps, "6ad3").is_empty());
+    }
+
+    #[test]
+    fn test_bytes() {
+        assert_eq!(bytes(512 * 1024 * 1024), "512 MiB");
+        assert_eq!(bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GiB");
     }
 }
