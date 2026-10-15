@@ -160,9 +160,10 @@ async fn run() -> Result<(), anyhow::Error> {
         [] | ["run"] => run_daemon(config).await,
         ["check-config"] => {
             println!(
-                "Configuration OK ({}). HTTP API: {}",
+                "Configuration OK ({}). HTTP API: {}. Proxy: {}",
                 config_path,
-                describe_web(&config)
+                describe_web(&config),
+                describe_proxy(&config)
             );
             Ok(())
         }
@@ -197,7 +198,77 @@ fn validate_config(config: &Config) -> Result<(), anyhow::Error> {
     if config.web.enabled {
         config.web.validate()?;
     }
+    config.proxy.validate(&config.web, &config.daemon)?;
     Ok(())
+}
+
+fn describe_proxy(config: &Config) -> String {
+    let proxy = &config.proxy;
+    if !proxy.enabled {
+        return "disabled".into();
+    }
+    let mut text = format!(
+        "http://{}:{} and https://{}:{}",
+        proxy.host, proxy.http_port, proxy.host, proxy.https_port
+    );
+    if proxy.acme.enabled {
+        text.push_str(&format!(
+            ", ACME via {}",
+            proxy.acme.resolved_directory_url()
+        ));
+    }
+    if let Some(domain) = &proxy.dashboard.domain {
+        text.push_str(&format!(", dashboard on {}", domain));
+    }
+    text
+}
+
+/// The dashboard served through the proxy on its own domain, if configured.
+fn dashboard_route(config: &Config) -> Option<(String, aegis_ingress::DomainRoute)> {
+    let dash = &config.proxy.dashboard;
+    let domain = aegis_ingress::normalize_domain(dash.domain.as_deref()?).ok()?;
+    let tls = if dash.tls == "files" {
+        aegis_ingress::TlsMode::Files
+    } else {
+        aegis_ingress::TlsMode::Acme
+    };
+    Some((
+        domain,
+        aegis_ingress::DomainRoute {
+            target: aegis_ingress::Target::Dashboard,
+            tls,
+            cert_path: dash.cert_path.clone(),
+            key_path: dash.key_path.clone(),
+        },
+    ))
+}
+
+/// Binds the proxy's listeners. Ports below 1024 need root or
+/// CAP_NET_BIND_SERVICE (the systemd unit from install.sh grants it).
+async fn bind_proxy(
+    config: &Config,
+) -> Result<(tokio::net::TcpListener, tokio::net::TcpListener), anyhow::Error> {
+    let bind = |port: u16| async move {
+        tokio::net::TcpListener::bind((config.proxy.host.as_str(), port))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Cannot listen on {}:{} for the proxy: {}{}",
+                    config.proxy.host,
+                    port,
+                    e,
+                    if port < 1024 {
+                        " (ports below 1024 need root or CAP_NET_BIND_SERVICE)"
+                    } else {
+                        ""
+                    }
+                )
+            })
+    };
+    Ok((
+        bind(config.proxy.http_port).await?,
+        bind(config.proxy.https_port).await?,
+    ))
 }
 
 fn describe_web(config: &Config) -> String {
@@ -217,6 +288,28 @@ fn describe_web(config: &Config) -> String {
         text.push_str(&format!(", public hosts {:?}", config.web.allowed_hosts));
     }
     text
+}
+
+/// HTTP API settings. A dashboard domain on the proxy is added to the
+/// allowed hosts, and the proxy (on loopback, terminating HTTPS) is trusted
+/// for X-Forwarded-For.
+fn web_settings(config: &Config) -> aegis_web::WebSettings {
+    let mut settings = aegis_web::WebSettings {
+        allowed_hosts: config.web.allowed_hosts.clone(),
+        https: config.web.https(),
+        trust_proxy: config.web.behind_proxy,
+        ..Default::default()
+    };
+    if config.proxy.enabled {
+        if let Some((domain, _)) = dashboard_route(config) {
+            if !settings.allowed_hosts.contains(&domain) {
+                settings.allowed_hosts.push(domain);
+            }
+            settings.https = true;
+            settings.trust_proxy = true;
+        }
+    }
+    settings
 }
 
 async fn open_database(config: &Config) -> Result<sqlx::SqlitePool, anyhow::Error> {
@@ -415,11 +508,50 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
     });
     scheduler.start_scheduler_loop(sched_bus);
 
-    // 7. Bring back the apps that were running before the daemon stopped.
+    // 7. Reverse proxy: routes are rebuilt from recorded domains and ports
+    // before the apps come back, so recovered apps are reachable at once.
+    let (proxy_shutdown, proxy_shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut proxy_tasks = Vec::new();
+    if config.proxy.enabled {
+        let (http, https) = bind_proxy(&config).await?;
+        let mut ingress_config = aegis_ingress::IngressConfig::new(data_dir.join("certs"));
+        ingress_config.host = config.proxy.host.clone();
+        ingress_config.http_port = config.proxy.http_port;
+        ingress_config.https_port = config.proxy.https_port;
+        if config.proxy.acme.enabled {
+            ingress_config.acme = Some(aegis_ingress::AcmeSettings {
+                email: config.proxy.acme.email.clone(),
+                directory_url: config.proxy.acme.resolved_directory_url(),
+            });
+        }
+        let ingress = aegis_ingress::Ingress::new(ingress_config);
+        if let Some((domain, route)) = dashboard_route(&config) {
+            ingress.set_dashboard(&domain, route, config.web.port);
+        }
+        control.set_ingress(ingress.clone());
+        let stop = |rx: &tokio::sync::watch::Receiver<bool>| {
+            let mut rx = rx.clone();
+            async move {
+                let _ = rx.wait_for(|stopping| *stopping).await;
+            }
+        };
+        proxy_tasks.push(tokio::spawn(
+            ingress.clone().serve_http(http, stop(&proxy_shutdown_rx)),
+        ));
+        proxy_tasks.push(tokio::spawn(
+            ingress.clone().serve_https(https, stop(&proxy_shutdown_rx)),
+        ));
+        let maintenance = ingress.clone();
+        let maintenance_stop = stop(&proxy_shutdown_rx);
+        tokio::spawn(async move { maintenance.run_maintenance(maintenance_stop).await });
+        tracing::info!(proxy = %describe_proxy(&config), "Reverse proxy listening");
+    }
+
+    // 8. Bring back the apps that were running before the daemon stopped.
     let restored = control.recover().await;
     tracing::info!(restored, "Recovered app processes");
 
-    // 8. HTTP API (optional; authenticated; public only with TLS)
+    // 9. HTTP API (optional; authenticated; public only with TLS)
     let (web_shutdown, web_shutdown_rx) = tokio::sync::watch::channel(false);
     let mut web_url = None;
     let web_task = if config.web.enabled {
@@ -459,12 +591,7 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
         let state = aegis_web::AppState::new(
             control.clone(),
             auth.clone(),
-            aegis_web::WebSettings {
-                allowed_hosts: config.web.allowed_hosts.clone(),
-                https: config.web.https(),
-                trust_proxy: config.web.behind_proxy,
-                ..Default::default()
-            },
+            web_settings(&config),
             DAEMON_VERSION.to_string(),
             web_shutdown_rx.clone(),
         );
@@ -489,7 +616,7 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
         None
     };
 
-    // 9. gRPC server
+    // 10. gRPC server
     // Loopback only (enforced by DaemonConfig::validate): it is unauthenticated.
     let addr: SocketAddr =
         tokio::net::lookup_host((config.daemon.host.as_str(), config.daemon.port))
@@ -510,9 +637,13 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
         })
         .await?;
 
-    // 10. Stop the HTTP API (ends open event/log streams), then the apps;
+    // 11. Stop the HTTP API (ends open event/log streams), then the apps;
     // apps are restarted on the next boot.
     let _ = web_shutdown.send(true);
+    let _ = proxy_shutdown.send(true);
+    for task in proxy_tasks {
+        let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
+    }
     if let Some(task) = web_task {
         match tokio::time::timeout(Duration::from_secs(10), task).await {
             Ok(Ok(Err(e))) => tracing::warn!(error = %e, "HTTP API stopped with an error"),

@@ -132,6 +132,11 @@ TimeoutStopSec=60
 # itself into <service>/daemon and puts apps under <service>/apps.
 Delegate=yes
 
+# The built-in proxy ([proxy] in aegis.toml) listens on ports 80 and 443.
+# This grants only that capability; apps inherit it but nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 # Hardening. Apps inherit these restrictions.
 NoNewPrivileges=yes
 ProtectSystem=strict

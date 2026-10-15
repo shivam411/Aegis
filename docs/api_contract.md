@@ -33,7 +33,7 @@ This document establishes the public API freeze and classification system for al
 * **`[INTERNAL]`** `EventStore::initialize_db(pool: &SqlitePool)`
 
 ### `aegis-control`
-* **`[EXPERIMENTAL]`** `ControlPlane`: the command and query API used by every transport (gRPC, HTTP). Covers `register_project`, `queue_deployment`, `rollback`, `process_action`, `configure_schedule`, `recover`, `shutdown`, and the `list_*` and `resolve_*` queries.
+* **`[EXPERIMENTAL]`** `ControlPlane`: the command and query API used by every transport (gRPC, HTTP). Covers `register_project`, `queue_deployment`, `rollback`, `process_action`, `configure_schedule`, `map_domain`, `unmap_domain`, `set_ingress`, `recover`, `shutdown`, and the `list_*`, `proxy_status` and `resolve_*` queries.
 * **`[EXPERIMENTAL]`** `ControlError` (`NotFound`, `InvalidArgument`, `FailedPrecondition`, `Internal`)
 
 ### `aegis-projection`
@@ -49,6 +49,10 @@ This document establishes the public API freeze and classification system for al
 
 ### `aegis-web`
 * **`[EXPERIMENTAL]`** HTTP/JSON API under `/api/v1`, described in [`openapi.json`](openapi.json) and [`http_api.md`](http_api.md).
+
+### `aegis-ingress` (`runtime/ingress`)
+* **`[EXPERIMENTAL]`** `Ingress`: the built-in reverse proxy. Routing (`set_domain`, `remove_domain`, `set_upstream`), listeners (`serve_http`, `serve_https`), certificates (`run_maintenance`, `cert_status`) and `status()`.
+* **`[INTERNAL]`** `acme`, `certs`, `headers` and `routes` modules.
 
 ### `aegis-scheduler`
 * **`[STABLE]`** `SchedulerEngine::schedule_daily_deploy(...)`

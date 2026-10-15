@@ -353,6 +353,7 @@ const EVENT_TYPES = [
   'UserLoggedIn', 'UserLoginFailed', 'UserLoggedOut', 'PasswordChanged', 'PasswordReset',
   'ApiTokenCreated', 'ApiTokenRevoked', 'WebhookSecretRotated',
   'ResourceLimitsChanged', 'ResourcePressureDetected',
+  'DomainMapped', 'DomainUnmapped',
 ];
 
 function connectEvents() {
@@ -1354,7 +1355,137 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, h('div', { class: 'grid two' }, scheduleForm, hookCard), info));
+  append(body, h('div', { class: 'grid' }, settingsForm, domainsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, hookCard), info));
+}
+
+// --- Domains (Settings tab) --------------------------------------------
+
+const TLS_LABELS = {
+  acme: "Automatic HTTPS (Let's Encrypt)",
+  files: 'HTTPS from certificate files',
+  off: 'HTTP only',
+};
+
+function certPill(domain) {
+  const c = domain.cert;
+  if (!c) return pill(domain.tls === 'off' ? 'HTTP only' : 'Proxy off', '');
+  const until = c.not_after ? ` until ${new Date(c.not_after).toLocaleDateString()}` : '';
+  switch (c.state) {
+    case 'valid': return pill('HTTPS', 'ok');
+    case 'expiring': return pill('Renewing', 'warn');
+    case 'expired': return pill('Expired', 'bad');
+    case 'pending': return pill('Issuing certificate', 'info live');
+    case 'error': return pill('Certificate error', 'bad');
+    case 'disabled': return pill('ACME off', 'warn');
+    case 'off': return pill('HTTP only', '');
+    default: return pill(`${c.state}${until}`, '');
+  }
+}
+
+/** The Domains card: map domains to this app through the built-in proxy. */
+function domainsCard(ctx) {
+  const project = ctx.project();
+  const base = `/projects/${enc(project.id)}/domains`;
+  const hint = h('div');
+  const list = h('div', { class: 'table-wrap' });
+  const domainInput = h('input', {
+    id: 'domain-name', class: 'mono', placeholder: 'app.example.com',
+    autocomplete: 'off', spellcheck: 'false', required: true,
+  });
+  const tlsSelect = h('select', { id: 'domain-tls' },
+    Object.entries(TLS_LABELS).map(([value, label]) => h('option', { value }, label)));
+  const certInput = h('input', { id: 'domain-cert', class: 'mono', placeholder: '/etc/ssl/app/fullchain.pem' });
+  const keyInput = h('input', { id: 'domain-key', class: 'mono', placeholder: '/etc/ssl/app/privkey.pem' });
+  const filesRow = h('div', { class: 'row' },
+    h('div', { class: 'field' }, h('label', { for: 'domain-cert' }, 'Certificate chain (PEM path on the server)'), certInput),
+    h('div', { class: 'field' }, h('label', { for: 'domain-key' }, 'Private key (PEM path on the server)'), keyInput));
+  const syncTls = () => { filesRow.hidden = tlsSelect.value !== 'files'; };
+  tlsSelect.addEventListener('change', syncTls);
+  syncTls();
+  const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'add-domain' }, 'Add domain');
+
+  const draw = (domains, proxy) => {
+    if (!proxy.enabled) {
+      replace(hint, h('div', { class: 'alert warn' },
+        'The built-in proxy is off, so domains are saved but not served. Set [proxy] enabled = true in aegis.toml and restart the daemon.'));
+    } else {
+      replace(hint, h('p', { class: 'muted small' },
+        `Point each domain's DNS at this server. The proxy listens on ports ${proxy.http_port} (HTTP) and ${proxy.https_port} (HTTPS); deployments switch over without dropping requests.`,
+        proxy.acme_enabled ? '' : ' Automatic HTTPS is off ([proxy.acme]).'));
+    }
+    if (!domains.length) {
+      replace(list, h('p', { class: 'muted small' }, 'No domains yet.'));
+      return;
+    }
+    replace(list, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['Domain', 'TLS', 'Certificate', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, domains.map((d) => {
+        const removeBtn = h('button', { class: 'btn small danger', type: 'button', 'data-action': 'remove-domain' }, 'Remove');
+        removeBtn.addEventListener('click', async () => {
+          const ok = await confirmDialog({
+            title: `Remove ${d.domain}?`,
+            message: 'The app stops being served on this domain right away. Its certificate is kept on the server in case you add the domain again.',
+            confirmLabel: 'Remove',
+            danger: true,
+          });
+          if (!ok) return;
+          const done = await run(removeBtn, () => api('DELETE', `${base}/${enc(d.domain)}`), `${d.domain} removed`);
+          if (done !== undefined) load();
+        });
+        const scheme = d.tls === 'off' || d.cert?.state !== 'valid' ? 'http' : 'https';
+        return h('tr', { 'data-domain': d.domain },
+          h('td', { 'data-label': 'Domain', class: 'mono' },
+            h('a', { href: `${scheme}://${d.domain}/`, target: '_blank', rel: 'noopener noreferrer' }, d.domain)),
+          h('td', { 'data-label': 'TLS' }, TLS_LABELS[d.tls] || d.tls),
+          h('td', { 'data-label': 'Certificate', title: d.cert?.message || '' },
+            certPill(d),
+            d.cert?.not_after ? h('div', { class: 'small muted' }, `Expires ${new Date(d.cert.not_after).toLocaleDateString()}`) : null,
+            d.cert?.message && ['error', 'disabled', 'pending'].includes(d.cert.state)
+              ? h('div', { class: 'small muted' }, d.cert.message) : null),
+          h('td', { class: 'actions' }, removeBtn));
+      }))));
+  };
+
+  const load = async () => {
+    try {
+      const [domains, proxy] = await Promise.all([api('GET', base), api('GET', '/proxy')]);
+      if (ctx.alive()) draw(domains, proxy);
+    } catch (err) {
+      if (ctx.alive()) replace(list, errorBox(err));
+    }
+  };
+
+  const form = h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const req = { domain: domainInput.value.trim(), tls: tlsSelect.value };
+      if (!req.domain) return;
+      if (req.tls === 'files') {
+        req.cert_path = certInput.value.trim();
+        req.key_path = keyInput.value.trim();
+      }
+      const added = await run(addBtn, () => api('POST', base, req), (d) => `${d.domain} added`);
+      if (!added) return;
+      domainInput.value = '';
+      load();
+    },
+  },
+  h('div', { class: 'row' },
+    h('div', { class: 'field' }, h('label', { for: 'domain-name' }, 'Domain'), domainInput),
+    h('div', { class: 'field' }, h('label', { for: 'domain-tls' }, 'TLS'), tlsSelect)),
+  filesRow,
+  h('div', { class: 'form-actions' }, addBtn));
+
+  onEvents(ctx, (e) => {
+    if (e.event_type === '_resync' || (e.event_type.startsWith('Domain') && e.payload?.project_id === project.id)) load();
+  });
+  // Certificates are issued in the background; refresh their state.
+  every(ctx, 15000, load);
+  load();
+
+  return h('section', { class: 'card', id: 'domains' },
+    h('div', { class: 'card-header' }, h('h2', {}, 'Domains')),
+    h('div', { class: 'card-body' }, hint, list, form));
 }
 
 // --- Resources tab -----------------------------------------------------
@@ -1853,6 +1984,12 @@ function describeEvent(e) {
       break;
     case 'ResourceLimitsChanged':
       bits.push(describeLimits(p.limits));
+      break;
+    case 'DomainMapped':
+      bits.push(`${p.domain} (${TLS_LABELS[p.tls] || p.tls})`);
+      break;
+    case 'DomainUnmapped':
+      bits.push(p.domain);
       break;
     case 'ResourcePressureDetected':
       bits.length = 0;

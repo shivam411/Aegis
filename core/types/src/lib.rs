@@ -56,6 +56,7 @@ define_id!(ServerId);
 define_id!(EventId);
 define_id!(ArtifactId);
 
+pub mod domain;
 pub mod error;
 pub use error::AegisError;
 

@@ -6,6 +6,7 @@
 //! synchronously as each event is persisted.
 
 mod deploy;
+mod domains;
 mod process;
 mod resources;
 
@@ -18,13 +19,14 @@ use aegis_projection::{
 use aegis_release::ReleaseSwitcher;
 use aegis_types::{DeploymentId, Event, ProcessId, ProjectId};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub use deploy::DeployRequest;
+pub use domains::DomainView;
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 
@@ -45,6 +47,7 @@ pub fn current_actor() -> Option<String> {
 }
 
 /// Deployment strategies that work with a single instance per app.
+/// `GracefulSwitch` is zero-downtime for apps served by the built-in proxy.
 pub const SUPPORTED_STRATEGIES: &[&str] = &["GracefulSwitch", "Immediate"];
 
 #[derive(Debug)]
@@ -146,6 +149,22 @@ struct Inner {
     host: aegis_metrics::HostMonitor,
     history: aegis_metrics::history::History,
     metrics_tx: tokio::sync::broadcast::Sender<MetricsUpdate>,
+    /// The built-in reverse proxy, when `[proxy]` is enabled.
+    ingress: OnceLock<aegis_ingress::Ingress>,
+    /// Port each supervised process was told to listen on, and whether it
+    /// was allocated for the proxy.
+    process_ports: Mutex<HashMap<ProcessId, ProcessPort>>,
+    /// New releases starting next to the live one (proxied cutover), not
+    /// yet promoted.
+    candidates: Mutex<HashSet<ProcessId>>,
+    /// Serializes domain changes so uniqueness checks can't race.
+    domain_lock: tokio::sync::Mutex<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessPort {
+    pub port: Option<u16>,
+    pub proxied: bool,
 }
 
 #[derive(Clone)]
@@ -199,8 +218,37 @@ impl ControlPlane {
                 host,
                 history,
                 metrics_tx,
+                ingress: OnceLock::new(),
+                process_ports: Mutex::new(HashMap::new()),
+                candidates: Mutex::new(HashSet::new()),
+                domain_lock: tokio::sync::Mutex::new(()),
             }),
         })
+    }
+
+    /// Attaches the reverse proxy and loads its routes from the recorded
+    /// domains and process ports. Call before [`ControlPlane::recover`].
+    /// Can be called once; later calls are ignored.
+    pub fn set_ingress(&self, ingress: aegis_ingress::Ingress) {
+        if self.inner.ingress.set(ingress.clone()).is_err() {
+            tracing::warn!("The reverse proxy is already attached");
+            return;
+        }
+        for project in self.inner.projection.get_projects() {
+            for domain in &project.domains {
+                self.apply_domain_route(&ingress, project.id, domain);
+            }
+            let port = project
+                .current_process
+                .and_then(|id| self.inner.projection.get_process(&id))
+                .and_then(|p| p.port);
+            ingress.set_upstream(&project.id.to_string(), port);
+        }
+    }
+
+    /// The reverse proxy, when enabled.
+    pub fn ingress(&self) -> Option<&aegis_ingress::Ingress> {
+        self.inner.ingress.get()
     }
 
     /// Starts background work: the deployment dispatcher and the recorder for

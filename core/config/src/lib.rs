@@ -44,6 +44,8 @@ pub struct Config {
     pub resources: ResourcesConfig,
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
 }
 
 /// `[resources]`: per-app limits and metrics.
@@ -107,6 +109,166 @@ impl NotificationsConfig {
         if let Some(url) = &self.slack_webhook_url {
             if !url.starts_with("https://") && !url.starts_with("http://") {
                 anyhow::bail!("notifications.slack_webhook_url must be an http(s) URL");
+            }
+        }
+        Ok(())
+    }
+}
+
+pub const LETS_ENCRYPT_PRODUCTION: &str = "https://acme-v02.api.letsencrypt.org/directory";
+pub const LETS_ENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+/// `[proxy]`: the built-in reverse proxy that serves apps on their domains.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub acme: AcmeConfig,
+    /// Serve the dashboard and API on a domain through the proxy.
+    pub dashboard: ProxyDashboardConfig,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "0.0.0.0".into(),
+            http_port: 80,
+            https_port: 443,
+            acme: AcmeConfig::default(),
+            dashboard: ProxyDashboardConfig::default(),
+        }
+    }
+}
+
+/// `[proxy.acme]`: automatic certificates (Let's Encrypt by default).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcmeConfig {
+    pub enabled: bool,
+    /// Contact address given to the CA.
+    pub email: Option<String>,
+    /// The ACME directory: "production" or "staging" (Let's Encrypt), or a URL.
+    pub directory_url: String,
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            email: None,
+            directory_url: LETS_ENCRYPT_PRODUCTION.into(),
+        }
+    }
+}
+
+impl AcmeConfig {
+    /// The directory URL with the "production"/"staging" shorthands expanded.
+    pub fn resolved_directory_url(&self) -> String {
+        match self.directory_url.as_str() {
+            "" | "production" => LETS_ENCRYPT_PRODUCTION.into(),
+            "staging" => LETS_ENCRYPT_STAGING.into(),
+            other => other.into(),
+        }
+    }
+}
+
+/// `[proxy.dashboard]`: the dashboard on its own domain, over HTTPS.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProxyDashboardConfig {
+    pub domain: Option<String>,
+    /// "acme" or "files".
+    pub tls: String,
+    pub cert_path: Option<PathBuf>,
+    pub key_path: Option<PathBuf>,
+}
+
+impl Default for ProxyDashboardConfig {
+    fn default() -> Self {
+        Self {
+            domain: None,
+            tls: "acme".into(),
+            cert_path: None,
+            key_path: None,
+        }
+    }
+}
+
+impl ProxyConfig {
+    /// Checks the `[proxy]` section; `web` and `daemon` are needed to rule
+    /// out port clashes and to check the dashboard route.
+    pub fn validate(&self, web: &WebConfig, daemon: &DaemonConfig) -> Result<(), anyhow::Error> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.host.parse::<std::net::IpAddr>().is_err() {
+            anyhow::bail!(
+                "proxy.host must be an IP address such as \"0.0.0.0\" (got \"{}\")",
+                self.host
+            );
+        }
+        if self.http_port == 0 || self.https_port == 0 || self.http_port == self.https_port {
+            anyhow::bail!("proxy.http_port and proxy.https_port must be different, non-zero ports");
+        }
+        for port in [self.http_port, self.https_port] {
+            if (web.enabled && port == web.port) || port == daemon.port {
+                anyhow::bail!(
+                    "proxy port {} is already used by the HTTP API or the gRPC API",
+                    port
+                );
+            }
+        }
+        if self.acme.enabled {
+            if let Some(email) = &self.acme.email {
+                let ok = email.len() <= 254
+                    && email
+                        .split_once('@')
+                        .is_some_and(|(user, host)| !user.is_empty() && host.contains('.'))
+                    && !email
+                        .chars()
+                        .any(|c| c.is_whitespace() || c.is_control() || c == ',');
+                if !ok {
+                    anyhow::bail!("proxy.acme.email \"{}\" is not a valid address", email);
+                }
+            }
+            if !self.acme.resolved_directory_url().starts_with("https://") {
+                anyhow::bail!(
+                    "proxy.acme.directory_url must be \"production\", \"staging\" or an https:// URL"
+                );
+            }
+        }
+        let dash = &self.dashboard;
+        if let Some(domain) = &dash.domain {
+            aegis_types::domain::normalize_domain(domain)
+                .map_err(|e| anyhow::anyhow!("proxy.dashboard.domain: {}", e))?;
+            if !web.enabled {
+                anyhow::bail!("proxy.dashboard.domain needs the HTTP API ([web] enabled = true)");
+            }
+            if web.tls.enabled() {
+                anyhow::bail!(
+                    "proxy.dashboard.domain: remove [web.tls]; the proxy terminates HTTPS and \
+                     forwards to the API on loopback"
+                );
+            }
+            match dash.tls.as_str() {
+                "acme" if !self.acme.enabled => anyhow::bail!(
+                    "proxy.dashboard.tls = \"acme\" needs [proxy.acme] enabled = true"
+                ),
+                "acme" => {}
+                "files" => {
+                    if dash.cert_path.is_none() || dash.key_path.is_none() {
+                        anyhow::bail!(
+                            "proxy.dashboard.tls = \"files\" needs cert_path and key_path"
+                        );
+                    }
+                }
+                _ => anyhow::bail!(
+                    "proxy.dashboard.tls must be \"acme\" or \"files\"; the dashboard is never served over plain HTTP"
+                ),
             }
         }
         Ok(())
@@ -492,6 +654,56 @@ strategy = "GracefulSwitch"
             ..DaemonConfig::default()
         };
         assert!(d.validate().is_err(), "gRPC must stay on loopback");
+    }
+
+    #[test]
+    fn test_proxy_config_validation() {
+        let parse = |src: &str| toml::from_str::<Config>(src).unwrap();
+        let check = |c: &Config| c.proxy.validate(&c.web, &c.daemon);
+        let config = Config::default();
+        assert!(!config.proxy.enabled);
+        assert_eq!(config.proxy.http_port, 80);
+        assert_eq!(config.proxy.https_port, 443);
+        assert_eq!(
+            config.proxy.acme.resolved_directory_url(),
+            LETS_ENCRYPT_PRODUCTION
+        );
+        // A disabled proxy is not checked.
+        assert!(check(&parse("[proxy]\nhttp_port = 0\n")).is_ok());
+
+        let ok = parse(
+            "[proxy]\nenabled = true\n[proxy.acme]\nenabled = true\nemail = \"ops@example.com\"\ndirectory_url = \"staging\"\n",
+        );
+        assert!(check(&ok).is_ok());
+        assert_eq!(ok.proxy.acme.resolved_directory_url(), LETS_ENCRYPT_STAGING);
+
+        let tls_files = "tls = \"files\"\ncert_path = \"/c.pem\"\nkey_path = \"/k.pem\"\n";
+        for bad in [
+            "[proxy]\nenabled = true\nhost = \"everywhere\"\n".to_string(),
+            "[proxy]\nenabled = true\nhttp_port = 8080\nhttps_port = 8080\n".to_string(),
+            "[proxy]\nenabled = true\nhttp_port = 50051\n".to_string(),
+            "[web]\nenabled = true\n[proxy]\nenabled = true\nhttps_port = 8420\n".to_string(),
+            "[proxy]\nenabled = true\n[proxy.acme]\nenabled = true\nemail = \"nope\"\n".to_string(),
+            "[proxy]\nenabled = true\n[proxy.acme]\nenabled = true\ndirectory_url = \"http://acme.test/dir\"\n".to_string(),
+            // The dashboard needs the web API, a valid domain and HTTPS.
+            format!("[proxy]\nenabled = true\n[proxy.dashboard]\ndomain = \"aegis.example.com\"\n{tls_files}"),
+            "[web]\nenabled = true\n[proxy]\nenabled = true\n[proxy.dashboard]\ndomain = \"aegis.example.com\"\n".to_string(),
+            format!("[web]\nenabled = true\n[proxy]\nenabled = true\n[proxy.dashboard]\ndomain = \"*.example.com\"\n{tls_files}"),
+            "[web]\nenabled = true\n[proxy]\nenabled = true\n[proxy.dashboard]\ndomain = \"aegis.example.com\"\ntls = \"off\"\n".to_string(),
+            "[web]\nenabled = true\n[proxy]\nenabled = true\n[proxy.dashboard]\ndomain = \"aegis.example.com\"\ntls = \"files\"\n".to_string(),
+        ] {
+            assert!(check(&parse(&bad)).is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<Config>("[proxy]\nenabeld = true\n").is_err());
+
+        let dashboard = parse(
+            "[web]\nenabled = true\n[proxy]\nenabled = true\n[proxy.acme]\nenabled = true\n[proxy.dashboard]\ndomain = \"aegis.example.com\"\n",
+        );
+        assert!(check(&dashboard).is_ok());
+        let files = parse(&format!(
+            "[web]\nenabled = true\n[proxy]\nenabled = true\n[proxy.dashboard]\ndomain = \"aegis.example.com\"\n{tls_files}"
+        ));
+        assert!(check(&files).is_ok());
     }
 
     #[test]

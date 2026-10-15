@@ -156,6 +156,26 @@ test('full lifecycle from the browser', async ({ page }) => {
     await expect(page.locator('[data-secret]').nth(1)).toHaveText(/\S{20,}/);
   });
 
+  await test.step('domains are added and removed', async () => {
+    const card = page.locator('#domains');
+    // The test daemon runs without [proxy], so the card says so.
+    await expect(card.locator('.alert.warn')).toContainText('proxy is off');
+    await card.getByLabel('Domain').fill('Shop.Example.com');
+    await card.getByLabel('TLS').selectOption('off');
+    await card.getByRole('button', { name: 'Add domain' }).click();
+    const row = card.locator('tr[data-domain="shop.example.com"]');
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('HTTP only');
+    // Invalid names are refused by the server.
+    await card.getByLabel('Domain').fill('*.example.com');
+    await card.getByRole('button', { name: 'Add domain' }).click();
+    await expect(page.locator('.toast.bad', { hasText: 'Wildcard' })).toBeVisible();
+    await row.getByRole('button', { name: 'Remove' }).click();
+    await confirm(page, 'Remove');
+    await expect(row).toHaveCount(0);
+    await expect(card).toContainText('No domains yet.');
+  });
+
   await test.step('deployments timeline and stage detail', async () => {
     await page.getByRole('link', { name: 'Deployments' }).click();
     const rows = page.locator('tr[data-deployment]');

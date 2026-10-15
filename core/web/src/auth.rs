@@ -5,7 +5,8 @@
 //!   SameSite=Strict, Secure over HTTPS). Requests that change state must
 //!   also carry the session's CSRF token in `X-CSRF-Token`.
 //! - an **API token** (`Authorization: Bearer aegis_...`), scoped `read` or
-//!   `deploy`. Tokens can't manage tokens, passwords or webhook secrets.
+//!   `deploy`. Tokens can't manage tokens, passwords or webhook secrets,
+//!   and can't change domains.
 //!
 //! Everything a principal does is recorded with `actor` = `user:<name>` or
 //! `token:<name>` (see `aegis_control::with_actor`).
@@ -129,6 +130,13 @@ fn user_only(path: &str) -> bool {
         || (path.starts_with("/api/v1/projects/") && path.ends_with("/webhook"))
 }
 
+/// Mapping a domain decides where public traffic (and certificates) go, so
+/// even deploy tokens may only read domains.
+fn changes_domains(path: &str) -> bool {
+    path.starts_with("/api/v1/projects/")
+        && (path.ends_with("/domains") || path.contains("/domains/"))
+}
+
 pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let protected = path == "/api/v1" || path.starts_with("/api/v1/");
@@ -157,6 +165,12 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
             if user_only(&path) {
                 return ApiError::forbidden(
                     "This endpoint requires a signed-in user, not an API token",
+                )
+                .into_response();
+            }
+            if mutating && changes_domains(&path) {
+                return ApiError::forbidden(
+                    "Only a signed-in user can change domains, not an API token",
                 )
                 .into_response();
             }

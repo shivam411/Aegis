@@ -5,9 +5,12 @@
 //! happen: stop the old process, start the new one, and wait for it to become
 //! healthy. If it doesn't, the old release is started again.
 //!
-//! Until Aegis has a reverse proxy (roadmap Phase 5), the old and new process
-//! can't share a port, so the cutover has a short window between stopping the
-//! old process and the new one accepting connections.
+//! When the built-in proxy is enabled and the app has a domain, the cutover
+//! is zero-downtime instead: each release gets its own port, the new one
+//! starts next to the old one, and the proxy flips to it once it is healthy
+//! (see `cutover_side_by_side`). Otherwise both releases would need the same
+//! port, so there is a short window between stopping the old process and the
+//! new one accepting connections.
 
 use crate::{ControlError, ControlPlane, ControlResult, SUPPORTED_STRATEGIES};
 use aegis_builder::{
@@ -63,7 +66,7 @@ fn validate_strategy(strategy: &str) -> ControlResult<()> {
         return Ok(());
     }
     Err(ControlError::InvalidArgument(format!(
-        "Unsupported strategy '{}'. Supported: {}. Rolling and BlueGreen need multiple instances behind a proxy (roadmap Phase 5).",
+        "Unsupported strategy '{}'. Supported: {}. Rolling and BlueGreen need several instances per app, which Aegis does not run yet; GracefulSwitch is already zero-downtime for apps served by the built-in proxy.",
         strategy,
         SUPPORTED_STRATEGIES.join(", ")
     )))
@@ -475,26 +478,36 @@ impl ControlPlane {
         ))
     }
 
-    /// Builds the process spec for running a release.
+    /// Builds the process spec for running a release. `proxied_port` is the
+    /// port allocated for the release behind the proxy; it replaces `PORT`
+    /// (even one set in `[env]`), so two releases can run side by side.
     pub(crate) fn process_spec(
         &self,
         project_id: ProjectId,
         process_id: ProcessId,
         dir: &Path,
         config: &ResolvedProjectConfig,
+        proxied_port: Option<u16>,
     ) -> ProcessSpec {
+        let mut env: std::collections::HashMap<String, String> =
+            config.process_env().into_iter().collect();
+        if let Some(port) = proxied_port {
+            env.insert("PORT".to_string(), port.to_string());
+        }
         ProcessSpec {
             project_id,
             command: config.start_command.clone(),
             cwd: dir.to_path_buf(),
-            env: config.process_env().into_iter().collect(),
+            env,
             restart_policy: RestartPolicy::parse(&config.restart_policy)
                 .unwrap_or(RestartPolicy::Always),
             log_file: Some(self.process_log_path(project_id, process_id)),
         }
     }
 
-    /// Starts a release's process under a known id and remembers its release.
+    /// Starts a release's process under a known id and remembers its release
+    /// and port. With `proxied_port`, the app listens there instead of on its
+    /// configured port. Returns the port the app was told to use.
     pub(crate) async fn start_release_process(
         &self,
         project_id: ProjectId,
@@ -502,18 +515,53 @@ impl ControlPlane {
         version: &str,
         dir: &Path,
         config: &ResolvedProjectConfig,
-    ) -> anyhow::Result<()> {
+        proxied_port: Option<u16>,
+    ) -> anyhow::Result<Option<u16>> {
         self.inner
             .process_release
             .lock()
             .unwrap()
             .insert(process_id, version.to_string());
-        let spec = self.process_spec(project_id, process_id, dir, config);
+        let spec = self.process_spec(project_id, process_id, dir, config, proxied_port);
+        let port = spec.env.get("PORT").and_then(|p| p.parse().ok());
+        self.inner.process_ports.lock().unwrap().insert(
+            process_id,
+            crate::ProcessPort {
+                port,
+                proxied: proxied_port.is_some(),
+            },
+        );
         self.inner
             .supervisor
             .start_with_id(process_id, spec)
             .await
-            .map(|_| ())
+            .map(|_| port)
+    }
+
+    /// The proxied port to restart a recorded process on: the one it had,
+    /// if it was proxied (or a fresh one if that port is taken now).
+    pub(crate) fn restart_port(&self, process_id: &ProcessId) -> Option<u16> {
+        let live = self
+            .inner
+            .process_ports
+            .lock()
+            .unwrap()
+            .get(process_id)
+            .copied();
+        let (port, proxied) = match live {
+            Some(p) => (p.port, p.proxied),
+            None => {
+                let state = self.inner.projection.get_process(process_id)?;
+                (state.port, state.proxied)
+            }
+        };
+        if !proxied {
+            return None;
+        }
+        match port {
+            Some(p) if crate::domains::port_is_free(p) => Some(p),
+            _ => crate::domains::allocate_port().ok(),
+        }
     }
 
     /// Replaces the project's running release with `target`, rolling back to
@@ -524,6 +572,9 @@ impl ControlPlane {
         target: &TargetRelease,
         strategy: &str,
     ) -> Result<(), CutoverFailure> {
+        if self.is_proxied(&project.id) {
+            return self.cutover_side_by_side(project, target, strategy).await;
+        }
         let project_id = project.id;
         let previous = project.current_process.and_then(|id| {
             let state = self.inner.projection.get_process(&id)?;
@@ -563,34 +614,18 @@ impl ControlPlane {
                 &target.version,
                 &target.dir,
                 &target.config,
+                None,
             )
             .await;
-        let health = match started {
-            Ok(()) => self.wait_healthy(&new_id, &target.config).await,
-            Err(e) => Err(format!("Failed to start: {}", e)),
+        let (health, new_port) = match started {
+            Ok(port) => (self.wait_healthy(&new_id, &target.config, None).await, port),
+            Err(e) => (Err(format!("Failed to start: {}", e)), None),
         };
 
         match health {
             Ok(()) => {
-                let previous_version = project.current_release.clone();
-                if let Err(e) = self
-                    .switcher(project_id)
-                    .switch_to_version(&target.version)
-                    .await
-                {
-                    tracing::error!(error = %e, "Failed to update current release pointer");
-                }
-                let _ = self
-                    .record(
-                        "ReleasePromoted",
-                        json!({
-                            "release_id": target.release_id.to_string(),
-                            "project_id": project_id.to_string(),
-                            "version": target.version,
-                            "previous_version": previous_version,
-                        }),
-                    )
-                    .await;
+                self.route_upstream(project_id, new_port);
+                self.promote(project, target, new_id, new_port).await;
                 Ok(())
             }
             Err(reason) => {
@@ -613,11 +648,17 @@ impl ControlPlane {
                 if let (Some((id, version, dir)), true) = (previous, previous_running) {
                     match ResolvedProjectConfig::load(&dir) {
                         Ok(config) => {
+                            let port = self.restart_port(&id);
                             match self
-                                .start_release_process(project_id, id, &version, &dir, &config)
+                                .start_release_process(
+                                    project_id, id, &version, &dir, &config, port,
+                                )
                                 .await
                             {
-                                Ok(()) => restored = Some(version),
+                                Ok(port) => {
+                                    self.route_upstream(project_id, port);
+                                    restored = Some(version)
+                                }
                                 Err(e) => {
                                     tracing::error!(error = %e, "Failed to restart previous release")
                                 }
@@ -637,6 +678,147 @@ impl ControlPlane {
         }
     }
 
+    /// Makes `target` the live release: release pointer, then `ReleasePromoted`
+    /// (which also makes `process_id` the project's current process).
+    async fn promote(
+        &self,
+        project: &ProjectState,
+        target: &TargetRelease,
+        process_id: ProcessId,
+        port: Option<u16>,
+    ) {
+        if let Err(e) = self
+            .switcher(project.id)
+            .switch_to_version(&target.version)
+            .await
+        {
+            tracing::error!(error = %e, "Failed to update current release pointer");
+        }
+        let _ = self
+            .record(
+                "ReleasePromoted",
+                json!({
+                    "release_id": target.release_id.to_string(),
+                    "project_id": project.id.to_string(),
+                    "version": target.version,
+                    "previous_version": project.current_release,
+                    "process_id": process_id.to_string(),
+                    "port": port,
+                }),
+            )
+            .await;
+    }
+
+    /// Zero-downtime cutover behind the proxy: the new release starts on its
+    /// own port while the old one keeps serving. Once it is healthy, the
+    /// proxy is flipped to it in one step; then the old process finishes its
+    /// in-flight requests and is stopped. If the new release never gets
+    /// healthy, it is stopped and the old one simply keeps serving.
+    async fn cutover_side_by_side(
+        &self,
+        project: &ProjectState,
+        target: &TargetRelease,
+        strategy: &str,
+    ) -> Result<(), CutoverFailure> {
+        let project_id = project.id;
+        let previous = project.current_process.filter(|id| self.is_running(id));
+        let port = crate::domains::allocate_port().map_err(|e| CutoverFailure {
+            reason: format!("No free port for the new release: {}", e),
+            log_tail: Vec::new(),
+            restored: None,
+        })?;
+
+        let new_id = ProcessId::new();
+        self.inner.candidates.lock().unwrap().insert(new_id);
+        let started = self
+            .start_release_process(
+                project_id,
+                new_id,
+                &target.version,
+                &target.dir,
+                &target.config,
+                Some(port),
+            )
+            .await;
+        let health = match started {
+            Ok(_) => self.wait_healthy(&new_id, &target.config, Some(port)).await,
+            Err(e) => Err(format!("Failed to start: {}", e)),
+        };
+
+        if let Err(reason) = health {
+            self.inner.candidates.lock().unwrap().remove(&new_id);
+            tracing::warn!(version = %target.version, reason = %reason, "New release is unhealthy; the live release keeps serving");
+            if self.inner.supervisor.get(&new_id).is_some() {
+                let _ = self
+                    .inner
+                    .supervisor
+                    .stop(&new_id, Duration::from_secs(2), StopReason::Replaced)
+                    .await;
+            }
+            let log_tail = self
+                .inner
+                .supervisor
+                .logs(&new_id, 20)
+                .into_iter()
+                .map(|l| l.line)
+                .collect();
+            let restored = previous
+                .filter(|id| self.is_running(id))
+                .and_then(|_| project.current_release.clone());
+            return Err(CutoverFailure {
+                reason,
+                log_tail,
+                restored,
+            });
+        }
+
+        // The flip: every request from now on goes to the new release.
+        self.route_upstream(project_id, Some(port));
+        self.inner.candidates.lock().unwrap().remove(&new_id);
+        self.promote(project, target, new_id, Some(port)).await;
+
+        if let Some(old) = previous {
+            let drain = project
+                .current_release
+                .as_ref()
+                .and_then(|v| {
+                    ResolvedProjectConfig::load(&self.switcher(project_id).get_version_dir(v)).ok()
+                })
+                .map(|c| drain_for(strategy, &c))
+                .unwrap_or_else(|| drain_for(strategy, &target.config));
+            let old_port = self
+                .inner
+                .process_ports
+                .lock()
+                .unwrap()
+                .get(&old)
+                .and_then(|p| p.port);
+            let started_draining = Instant::now();
+            if let (Some(old_port), Some(ingress)) = (old_port, self.ingress()) {
+                if old_port != port && !ingress.wait_idle(old_port, drain).await {
+                    tracing::warn!(
+                        port = old_port,
+                        "Old release still had requests in flight after the drain timeout"
+                    );
+                }
+            }
+            let remaining = drain.saturating_sub(started_draining.elapsed());
+            if let Err(e) = self
+                .inner
+                .supervisor
+                .stop(
+                    &old,
+                    remaining.max(Duration::from_secs(1)),
+                    StopReason::Replaced,
+                )
+                .await
+            {
+                tracing::error!(error = %e, "Failed to stop the previous release");
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn is_running(&self, id: &ProcessId) -> bool {
         self.inner.supervisor.get(id).is_some_and(|p| {
             matches!(
@@ -652,23 +834,32 @@ impl ControlPlane {
         &self,
         id: &ProcessId,
         config: &ResolvedProjectConfig,
+        proxied_port: Option<u16>,
     ) -> Result<(), String> {
         let started = Instant::now();
         let deadline = started + config.health_check_timeout;
         let settings = &self.inner.settings;
-        let checker: Option<(Box<dyn HealthChecker>, String)> = config
+        // Behind the proxy, probe the port this release was given.
+        let health_url = config
             .health_check_url
             .as_ref()
-            .map(|url| match url.strip_prefix("tcp://") {
-                Some(target) => (
-                    Box::new(TcpHealthChecker::new(2000)) as Box<dyn HealthChecker>,
-                    target.to_string(),
-                ),
-                None => (
-                    Box::new(HttpHealthChecker::new(2000)) as Box<dyn HealthChecker>,
-                    url.clone(),
-                ),
+            .map(|url| match proxied_port {
+                Some(port) => crate::domains::rewrite_health_port(url, config.port, port),
+                None => url.clone(),
             });
+        let checker: Option<(Box<dyn HealthChecker>, String)> =
+            health_url
+                .as_ref()
+                .map(|url| match url.strip_prefix("tcp://") {
+                    Some(target) => (
+                        Box::new(TcpHealthChecker::new(2000)) as Box<dyn HealthChecker>,
+                        target.to_string(),
+                    ),
+                    None => (
+                        Box::new(HttpHealthChecker::new(2000)) as Box<dyn HealthChecker>,
+                        url.clone(),
+                    ),
+                });
         let window = settings.liveness_window.min(config.health_check_timeout);
 
         loop {
@@ -697,7 +888,7 @@ impl ControlPlane {
                 None => {}
             }
             if Instant::now() >= deadline {
-                return Err(match &config.health_check_url {
+                return Err(match &health_url {
                     Some(url) => format!(
                         "Not healthy after {}s: no successful response from {}",
                         config.health_check_timeout.as_secs(),

@@ -8,6 +8,7 @@
 
 mod api;
 mod auth;
+mod domains;
 pub mod dto;
 mod guard;
 mod resources;
@@ -238,7 +239,8 @@ impl Modify for SecuritySchemes {
         resources::project_metrics, resources::host_metrics, resources::stream_metrics,
         auth::login, auth::logout, auth::session_info, auth::change_password,
         auth::list_tokens, auth::create_token, auth::revoke_token,
-        auth::rotate_webhook_secret, auth::github_webhook
+        auth::rotate_webhook_secret, auth::github_webhook,
+        domains::list_domains, domains::map_domain, domains::unmap_domain, domains::proxy_status
     ),
     components(schemas(
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, ReleaseDto, DeploymentDto, EventDto,
@@ -247,11 +249,14 @@ impl Modify for SecuritySchemes {
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
         NewTokenDto, WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
         DetectedDto, HostDto, BuildLogDto, ResourceLimitsDto, SetResourcesRequest, SampleDto,
-        PointDto, MetricsDto, ResourceCapabilitiesDto, ProjectResourcesDto
+        PointDto, MetricsDto, ResourceCapabilitiesDto, ProjectResourcesDto,
+        domains::DomainDto, domains::CertStatusDto, domains::MapDomainRequest,
+        domains::ProxyRouteDto, domains::ProxyStatusDto
     )),
     tags(
         (name = "auth"), (name = "system"), (name = "projects"), (name = "deployments"),
-        (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources")
+        (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
+        (name = "domains")
     )
 )]
 pub struct ApiDoc;
@@ -304,6 +309,15 @@ pub fn router(state: AppState) -> Router {
             post(auth::rotate_webhook_secret),
         )
         .route("/projects/:project/releases", get(api::list_releases))
+        .route(
+            "/projects/:project/domains",
+            get(domains::list_domains).post(domains::map_domain),
+        )
+        .route(
+            "/projects/:project/domains/:domain",
+            delete(domains::unmap_domain),
+        )
+        .route("/proxy", get(domains::proxy_status))
         .route("/deployments", get(api::list_deployments))
         .route("/deployments/:id", get(api::get_deployment))
         .route("/deployments/:id/log", get(api::deployment_log))

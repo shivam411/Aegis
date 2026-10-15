@@ -32,6 +32,20 @@ pub struct ProjectState {
     /// CPU, memory and process limits (unlimited by default).
     #[serde(default)]
     pub resources: aegis_config::ResourceLimits,
+    /// Domains the built-in proxy serves this app on.
+    #[serde(default)]
+    pub domains: Vec<DomainState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DomainState {
+    /// Lowercase hostname.
+    pub domain: String,
+    /// "acme", "files" or "off".
+    pub tls: String,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -96,6 +110,12 @@ pub struct ProcessState {
     pub release_version: Option<String>,
     pub command: Option<String>,
     pub cwd: Option<String>,
+    /// The port the process was told to listen on (`PORT`).
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// The port was allocated for the proxy (rather than the configured one).
+    #[serde(default)]
+    pub proxied: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -211,7 +231,11 @@ impl ProjectionEngine {
                             .as_ref()
                             .map(|p| p.settings.clone())
                             .unwrap_or_default(),
-                        resources: previous.map(|p| p.resources).unwrap_or_default(),
+                        resources: previous
+                            .as_ref()
+                            .map(|p| p.resources.clone())
+                            .unwrap_or_default(),
+                        domains: previous.map(|p| p.domains).unwrap_or_default(),
                     },
                 );
             }
@@ -235,6 +259,37 @@ impl ProjectionEngine {
                         .and_then(|v| serde_json::from_value(v.clone()).ok()),
                 ) {
                     project.resources = limits;
+                }
+            }
+            "DomainMapped" => {
+                let (Some(project_id), Some(domain)) = (
+                    id_field::<ProjectId>(&payload, "project_id"),
+                    string_field(&payload, "domain"),
+                ) else {
+                    return;
+                };
+                // A domain belongs to one project; re-mapping replaces it.
+                for project in st.projects.values_mut() {
+                    project.domains.retain(|d| d.domain != domain);
+                }
+                if let Some(project) = st.projects.get_mut(&project_id) {
+                    project.domains.push(DomainState {
+                        domain,
+                        tls: string_field(&payload, "tls").unwrap_or_else(|| "off".into()),
+                        cert_path: string_field(&payload, "cert_path"),
+                        key_path: string_field(&payload, "key_path"),
+                        created_at: at,
+                    });
+                    project.domains.sort_by(|a, b| a.domain.cmp(&b.domain));
+                }
+            }
+            "DomainUnmapped" => {
+                if let (Some(project), Some(domain)) = (
+                    id_field::<ProjectId>(&payload, "project_id")
+                        .and_then(|id| st.projects.get_mut(&id)),
+                    str_field(&payload, "domain"),
+                ) {
+                    project.domains.retain(|d| d.domain != domain);
                 }
             }
             "ScheduleConfigured" => {
@@ -381,8 +436,12 @@ impl ProjectionEngine {
                     r.promoted_seq = Some(seq);
                     r.version.clone()
                 });
+                let process = id_field::<ProcessId>(&payload, "process_id");
                 if let Some(project) = st.projects.get_mut(&project_id) {
                     project.current_release = version.or_else(|| string_field(&payload, "version"));
+                    if process.is_some() {
+                        project.current_process = process;
+                    }
                 }
             }
             "ReleaseArchived" => {
@@ -432,9 +491,25 @@ impl ProjectionEngine {
                         ),
                         command: keep("command", previous.as_ref().and_then(|p| p.command.clone())),
                         cwd: keep("cwd", previous.as_ref().and_then(|p| p.cwd.clone())),
+                        port: payload
+                            .get("port")
+                            .and_then(|v| v.as_u64())
+                            .and_then(|p| u16::try_from(p).ok())
+                            .or(previous.as_ref().and_then(|p| p.port)),
+                        proxied: payload
+                            .get("proxied")
+                            .and_then(|v| v.as_bool())
+                            .or(previous.as_ref().map(|p| p.proxied))
+                            .unwrap_or(false),
                     },
                 );
-                if let Some(project) = st.projects.get_mut(&project_id) {
+                // A candidate is a new release starting next to the live one
+                // (proxied cutover); it becomes current when promoted.
+                let candidate = payload
+                    .get("candidate")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if let (false, Some(project)) = (candidate, st.projects.get_mut(&project_id)) {
                     project.current_process = Some(id);
                 }
             }
@@ -810,6 +885,91 @@ mod tests {
         let d = engine.get_deployment(&dep).unwrap();
         assert_eq!(d.status, "RolledBack");
         assert_eq!(d.error.as_deref(), Some("health check failed"));
+    }
+
+    #[test]
+    fn test_domains_and_proxied_cutover() {
+        let engine = ProjectionEngine::new();
+        let (p1, p2) = (ProjectId::new(), ProjectId::new());
+        for (id, name) in [(p1, "a"), (p2, "b")] {
+            engine.apply_event(&ev(
+                "ProjectCreated",
+                serde_json::json!({"project_id": id.to_string(), "name": name}),
+            ));
+        }
+        engine.apply_event(&ev(
+            "DomainMapped",
+            serde_json::json!({"project_id": p1.to_string(), "domain": "b.example.com", "tls": "acme"}),
+        ));
+        engine.apply_event(&ev(
+            "DomainMapped",
+            serde_json::json!({"project_id": p1.to_string(), "domain": "a.example.com", "tls": "off"}),
+        ));
+        let domains: Vec<_> = engine
+            .get_project(&p1)
+            .unwrap()
+            .domains
+            .into_iter()
+            .map(|d| (d.domain, d.tls))
+            .collect();
+        assert_eq!(
+            domains,
+            vec![
+                ("a.example.com".to_string(), "off".to_string()),
+                ("b.example.com".to_string(), "acme".to_string())
+            ]
+        );
+        // Re-registering keeps domains; moving a domain takes it away from p1.
+        engine.apply_event(&ev(
+            "ProjectCreated",
+            serde_json::json!({"project_id": p1.to_string(), "name": "a"}),
+        ));
+        engine.apply_event(&ev(
+            "DomainMapped",
+            serde_json::json!({"project_id": p2.to_string(), "domain": "b.example.com", "tls": "files", "cert_path": "/c", "key_path": "/k"}),
+        ));
+        assert_eq!(engine.get_project(&p1).unwrap().domains.len(), 1);
+        let moved = &engine.get_project(&p2).unwrap().domains[0];
+        assert_eq!(moved.cert_path.as_deref(), Some("/c"));
+        engine.apply_event(&ev(
+            "DomainUnmapped",
+            serde_json::json!({"project_id": p1.to_string(), "domain": "a.example.com"}),
+        ));
+        assert!(engine.get_project(&p1).unwrap().domains.is_empty());
+
+        // A candidate process doesn't become current until it is promoted.
+        let (old, new) = (ProcessId::new(), ProcessId::new());
+        let rel = ReleaseId::new();
+        engine.apply_event(&ev(
+            "ProcessStarted",
+            serde_json::json!({"process_id": old.to_string(), "project_id": p1.to_string(), "port": 3000}),
+        ));
+        engine.apply_event(&ev(
+            "ProcessStarted",
+            serde_json::json!({"process_id": new.to_string(), "project_id": p1.to_string(), "port": 41234, "proxied": true, "candidate": true}),
+        ));
+        assert_eq!(engine.get_project(&p1).unwrap().current_process, Some(old));
+        let started = engine.get_process(&new).unwrap();
+        assert_eq!((started.port, started.proxied), (Some(41234), true));
+        assert_eq!(engine.get_process(&old).unwrap().port, Some(3000));
+        engine.apply_event(&ev(
+            "ReleaseCreated",
+            serde_json::json!({"release_id": rel.to_string(), "project_id": p1.to_string(), "version": "r2"}),
+        ));
+        engine.apply_event(&ev(
+            "ReleasePromoted",
+            serde_json::json!({"release_id": rel.to_string(), "project_id": p1.to_string(), "process_id": new.to_string(), "port": 41234}),
+        ));
+        let project = engine.get_project(&p1).unwrap();
+        assert_eq!(project.current_process, Some(new));
+        assert_eq!(project.current_release.as_deref(), Some("r2"));
+        // A restart event without a port keeps the recorded one.
+        engine.apply_event(&ev(
+            "ProcessStarted",
+            serde_json::json!({"process_id": new.to_string(), "project_id": p1.to_string(), "restart_count": 1}),
+        ));
+        let restarted = engine.get_process(&new).unwrap();
+        assert_eq!((restarted.port, restarted.proxied), (Some(41234), true));
     }
 
     #[test]

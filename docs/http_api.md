@@ -63,6 +63,10 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `PUT /projects/{project}/schedule` | Daily auto-deploy: `{"hour", "minute"?, "branch"?}` (UTC) |
 | `PUT /projects/{project}/settings` | Override aegis.toml for future deployments: `{"install_command"?, "build_command"?, "test_command"?, "start_command"?, "port"?, "health_check_url"?}`. Omitted fields follow aegis.toml; an empty command skips that stage; an empty `health_check_url` means "healthy while the process stays up". Replaces all previous overrides |
 | `GET /projects/{project}/releases` | Release history |
+| `GET /projects/{project}/domains` | Domains the built-in proxy serves the app on, each with its TLS mode and certificate state (`cert.state`: valid, expiring, expired, pending, error, disabled or off) |
+| `POST /projects/{project}/domains` | Map a domain (**201**): `{"domain", "tls"?, "cert_path"?, "key_path"?}`. `tls` is `acme` (default; certificate requested in the background), `files` (absolute PEM paths on the server, checked now) or `off`. A domain belongs to one app (409 otherwise). **Users only**: API tokens get 403 |
+| `DELETE /projects/{project}/domains/{domain}` | Stop serving the app on the domain (**204**; users only) |
+| `GET /proxy` | The built-in proxy: `enabled`, ports, ACME settings, and every route with its upstream port and certificate state |
 | `GET /deployments?project=` | Deployment history |
 | `GET /deployments/{id}` | One deployment: status, current stage, error |
 | `GET /deployments/{id}/log?lines=` | The deployment's build log (default 500 lines, max 5000) |
