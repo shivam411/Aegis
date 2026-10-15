@@ -53,7 +53,7 @@ These passed tests but didn't do what the docs and CLI claimed. Phase 0 fixed th
 - ~~**Cutover has a brief gap.**~~ *Fixed in Phase 5 for apps with a domain on the built-in proxy; apps without one keep the gap described here.* Without a reverse proxy, the old and new process can't share a port, so there is a gap between stopping the old process and the new one accepting connections. The gap lasts as long as the app takes to start listening: about 0.5 s for `examples/node-app`, and several seconds for slow-starting apps such as JVM services. It will be removed by the Phase 5 proxy, which also enables `Rolling`/`BlueGreen`.
 - ~~**Superseded crates.**~~ `deployment/strategy` and `deployment/rollback` were removed in Phase 1.
 - **Stub crates.** `metrics`, `auth`, `secrets`, `ssh`, `state`, `analytics`, `action`, `docker` and `github` are still stubs; they are scheduled in Phases 2, 4 and 5.
-- **Experimental CLI commands.** `replay`, `incident`, `investigate`, `inspect --at` and `upgrade` still print placeholder output.
+- ~~**Experimental CLI commands.**~~ `replay`, `incident`, `investigate`, `inspect [--at]`, `migrate` and `upgrade` now work from the real event history (or GitHub releases for `upgrade`). They are still labelled experimental until used in production.
 - **No webhook endpoint yet.** A webhook HTTP endpoint needs the Phase 1 HTTP server.
 
 ---

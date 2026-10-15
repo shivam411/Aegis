@@ -536,7 +536,9 @@ impl AegisDaemon for DaemonService {
     ) -> Result<Response<ListEventsResponse>, Status> {
         let req = request.into_inner();
         let project = self.optional_project(&req.project).map_err(status_from)?;
-        let limit = if req.limit == 0 {
+        let limit = if req.all {
+            usize::MAX
+        } else if req.limit == 0 {
             50
         } else {
             req.limit as usize

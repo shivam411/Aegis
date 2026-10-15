@@ -21,9 +21,13 @@ Commands classified as **Stable** are guaranteed backwards-compatible public int
 | **`aegis events`** | `[STABLE]` | Stream operational domain events in real-time. |
 | **`aegis doctor`** | `[STABLE]` | Environment, gRPC, and SQLite diagnostic check (`--fix`). |
 | **`aegis validate`** | `[STABLE]` | Validate project configuration and pipeline parameters. |
-| **`aegis inspect`** | `[STABLE]` | Detailed resource graph hierarchy inspection. |
+| **`aegis inspect`** | `[EXPERIMENTAL]` | Project state (releases, process, schedule, settings, limits, recent deployments) replayed from events; `--at <RFC 3339>` shows it as of a past time. |
 | **`aegis explain`** | `[STABLE]` | Display runtime auto-detection rules. |
 | **`aegis demo`** | `[STABLE]` | Interactive 2-minute feature tour. |
 | **`aegis releases`** | `[STABLE]` | View immutable release history. |
 | **`aegis timeline`** | `[STABLE]` | Display event-sourced execution timeline. |
-| **`aegis incident`** | `[EXPERIMENTAL]` | Operational incident diagnostic and auto-rollback advisor. |
+| **`aegis incident`** | `[EXPERIMENTAL]` | Process status, crashes, failed deployments and resource alerts in a window (`--since 24h`), last output, and concrete advice such as the rollback command. |
+| **`aegis investigate`** | `[EXPERIMENTAL]` | Timeline of a project's events in a window (`--since`) with the change that most likely triggered the first problem. |
+| **`aegis replay`** | `[EXPERIMENTAL]` | A deployment's events step by step with time offsets, stage durations, failure reason and log tail. Takes a deployment id, release version or release id. |
+| **`aegis migrate pm2` / `systemd`** | `[EXPERIMENTAL]` | Generate aegis.toml (name, start command, port, `[env]`, restart policy) from a PM2 ecosystem file (JSON; `.js` best effort) or a systemd unit. `--dry-run`, `--force`. |
+| **`aegis upgrade`** | `[EXPERIMENTAL]` | `--check` compares with the latest GitHub release; otherwise re-runs install.sh after confirmation (`--yes`). Not supported on Windows. |
