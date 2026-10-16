@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Collects benchmark results into one JSON file and a markdown report, and
-compares them with a baseline (the latest run on main).
+compares them with a baseline.
 
 Inputs:
   * Criterion output: <criterion-dir>/**/new/{benchmark,estimates}.json
@@ -10,14 +10,17 @@ Inputs:
 Usage:
   scripts/bench_report.py --criterion-dir target/criterion \
       --extra target/bench-results/deploy_saga.json \
-      --baseline baseline/bench-results.json \
       --out-json bench-results.json --out-md bench-report.md \
+      [--baseline old/bench-results.json            # an earlier run's file
+       | --baseline-criterion-dir base/criterion --baseline-extra base/deploy_saga.json]
+      [--baseline-label "..."] [--note "..."]
       [--threshold 0.30] [--fail-on-regression] [--github-annotations]
 
 A benchmark regressed when its median is more than --threshold slower than
-the baseline's. Regressions are reported (and annotated as warnings in
-GitHub Actions); the exit code is 1 only with --fail-on-regression.
-Standard library only.
+the baseline's. Only compare runs from the same machine: across GitHub's
+shared runners the same code varies by up to 2x. Regressions are reported
+(and annotated as warnings with --github-annotations); the exit code is 1
+only with --fail-on-regression. Standard library only.
 """
 
 import argparse
@@ -122,7 +125,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--criterion-dir", default="target/criterion")
     ap.add_argument("--extra", action="append", default=[])
-    ap.add_argument("--baseline")
+    ap.add_argument("--baseline", help="bench-results.json of an earlier run")
+    ap.add_argument("--baseline-criterion-dir", help="raw Criterion output of the baseline")
+    ap.add_argument("--baseline-extra", action="append", default=[])
+    ap.add_argument("--baseline-label", default="baseline")
+    ap.add_argument("--note", action="append", default=[])
     ap.add_argument("--out-json", required=True)
     ap.add_argument("--out-md", required=True)
     ap.add_argument("--threshold", type=float, default=0.30)
@@ -143,36 +150,39 @@ def main():
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "runner": os.environ.get("RUNNER_OS", "") + " " + os.environ.get("RUNNER_ARCH", ""),
     }
-    with open(args.out_json, "w") as f:
+    with open(args.out_json, "w", encoding="utf-8") as f:
         json.dump({"schema": 1, "meta": meta, "benchmarks": current}, f, indent=2, sort_keys=True)
 
-    baseline, base_meta = {}, None
-    if args.baseline and os.path.exists(args.baseline):
-        with open(args.baseline) as f:
+    baseline, label = {}, args.baseline_label
+    if args.baseline_criterion_dir:
+        baseline = load_criterion(args.baseline_criterion_dir)
+        baseline.update(load_extra(args.baseline_extra))
+    elif args.baseline and os.path.exists(args.baseline):
+        with open(args.baseline, encoding="utf-8") as f:
             data = json.load(f)
         baseline = data.get("benchmarks", {})
         base_meta = data.get("meta", {})
+        if args.baseline_label == "baseline":
+            label = (f"`{(base_meta.get('commit') or '')[:10]}` (run {base_meta.get('run_id', '?')}, "
+                     f"{base_meta.get('created_at', '?')}, another runner)")
 
     rows = compare(current, baseline, args.threshold)
     regressions = [r for r in rows if r[4] == "REGRESSION"]
     pct = int(args.threshold * 100)
 
     md = ["## Benchmarks", ""]
-    if base_meta:
-        commit = (base_meta.get("commit") or "")[:10]
-        md.append(
-            f"Compared with main at `{commit}` (run {base_meta.get('run_id', '?')}, "
-            f"{base_meta.get('created_at', '?')}). Medians; a change beyond ±{pct}% is flagged. "
-            "Shared CI runners are noisy: treat single flags as hints, look for repeats."
-        )
+    if baseline:
+        md.append(f"Compared with {label}. Medians; a change beyond ±{pct}% is flagged.")
     else:
-        md.append("No main baseline found yet (the first run on main creates one). Absolute numbers only.")
+        md.append("No baseline to compare with. Absolute numbers only.")
     md.append("")
+    for note in args.note:
+        md += [note, ""]
     if regressions:
-        md.append(f"**{len(regressions)} benchmark(s) more than {pct}% slower than main:** "
+        md.append(f"**{len(regressions)} benchmark(s) more than {pct}% slower than the baseline:** "
                   + ", ".join(f"`{r[0]}` ({r[3] * 100:+.0f}%)" for r in regressions))
         md.append("")
-    md.append("| Benchmark | main | this run | change | rate | status |")
+    md.append("| Benchmark | baseline | this run | change | rate | status |")
     md.append("| :--- | ---: | ---: | ---: | ---: | :--- |")
     for name, cur, base, change, status in rows:
         md.append(
@@ -187,7 +197,7 @@ def main():
         )
     timing = [(n, c) for n, c in current.items() if c["kind"] == "timing"]
     if timing:
-        md += ["", "Deploy saga timings (whole deployments of a tiny app, real processes):", ""]
+        md += ["", "Deploy saga timings of this run (whole deployments of a tiny app, real processes):", ""]
         md.append("| Scenario | n | min | median | p95 | max |")
         md.append("| :--- | ---: | ---: | ---: | ---: | ---: |")
         for name, c in sorted(timing):
@@ -200,7 +210,7 @@ def main():
     if args.github_annotations:
         for name, _, _, change, _ in regressions:
             print(f"::warning title=Benchmark regression::{name} is {change * 100:+.0f}% "
-                  f"slower than main (threshold {pct}%)")
+                  f"slower than the baseline (threshold {pct}%)")
     print("\n".join(md))
     if regressions and args.fail_on_regression:
         return 1

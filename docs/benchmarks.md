@@ -6,8 +6,9 @@ and how to read the results. Everything here runs in
 GitHub-hosted Ubuntu runners (2–4 vCPUs, shared). Those machines are noisy,
 so treat the numbers as rough and look at trends, not single runs.
 
-> **Status:** benchmarks run on every PR and push to `main`, and are compared
-> with the latest `main` run, but a regression only **warns**. A 5-minute soak
+> **Status:** benchmarks run on every PR and push to `main`; on a PR they are
+> compared with the base commit on the same runner, and a regression only
+> **warns**. A 5-minute soak
 > runs on every push to `main`, a 60-minute soak nightly. The numbers in the
 > tables below are a snapshot from one CI run each, not targets or
 > guarantees. They say nothing about production hosts. See
@@ -32,14 +33,15 @@ so treat the numbers as rough and look at trends, not single runs.
 | `deploy_saga/rollback_behind_proxy` | Rollbacks behind the proxy | Timing harness |
 
 The proxy overhead is the difference between the `ingress` and `direct` rows.
-Deploy times are dominated by waiting: the health check polls every 500 ms
-(the daemon's default), and the previous release gets a SIGTERM and up to its
-drain timeout to exit.
 
-The deploy saga harness is not a Criterion benchmark (one deployment takes
-seconds). It runs each scenario `AEGIS_BENCH_DEPLOYS` times (default 8),
-prints min/median/p95/max and writes `target/bench-results/deploy_saga.json`.
-It runs on Unix only and does nothing under `cargo test`.
+The deploy saga harness is not a Criterion benchmark. It runs each scenario
+`AEGIS_BENCH_DEPLOYS` times (default 8, 15 in CI), prints
+min/median/p95/max and writes `target/bench-results/deploy_saga.json`. It
+polls health checks every 20 ms instead of the daemon's 500 ms, so the
+numbers follow the saga's own work and the app's start-up rather than the
+poll interval; real deployments take up to 500 ms longer (the soak's
+`deploy` row shows them with the daemon's defaults). It runs on Unix only and
+does nothing under `cargo test`.
 
 ### Running locally
 
@@ -60,35 +62,56 @@ also prints the change against the first.
 
 ### How CI compares
 
-1. The `Benchmarks` job runs on every PR to `main` and every push to `main`
-   (about 10 minutes with a warm cache, most of it compiling).
-2. Criterion runs with `--warm-up-time 1 --measurement-time 4` (8 s for the
-   replay benchmarks), then the deploy saga harness.
-3. [`scripts/bench_report.py`](../scripts/bench_report.py) collects the
-   medians into `bench-results.json` and compares each one with the latest
-   `main` run's file, restored from the Actions cache
-   (`bench-baseline-main-*`, saved by every push to `main`).
-4. A benchmark more than **30%** slower than `main` is flagged
-   `REGRESSION` in the job summary and as a warning annotation on the run.
-   The job still passes.
-5. The summary table, `bench-results.json`, `bench-report.md` and the raw
-   Criterion output are uploaded as the `bench-results-<run id>` artifact
-   (kept 30 days).
+Comparing two runs on different GitHub runners doesn't work: the same commit
+measured twice, minutes apart on two runners, came out 17–83% slower on the
+second for every Criterion benchmark (see section 3). So a PR is compared
+with its base commit **on the same runner, in the same job**:
 
-The threshold is generous on purpose: on shared runners the same commit can
-vary by 10–20% between runs, more for the proxy and deploy timings. A real
-regression shows up again on the next run; a single flag usually doesn't.
+1. The `Benchmarks` job checks out the PR's base commit in a git worktree and
+   runs its benchmarks with [`scripts/run-benchmarks.sh`](../scripts/run-benchmarks.sh)
+   (sharing the target directory, so only what differs is rebuilt), then runs
+   the PR's benchmarks the same way. Benchmarks the base doesn't have are
+   reported as `new`.
+2. Criterion runs with `--warm-up-time 1 --measurement-time 4` (8 s for the
+   replay benchmarks), then the deploy saga harness (15 deployments per
+   scenario).
+3. [`scripts/bench_report.py`](../scripts/bench_report.py) compares the
+   medians. A benchmark more than **30%** slower than on the base commit is
+   flagged `REGRESSION` in the job summary and as a warning annotation on
+   the run. The job still passes. If the PR changes `benchmarks/` itself,
+   the summary says so, since changed benchmarks aren't like for like.
+4. The summary, `bench-results.json`, `bench-report.md` and the raw results
+   of both runs (`bench-runs/base`, `bench-runs/head`) are uploaded as the
+   `bench-results-<run id>` artifact (kept 30 days).
+
+The whole job takes about 10–15 minutes with a warm cache.
+
+Pushes to `main` run the benchmarks once and save `bench-results.json` in
+the Actions cache (`bench-baseline-main-*`). Pushes and manual runs compare
+with the latest saved `main` results, but because that is another runner the
+comparison is informational: only differences beyond 2x are marked, and never
+as warnings. The saved results are the record of how the numbers move over
+time.
+
+To compare with a particular earlier run (still across runners), start the
+workflow by hand with that run's id:
+`gh workflow run perf.yml --ref my-branch -f benchmarks=true -f soak_minutes=0 -f baseline_run_id=<run id>`.
+
+Within one runner, run-to-run noise is much smaller, but the deploy saga and
+proxy numbers still move by 10–20% and a noisy neighbour can hit one half of
+the A/B and not the other. A real regression shows up again on the next
+push; a single flag often doesn't.
 
 **Making it blocking.** Set the repository variable
 `BENCH_FAIL_ON_REGRESSION` to `true` (Settings → Secrets and variables →
-Actions → Variables) and the job fails on any flagged regression; then make
-the `Benchmarks` check required in the branch protection rules. Change the
-threshold with `BENCH_REGRESSION_THRESHOLD` (e.g. `0.5` for 50%). Before
-doing either, a dedicated runner would make the numbers far more stable.
+Actions → Variables) and the job fails when a PR flags a regression (only
+same-runner comparisons can fail it); then make the `Benchmarks` check
+required in the branch protection rules. Change the threshold with
+`BENCH_REGRESSION_THRESHOLD` (e.g. `0.5` for 50%). A dedicated (self-hosted)
+runner would make the numbers much steadier before doing either.
 
-If the cache entry has expired (GitHub evicts entries unused for 7 days) the
-summary says there is no baseline and shows absolute numbers; the next push
-to `main` creates a new one.
+If the cache entry has expired (GitHub evicts entries unused for 7 days),
+pushes to `main` show absolute numbers only until the next push saves one.
 
 ---
 
@@ -108,8 +131,12 @@ set time and checks that it stays correct and doesn't leak:
 4. Every 20 s runs the next operation of a cycle over the HTTP API:
    deploy, resource-limit change, deploy, rollback, app restart, deploy,
    limit change. Limit changes alternate between two CPU/memory/pid limits
-   and need a cgroup backend (CI runs the soak as root; without one they
-   are recorded as skipped).
+   and need a cgroup backend. Run as root on cgroup v2, the script creates
+   `/sys/fs/cgroup/aegis-soak-<pid>` with the cpu, memory and pids
+   controllers and points `resources.cgroup_root` at it (on GitHub's runners
+   the daemon's own service cgroup has no delegated controllers); set
+   `SOAK_CGROUP_ROOT` to use another directory. Without a backend, limit
+   changes are recorded as skipped.
 5. Restarts the daemon once at 75% of short runs, every 20 minutes in long
    ones.
 6. Every 5 s samples the daemon's RSS, open fds, threads and zombie
@@ -178,8 +205,13 @@ artifact has it with the raw data:
   and max latency.
 - `failures.csv`: every failed request with its time and error.
 - `ops.csv`: every operation with start and end time, result and detail.
-- `events.json`: the app's events at the end; `daemon.log`: the daemon's
-  output.
+- `events.json`: the number of events of each type in the database at the
+  end, and every `ProcessCrashed`, `ProcessFailed`, `DeploymentFailed` and
+  `ResourceAlert` event.
+- `fds-<label>.txt`: what each of the daemon's open fds points to, after the
+  first deploy, before each daemon restart and at the end.
+- `resources.json`: the resource-limit backend the daemon found;
+  `daemon.log`: the daemon's output; `run.json`: the run's settings.
 
 In `report.md`:
 
@@ -195,6 +227,9 @@ In `report.md`:
 - **Disk:** database, app logs and data directory, with growth per hour. The
   database grows with every event and keeps per-minute metric rollups; the
   data directory is bounded by release retention.
+- **Daemon fds by kind:** sockets, pipes, files etc. in each snapshot, and
+  the files open later that weren't at the start. This is where a leak shows
+  what it is.
 - **Daemon log:** `ERROR` lines (shown) and the number of `WARN` lines.
 
 ---

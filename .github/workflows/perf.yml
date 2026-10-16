@@ -2,12 +2,14 @@ name: Performance
 
 # Benchmarks and soak tests. See docs/benchmarks.md.
 #
-# - Benchmarks: every PR to main and every push to main. Results are compared
-#   with the latest main run (restored from the Actions cache) and regressions
-#   beyond the threshold are flagged in the job summary and as warnings. They
-#   don't fail the build unless the repository variable
-#   BENCH_FAIL_ON_REGRESSION is "true" (threshold: BENCH_REGRESSION_THRESHOLD,
-#   default 0.30 = 30% slower).
+# - Benchmarks: every PR to main and every push to main. On a PR the job runs
+#   the benchmarks of the PR's base commit and then of the PR on the same
+#   runner, and flags benchmarks more than BENCH_REGRESSION_THRESHOLD (default
+#   0.30 = 30%) slower in the job summary and as warnings. They don't fail the
+#   build unless the repository variable BENCH_FAIL_ON_REGRESSION is "true".
+#   Pushes to main record a baseline (Actions cache) for trend comparisons;
+#   comparisons across runners are informational only (shared runners differ
+#   by up to 2x).
 # - Short soak (5 min): every push to main, and PRs labelled `soak`.
 # - Long soak (60 min): nightly, or on demand with any duration.
 
@@ -56,13 +58,18 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.benchmarks)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read  # only for downloading another run's results (baseline_run_id)
+    env:
+      AEGIS_BENCH_DEPLOYS: '15'
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # the PR's base commit is benchmarked too
 
       - name: Set up Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install
@@ -71,8 +78,8 @@ jobs:
         with:
           shared-key: perf-bench
 
-      - name: Restore the main baseline
-        id: baseline
+      - name: Restore the latest main results
+        if: github.event_name != 'pull_request'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: bench-baseline
@@ -90,35 +97,44 @@ jobs:
           mkdir -p bench-baseline
           cp "$RUNNER_TEMP/baseline/bench-out/bench-results.json" bench-baseline/bench-results.json
 
-      - name: Build benchmarks
-        run: cargo bench -p aegis-benchmarks --no-run
-
-      - name: Criterion benchmarks (event pipeline, proxy overhead)
+      - name: Benchmarks of the PR's base commit (same runner)
+        if: github.event_name == 'pull_request'
+        # A broken base shouldn't hide the PR's own numbers.
+        continue-on-error: true
         run: |
-          cargo bench -p aegis-benchmarks --bench event_throughput --bench proxy_overhead -- \
-            --warm-up-time 1 --measurement-time 4 --noplot
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+            scripts/run-benchmarks.sh bench-runs/base "$RUNNER_TEMP/base"
 
-      - name: Deploy saga timings (tiny app, real processes)
-        env:
-          AEGIS_BENCH_DEPLOYS: '15'
-        run: cargo bench -p aegis-benchmarks --bench deploy_saga
+      - name: Benchmarks of this commit
+        run: scripts/run-benchmarks.sh bench-runs/head
 
-      - name: Report and compare with main
+      - name: Report and compare
         env:
           THRESHOLD: ${{ vars.BENCH_REGRESSION_THRESHOLD || '0.30' }}
           FAIL_ON_REGRESSION: ${{ vars.BENCH_FAIL_ON_REGRESSION || 'false' }}
         run: |
           mkdir -p bench-out
-          flags=(--threshold "$THRESHOLD" --github-annotations)
-          [ "$FAIL_ON_REGRESSION" = true ] && flags+=(--fail-on-regression)
+          args=(--criterion-dir bench-runs/head/criterion --extra bench-runs/head/deploy_saga.json
+                --out-json bench-out/bench-results.json --out-md bench-out/bench-report.md)
+          if [ -n "$BASE_SHA" ] && [ -d bench-runs/base/criterion ]; then
+            args+=(--baseline-criterion-dir bench-runs/base/criterion
+                   --baseline-extra bench-runs/base/deploy_saga.json
+                   --baseline-label "the PR's base commit \`${BASE_SHA:0:10}\`, run just before on the same runner"
+                   --threshold "$THRESHOLD" --github-annotations)
+            [ "$FAIL_ON_REGRESSION" = true ] && args+=(--fail-on-regression)
+            if ! git diff --quiet "$BASE_SHA" HEAD -- benchmarks/; then
+              args+=(--note "This PR changes \`benchmarks/\`: benchmarks whose code changed aren't compared like for like.")
+            fi
+          elif [ -f bench-baseline/bench-results.json ]; then
+            # Another runner: only differences beyond 2x are flagged, never as warnings.
+            args+=(--baseline bench-baseline/bench-results.json --threshold 1.0
+                   --note "Different runners: GitHub's shared runners differ by up to 2x for the same code, so this comparison is informational. PRs compare against their base commit on one runner.")
+          elif [ -n "$BASE_SHA" ]; then
+            args+=(--note "The base commit's benchmarks didn't run (see the previous step), so there is nothing to compare with.")
+          fi
           set +e
-          python3 scripts/bench_report.py \
-            --criterion-dir target/criterion \
-            --extra target/bench-results/deploy_saga.json \
-            --baseline bench-baseline/bench-results.json \
-            --out-json bench-out/bench-results.json \
-            --out-md bench-out/bench-report.md \
-            "${flags[@]}"
+          python3 scripts/bench_report.py "${args[@]}"
           status=$?
           set -e
           cat bench-out/bench-report.md >> "$GITHUB_STEP_SUMMARY"
@@ -131,8 +147,7 @@ jobs:
           name: bench-results-${{ github.run_id }}
           path: |
             bench-out/
-            target/criterion/
-            target/bench-results/
+            bench-runs/
           retention-days: 30
           if-no-files-found: warn
 
