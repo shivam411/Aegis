@@ -75,7 +75,7 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | Feature | Status | Evidence |
 | :--- | :---: | :--- |
 | **Benchmarks in CI** (event store append/replay, projection rebuild, proxy overhead, deploy saga wall time) | 🟡 Validated (warn only) | [`benchmarks/`](../benchmarks/) run on every PR and push to `main` in [`perf.yml`](../.github/workflows/perf.yml), compared with the latest `main` run. A >30% regression is a warning, not a failure, and the numbers come from shared CI runners. See [`benchmarks.md`](benchmarks.md). |
-| **Soak test** (real daemon, load through the proxy, deploys/rollbacks/restarts/limit changes/daemon restarts, leak and error checks) | 🟡 Validated (5 min per push to `main`, 60 min nightly) | [`scripts/soak.sh`](../scripts/soak.sh), [`benchmarks.md`](benchmarks.md). No 24 h+ soak has been run; leak detection over 5 minutes only catches fast leaks. |
+| **Soak test** (real daemon, load through the proxy, deploys/rollbacks/restarts/limit changes/daemon restarts, leak and error checks) | 🟡 Validated (5 min per push to `main`, 60 min nightly) | [`scripts/soak.sh`](../scripts/soak.sh), [`benchmarks.md`](benchmarks.md). No 24 h+ soak has been run; leak detection over 5 minutes only catches fast leaks. A 15-minute run found an fd leak (one open log file per app process ever started), so the nightly soak fails until it is fixed. |
 
 ### Not implemented yet
 

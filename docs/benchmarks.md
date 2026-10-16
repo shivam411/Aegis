@@ -236,10 +236,55 @@ In `report.md`:
 
 ## 3. Measured numbers
 
-Snapshot from CI on GitHub-hosted `ubuntu-latest`; see the linked runs for
-the full reports.
+A snapshot from CI on GitHub-hosted `ubuntu-latest` (4 vCPUs) on
+2026-10-16, while this was set up. They are one run each on a shared VM, not
+targets or guarantees; the linked runs have the full reports.
 
-_To be filled in from the first green runs._
+**Benchmarks** ([run 38945922650](https://github.com/shivam411/Aegis/actions/runs/38945922650),
+the same commit measured twice on one runner; the second column is the
+change between the two, i.e. the noise):
+
+| Benchmark | Median | Same code, 2nd run |
+| :--- | ---: | ---: |
+| `event_bus/publish` | 1.07 µs | -0.6% |
+| `projection/apply_event` | 783 ns | -0.6% |
+| `event_store/append` (fsync per event) | 1.51 ms (~660 events/s) | -4.2% |
+| `event_store/replay_12020` | 40.8 ms (~295k events/s) | -2.1% |
+| `projection/rebuild_12020` | 8.9 ms (~1.35M events/s) | -1.2% |
+| `projection/load_and_rebuild_12020` (daemon start-up work) | 52.4 ms | -1.1% |
+| `proxy/direct/sequential` | 65 µs | -1.2% |
+| `proxy/ingress/sequential` | 96 µs | -6.3% |
+| `proxy/direct/concurrent_64` | 703 µs (~91k req/s) | -2.4% |
+| `proxy/ingress/concurrent_64` | 1.44 ms (~44k req/s) | -1.7% |
+| `deploy_saga/direct_port` (median of 15) | 104 ms | -1.7% |
+| `deploy_saga/behind_proxy` (median of 15) | 105 ms | +0.9% |
+| `deploy_saga/rollback_behind_proxy` (median of 15) | 75.5 ms | -1.0% |
+
+So the proxy added about 30–40 µs to a small keep-alive request and halved
+the throughput of 8 busy connections in this setup (client, proxy and app
+share 4 vCPUs). On a different runner the same commit measured 17–83% slower
+across the board ([run 38941452417](https://github.com/shivam411/Aegis/actions/runs/38941452417)
+vs [run 38942694776](https://github.com/shivam411/Aegis/actions/runs/38942694776)),
+which is why PRs are compared on one runner.
+
+**Soak, 5 minutes** ([run 38941452761](https://github.com/shivam411/Aegis/actions/runs/38941452761), passed):
+30,810 requests through the proxy at 100/s, p50 0.41 ms, worst 1-second p99
+35 ms. 7 deploys, 2 rollbacks, 2 app restarts, 4 limit changes (cgroup v2)
+and 1 daemon restart: no failed request outside restarts; 6 failed requests
+(HTTP 502) during the two app restarts and 8 (connection closed) during the
+daemon restart. Deploys took 694 ms (median, the daemon's 500 ms health
+polls included), rollbacks 542 ms, an app restart 132 ms, a daemon start 116
+ms until `/healthz` answers. Daemon RSS about 38–40 MiB.
+
+**Soak, 15 minutes** ([run 38942415671](https://github.com/shivam411/Aegis/actions/runs/38942415671), **failed**):
+90,803 requests, none failed outside the 6 app restarts (15 HTTP 502s
+during them); 21 deploys, 6 rollbacks, 13 limit changes. RSS grew 38 → 41 MiB
+(about 10 MiB/h, under the threshold). It failed on **open fds: 21 → 56**.
+The fd snapshots show why: the daemon keeps the log file of every app process
+it has started open after the process ends (`runtime/process` keeps each
+process's `LogFile` for the daemon's lifetime), one more fd per deploy,
+rollback or restart. The 5-minute soak is too short to cross the threshold;
+the nightly 60-minute soak will fail on it until that is fixed.
 
 ---
 

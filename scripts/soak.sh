@@ -133,6 +133,11 @@ host = "127.0.0.1"
 http_port = $PROXY_HTTP_PORT
 https_port = $PROXY_HTTPS_PORT
 
+# Stay offline: no update checks against api.github.com (ignored by daemons
+# that predate the [update] section).
+[update]
+check = false
+
 $RESOURCES_TOML
 EOF
 
