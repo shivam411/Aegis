@@ -1,0 +1,7 @@
+# CI and release builds use exactly this toolchain, so a new stable Rust
+# release (and its new clippy lints) can't break the build overnight.
+# Bump it deliberately, fixing any new lints in the same change.
+[toolchain]
+channel = "1.99"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
