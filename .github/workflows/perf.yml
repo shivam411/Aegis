@@ -29,6 +29,10 @@ on:
         description: Run the benchmarks too
         default: false
         type: boolean
+      baseline_run_id:
+        description: Compare the benchmarks with this run's results instead of the latest main run
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -53,6 +57,9 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.benchmarks)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read  # only for downloading another run's results (baseline_run_id)
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,6 +79,17 @@ jobs:
           key: bench-baseline-main-${{ github.run_id }}
           restore-keys: bench-baseline-main-
 
+      - name: Use another run's results as the baseline
+        if: github.event_name == 'workflow_dispatch' && inputs.baseline_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.baseline_run_id }}
+        run: |
+          case "$RUN_ID" in *[!0-9]*) echo "baseline_run_id must be a run id"; exit 1 ;; esac
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n "bench-results-$RUN_ID" -D "$RUNNER_TEMP/baseline"
+          mkdir -p bench-baseline
+          cp "$RUNNER_TEMP/baseline/bench-out/bench-results.json" bench-baseline/bench-results.json
+
       - name: Build benchmarks
         run: cargo bench -p aegis-benchmarks --no-run
 
@@ -82,7 +100,7 @@ jobs:
 
       - name: Deploy saga timings (tiny app, real processes)
         env:
-          AEGIS_BENCH_DEPLOYS: '8'
+          AEGIS_BENCH_DEPLOYS: '15'
         run: cargo bench -p aegis-benchmarks --bench deploy_saga
 
       - name: Report and compare with main
