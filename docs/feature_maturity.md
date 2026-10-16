@@ -66,7 +66,7 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | **Outage investigation (`aegis investigate`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
 | **Self-update (`aegis upgrade`)** | 🧪 Experimental | Version comparison unit-tested in [`ui/cli/src/upgrade.rs`](../ui/cli/src/upgrade.rs); the install step is not run in CI |
 | **PM2 & systemd migration (`aegis migrate`)** | 🧪 Experimental | Parser unit tests in [`ui/cli/src/migrate.rs`](../ui/cli/src/migrate.rs); not checked against real PM2/systemd setups |
-| **Terminal UI (`aegis-tui`)** | 🧪 Experimental | Prints daemon status and streams events. A full `ratatui` dashboard is planned ([roadmap](roadmap_web_control_plane.md) Phase 6). |
+| **Terminal UI (`aegis-tui`)** | 🧪 Experimental | `ratatui` dashboard over the local gRPC API: apps table, app view (releases, deployments, live logs), live event stream, and confirmed start/stop/restart/deploy/rollback actions ([roadmap](roadmap_web_control_plane.md) Phase 6). The state reducer, filters and screen rendering (`TestBackend`) have unit tests in CI. Two opt-in tests (`cargo test -p aegis-tui -- --ignored` with `AEGIS_TUI_LIVE_ADDR` set) drive its gRPC worker against a real daemon, including a reconnect after a daemon restart; they are not in CI, and no test drives the interactive terminal, so it stays Experimental. |
 
 ### Not implemented yet
 

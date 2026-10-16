@@ -82,6 +82,18 @@ message ProjectInfo {
   string created_at = 8;
   // Present once the project has been deployed.
   optional ProcessInfo process = 9;
+  // Latest resource sample, while the app runs. Older daemons leave it unset.
+  optional ResourceUsage usage = 10;
+}
+
+message ResourceUsage {
+  // CPU used since the previous sample, in cores (1.0 = one full core).
+  double cpu_cores = 1;
+  uint64 memory_bytes = 2;
+  optional double cpu_limit_cores = 3;
+  optional uint64 memory_limit_bytes = 4;
+  // Unix milliseconds when the sample was taken.
+  int64 sampled_at = 5;
 }
 
 message DeployRequest {

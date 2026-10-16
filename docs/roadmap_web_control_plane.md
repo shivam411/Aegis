@@ -274,7 +274,7 @@ This is the "drag CPU and memory" feature.
 - Multiple users with roles (viewer, deployer, admin).
 - Backup and restore of `aegis.db` and releases from the UI; scheduled backups.
 - Self-update: "a new Aegis version is available → upgrade" (building on `aegis upgrade`).
-- A real `ratatui` TUI on the same read API as the web UI.
+- ✅ *(first cut, experimental)* A real `ratatui` TUI. `aegis-tui` talks to the daemon over the local gRPC API, like the CLI (the web UI's REST API exposes the same control-plane queries). Screens: an apps table (status, live release, uptime, restarts, CPU/memory, PID), an app view (releases, recent deployments, live log tail with follow/pause/scroll/filter), a live event stream with a type filter, and a help overlay. Start/stop/restart, deploy and rollback (to the previous or a selected release) ask for confirmation first. It reconnects with backoff and shows a "disconnected" banner instead of exiting. `ProjectInfo` gained an optional `usage` field (CPU/memory sample) for the CPU and memory columns; older daemons leave it unset. Evidence: reducer, filter and worker unit tests, plus `TestBackend` render tests, in `ui/tui`. Two opt-in `--ignored` tests run the gRPC worker against a real daemon (including a reconnect after a restart). They are not in CI, and nothing tests the interactive terminal end to end.
 - Docker runtime (`integrations/docker`): container apps with `docker update --cpus/--memory` for the same sliders.
 - Later: multi-node fleet. A remote node agent reuses the `ControlPlane` API, and the dashboard gets a server selector.
 
