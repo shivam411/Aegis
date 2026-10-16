@@ -129,17 +129,15 @@ pub fn commit(target: &Path, staged: &Path) -> anyhow::Result<PathBuf> {
     let _ = fs::remove_file(&previous);
     #[cfg(unix)]
     {
-        if target.exists() {
-            if fs::hard_link(target, &previous).is_err() {
-                fs::copy(target, &previous).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Cannot keep {} as {}: {}",
-                        target.display(),
-                        previous.display(),
-                        e
-                    )
-                })?;
-            }
+        if target.exists() && fs::hard_link(target, &previous).is_err() {
+            fs::copy(target, &previous).map_err(|e| {
+                anyhow::anyhow!(
+                    "Cannot keep {} as {}: {}",
+                    target.display(),
+                    previous.display(),
+                    e
+                )
+            })?;
         }
         fs::rename(staged, target)
             .map_err(|e| anyhow::anyhow!("Cannot replace {}: {}", target.display(), e))?;
