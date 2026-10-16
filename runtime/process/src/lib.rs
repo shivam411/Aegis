@@ -962,8 +962,18 @@ async fn monitor(
                 let exit_code = match &spec.launcher {
                     Some(launcher) => {
                         launcher.stop(&id, drain).await;
-                        // The attached command exits with the workload.
-                        terminate(&mut child, child_pid, Duration::from_secs(10)).await
+                        // The attached command exits with the workload and
+                        // reports its exit code; signal it only if it hangs.
+                        match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+                            Ok(status) => {
+                                #[cfg(unix)]
+                                signal_group(child_pid, libc::SIGKILL);
+                                status.ok().and_then(|s| s.code())
+                            }
+                            Err(_) => {
+                                terminate(&mut child, child_pid, Duration::from_secs(2)).await
+                            }
+                        }
                     }
                     None => terminate(&mut child, child_pid, drain).await,
                 };
