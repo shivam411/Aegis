@@ -163,9 +163,11 @@ If any stage fails, the pipeline aborts. The live version is never touched.
 | Strategy | Behavior |
 | :--- | :--- |
 | **Immediate** | Direct activation with post-deployment health check |
-| **Rolling** | Batch-based incremental rollout |
-| **BlueGreen** | Parallel environment switching |
+| **Rolling** | Instances replaced a batch at a time behind the built-in proxy; the old set is restored if a new instance fails (`core/control/src/rollout.rs`) |
+| **BlueGreen** | The full new set of instances switched in one step; the old set stays warm for an instant rollback (`core/control/src/rollout.rs`) |
 | **GracefulSwitch** | Isolated build → health check → atomic switch → graceful drain → auto-prune |
+
+Rolling and BlueGreen, and more than one instance per app (`[run] instances`), need the built-in proxy; see [configuration](configuration.md#deployment-strategies-and-instances).
 
 ---
 

@@ -924,7 +924,10 @@ strategy = "GracefulSwitch"
             "[deploy]\nrolling_batch = 0\n",
             "[deploy]\nblue_green_keep_secs = 999999\n",
         ] {
-            assert!(ProjectFile::parse(bad).unwrap().validate().is_err(), "{bad}");
+            assert!(
+                ProjectFile::parse(bad).unwrap().validate().is_err(),
+                "{bad}"
+            );
         }
         assert!(strategy_needs_proxy("BlueGreen"));
         assert!(!strategy_needs_proxy("GracefulSwitch"));

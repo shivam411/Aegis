@@ -797,11 +797,7 @@ async fn run() -> Result<(), anyhow::Error> {
                         None => ("NotDeployed".to_string(), "-".to_string(), "-".to_string()),
                     };
                     if p.instances.len() > 1 {
-                        let up = p
-                            .instances
-                            .iter()
-                            .filter(|i| i.status == "Running")
-                            .count();
+                        let up = p.instances.iter().filter(|i| i.status == "Running").count();
                         status = format!("{}/{} up", up, p.instances.len());
                     }
                     println!(

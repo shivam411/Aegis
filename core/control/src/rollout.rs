@@ -304,6 +304,9 @@ impl ControlPlane {
         number: u32,
         taken: &mut HashSet<u16>,
     ) -> Result<Instance, (Option<ProcessId>, String)> {
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err((None, "The daemon is shutting down".to_string()));
+        }
         let port = self
             .allocate_instance_port(taken)
             .map_err(|e| (None, format!("No free port for a new instance: {}", e)))?;
@@ -335,7 +338,9 @@ impl ControlPlane {
         for instance in instances {
             let (this, config, instance) = (self.clone(), config.clone(), *instance);
             set.spawn(async move {
-                let result = this.wait_healthy(&instance.id, &config, instance.port).await;
+                let result = this
+                    .wait_healthy(&instance.id, &config, instance.port)
+                    .await;
                 (instance, result)
             });
         }
@@ -403,7 +408,12 @@ impl ControlPlane {
             .collect()
     }
 
-    fn release_drain(&self, project: &ProjectState, strategy: &str, fallback: &ResolvedProjectConfig) -> Duration {
+    fn release_drain(
+        &self,
+        project: &ProjectState,
+        strategy: &str,
+        fallback: &ResolvedProjectConfig,
+    ) -> Duration {
         project
             .current_release
             .as_ref()
@@ -941,7 +951,9 @@ impl ControlPlane {
         if strategy_needs_proxy(&strategy) && !self.is_proxied(&project.id) {
             strategy = "GracefulSwitch".into();
         }
-        self.cutover(project, target, &strategy).await.map(|_| false)
+        self.cutover(project, target, &strategy)
+            .await
+            .map(|_| false)
     }
 
     /// Start, stop or restart every instance of a project with several.
@@ -951,7 +963,10 @@ impl ControlPlane {
         key: &str,
         action: crate::ProcessAction,
     ) -> Option<ControlResult<ProcessState>> {
-        if key.parse::<ProcessId>().is_ok_and(|id| self.inner.projection.get_process(&id).is_some()) {
+        if key
+            .parse::<ProcessId>()
+            .is_ok_and(|id| self.inner.projection.get_process(&id).is_some())
+        {
             return None;
         }
         let project = self.resolve_project(key).ok()?;

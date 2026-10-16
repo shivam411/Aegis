@@ -25,13 +25,18 @@ start_command = "npm start"
 timeout_secs = 1800                         # per install/build/test command
 
 [deploy]
-strategy = "GracefulSwitch"                 # or "Immediate"
+strategy = "GracefulSwitch"                 # "Immediate", "Rolling" or "BlueGreen"
 port = 3000                                 # exported to the app as PORT
 health_check_url = "http://127.0.0.1:3000/health"
 health_check_timeout_secs = 30
 drain_timeout_secs = 10
 max_retained_versions = 2
 restart_policy = "always"                   # "always", "on-failure" or "never"
+rolling_batch = 1                           # Rolling: new instances per step
+blue_green_keep_secs = 300                  # BlueGreen: how long the old set stays up
+
+[run]
+instances = 1                               # 1-16; more than 1 needs a domain on the proxy
 
 [env]
 NODE_ENV = "production"
@@ -44,7 +49,10 @@ NODE_ENV = "production"
 | `build.test_command` | None | Runs after build. A non-zero exit code fails the deployment. |
 | `build.start_command` | Detected | Run with `sh -c` in the release directory, in its own process group. |
 | `build.timeout_secs` | `1800` | Each install/build/test command is killed after this long. |
-| `deploy.strategy` | `GracefulSwitch` | `GracefulSwitch` sends SIGTERM and waits up to `drain_timeout_secs`. `Immediate` doesn't wait. For apps with a domain on the built-in proxy, `GracefulSwitch` is zero-downtime (see `[proxy]` below). `Rolling` and `BlueGreen` need several instances per app and aren't supported yet. |
+| `deploy.strategy` | `GracefulSwitch` | `GracefulSwitch` sends SIGTERM and waits up to `drain_timeout_secs`. `Immediate` doesn't wait. For apps with a domain on the built-in proxy, `GracefulSwitch` is zero-downtime (see `[proxy]` below). `Rolling` and `BlueGreen` need a domain on the built-in proxy; see [Deployment strategies](#deployment-strategies-and-instances). `aegis deploy` sends this value; deployments started elsewhere (dashboard, webhook, schedule) use the dashboard's *Default strategy*, else `GracefulSwitch`. Rollbacks use the target release's value. |
+| `deploy.rolling_batch` | `1` | `Rolling`: how many new instances start (and old ones stop) per step, 1-16. |
+| `deploy.blue_green_keep_secs` | `300` | `BlueGreen`: how long the previous release's instances keep running after the switch, as an instant rollback target. `0` stops them right away. At most 86400. |
+| `run.instances` | `1` | Copies of the app to run, 1-16, each with its own `PORT`, log file, restart policy and resource limits. More than 1 needs a domain on the built-in proxy, which spreads requests over them. |
 | `deploy.port` | Detected | Exported as `PORT` unless `[env]` sets `PORT`. Behind the built-in proxy each release gets its own `PORT` instead. |
 | `deploy.health_check_url` | `http://127.0.0.1:<port>/health` | Any HTTP response below 500 counts as healthy. Use `tcp://host:port` for a TCP-only check. With an empty string, the release counts as healthy if its process stays up for 3 seconds. |
 | `deploy.health_check_timeout_secs` | `30` | How long a new release may take to become healthy before it is rolled back. |
@@ -190,6 +198,28 @@ A deployment (or rollback):
 
 If the new release never becomes healthy, it is stopped and the old one goes on serving untouched. Apps without a domain keep the previous behaviour: they use their configured port, and the old process stops before the new one starts. The port of every process is recorded in its events, so routes come back on a daemon restart.
 
+### Deployment strategies and instances
+
+*Experimental.* An app can run several **instances** (`[run] instances = N`, or *Instances* in the dashboard's Settings tab), up to 16. Each instance is a supervised process of the live release with its own `PORT`, its own log file (`<data_dir>/projects/<id>/logs/<process-id>.log`), the app's restart policy, and its own cgroup. **Resource limits apply to each instance on its own**: a 1-core, 512 MiB limit lets three instances use up to 3 cores and 1.5 GiB in total. The app's usage figures are the sum over its instances, and the dashboard lists each instance with its own CPU and memory. Limit changes apply to every running instance at once.
+
+Several instances need the built-in proxy: `[proxy] enabled = true` and a domain mapped to the app. The proxy sends requests to the running instances in turn (round robin). An instance that refuses a connection is skipped for 5 seconds; a request without a body that hit it is retried on another instance, so it doesn't fail.
+
+| Strategy | What a deployment does | Needs the proxy |
+| :--- | :--- | :---: |
+| `GracefulSwitch` (default) | Starts the full new set next to the old one, switches the proxy to it in one step once every new instance is healthy, then drains and stops the old set. | only for more than 1 instance |
+| `Immediate` | Like `GracefulSwitch` behind the proxy, but without draining the old set. Without the proxy, stops the old process before starting the new one. | only for more than 1 instance |
+| `Rolling` | Replaces instances `rolling_batch` at a time: start new ones, wait until they are healthy, add them to the proxy, then take old ones out of the proxy, let them finish their requests (up to `drain_timeout_secs`) and stop them. Each step is recorded (`RolloutStepCompleted`). If a new instance doesn't become healthy, the rollout stops, the old instances already stopped are started again (same ports), the proxy goes back to the old set, and the new instances are drained and stopped. | yes |
+| `BlueGreen` | Starts the full new set, switches the proxy in one step, and keeps the old set running for `blue_green_keep_secs`. A rollback to that release in the window is an instant switch back to the still-running processes; no build or start. The old set is stopped when the window ends, when another release goes live, or when the app is stopped. | yes |
+
+Rolling and BlueGreen (and more than one instance) are refused, with a message saying what is missing, when the dashboard settings are saved, when a deployment is queued with that strategy, and when a release asking for more than one instance is about to go live. A refused deployment leaves the running app alone. Instance counts and strategies take effect with the next deployment; each release keeps the values it was built with (so a rollback restores the instance count of that release).
+
+Other operations on an app with several instances:
+
+- **Restart** restarts one instance at a time: out of the proxy, drain, restart, wait until healthy, back in. The others keep serving. A restart of one process id (`/processes/<id>/restart`) restarts only that instance.
+- **Stop** and **Start** act on every instance.
+- **Daemon restart**: the recorded live set comes back, each instance on its previous port when it is free. If fewer instances are running than the live release asks for (for example after a rollout the daemon didn't finish), new ones are started and recorded (`InstanceSetChanged`). A deployment interrupted by a daemon stop is marked failed, and the instances of the previous release, including any the rollout had already replaced, are started again. A BlueGreen standby does not survive a daemon restart.
+- Scheduled deployments and webhooks use the app's default strategy like any other deployment.
+
 **Ports 80 and 443** need root or `CAP_NET_BIND_SERVICE`; the systemd unit installed by `install.sh --server` grants the capability.
 
 **`[proxy.dashboard]`** puts the dashboard behind the proxy on its own domain, always over HTTPS. It requires `[web] enabled = true` without `[web.tls]` (keep `web.host` on loopback). The domain is added to `web.allowed_hosts`, and the proxy is trusted for `X-Forwarded-For` and Secure cookies.
@@ -240,5 +270,5 @@ The daemon holds `<data_dir>/aegis.lock` (containing its pid) while it runs, so 
 
 - `AEGIS_*` environment variable overrides for individual settings (only `AEGIS_CONFIG` exists today).
 - A global `~/.aegis/config.toml` merged underneath project settings.
-- `Rolling` and `BlueGreen` strategies (several instances per app behind the proxy).
+- Least-connections balancing and active health checks of running instances (the proxy balances round robin and only skips instances that refuse connections).
 - Wildcard domains and the DNS-01 challenge.

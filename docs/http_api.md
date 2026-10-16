@@ -58,7 +58,7 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /projects` | Projects with their live release, schedule and process |
 | `POST /projects` | Register a project: `{"name", "source_dir"?, "repository_url"?, "branch"?, "project_id"?}` |
 | `GET /projects/{project}` | One project |
-| `POST /projects/{project}/deploy` | Queue a deployment (**202**): `{"version"?, "strategy"?, "branch"?, "commit"?, "source_dir"?, "repository_url"?}` |
+| `POST /projects/{project}/deploy` | Queue a deployment (**202**): `{"version"?, "strategy"?, "branch"?, "commit"?, "source_dir"?, "repository_url"?}`. `strategy` is `GracefulSwitch`, `Immediate`, `Rolling` or `BlueGreen`; the last two need a domain on the built-in proxy (else **400**). |
 | `POST /projects/{project}/rollback` | Switch to the previous (or `{"version"}`) release; returns once it's live |
 | `PUT /projects/{project}/schedule` | Daily auto-deploy: `{"hour", "minute"?, "branch"?}` (UTC) |
 | `PUT /projects/{project}/settings` | Override aegis.toml for future deployments: `{"install_command"?, "build_command"?, "test_command"?, "start_command"?, "port"?, "health_check_url"?}`. Omitted fields follow aegis.toml; an empty command skips that stage; an empty `health_check_url` means "healthy while the process stays up". Replaces all previous overrides |

@@ -193,7 +193,13 @@ impl ControlPlane {
                 let release = self.inner.process_release.lock().unwrap().get(&id).cloned();
                 let port = self.inner.process_ports.lock().unwrap().get(&id).copied();
                 let candidate = self.inner.candidates.lock().unwrap().contains(&id);
-                let instance = self.inner.process_instance.lock().unwrap().get(&id).copied();
+                let instance = self
+                    .inner
+                    .process_instance
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .copied();
                 (
                     "ProcessStarted",
                     json!({
@@ -312,54 +318,54 @@ impl ControlPlane {
         process: ProcessState,
         several: bool,
     ) -> bool {
-            if process.desired != "running" || self.inner.supervisor.get(&process.id).is_some() {
+        if process.desired != "running" || self.inner.supervisor.get(&process.id).is_some() {
+            return false;
+        }
+        // Processes from before releases were tracked can't be rebuilt.
+        let Some(version) = process.release_version.clone() else {
+            return false;
+        };
+        let dir = self.switcher(project.id).get_version_dir(&version);
+        if !dir.is_dir() {
+            tracing::warn!(project = %project.name, version = %version, "Release directory missing; not restarting");
+            return false;
+        }
+        if let Some(pid) = process.pid {
+            kill_orphan(pid, &dir).await;
+        }
+        let config = match ResolvedProjectConfig::load(&dir) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(project = %project.name, error = %e, "Invalid aegis.toml in release; not restarting");
                 return false;
             }
-            // Processes from before releases were tracked can't be rebuilt.
-            let Some(version) = process.release_version.clone() else {
-                return false;
-            };
-            let dir = self.switcher(project.id).get_version_dir(&version);
-            if !dir.is_dir() {
-                tracing::warn!(project = %project.name, version = %version, "Release directory missing; not restarting");
-                return false;
-            }
-            if let Some(pid) = process.pid {
-                kill_orphan(pid, &dir).await;
-            }
-            let config = match ResolvedProjectConfig::load(&dir) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(project = %project.name, error = %e, "Invalid aegis.toml in release; not restarting");
-                    return false;
+        };
+        if let Some(number) = process.instance {
+            self.inner
+                .process_instance
+                .lock()
+                .unwrap()
+                .insert(process.id, number);
+        }
+        let port = self.restart_port(&process.id);
+        match self
+            .start_release_process(project.id, process.id, &version, &dir, &config, port)
+            .await
+        {
+            Ok(port) => {
+                if several {
+                    self.sync_routes(project.id);
+                } else {
+                    self.route_upstream(project.id, port);
                 }
-            };
-            if let Some(number) = process.instance {
-                self.inner
-                    .process_instance
-                    .lock()
-                    .unwrap()
-                    .insert(process.id, number);
+                tracing::info!(project = %project.name, version = %version, "Restored app process");
+                true
             }
-            let port = self.restart_port(&process.id);
-            match self
-                .start_release_process(project.id, process.id, &version, &dir, &config, port)
-                .await
-            {
-                Ok(port) => {
-                    if several {
-                        self.sync_routes(project.id);
-                    } else {
-                        self.route_upstream(project.id, port);
-                    }
-                    tracing::info!(project = %project.name, version = %version, "Restored app process");
-                    true
-                }
-                Err(e) => {
-                    tracing::error!(project = %project.name, error = %e, "Failed to restore app process");
-                    false
-                }
+            Err(e) => {
+                tracing::error!(project = %project.name, error = %e, "Failed to restore app process");
+                false
             }
+        }
     }
 
     /// Stops all apps for a daemon shutdown. They are marked as still wanted,

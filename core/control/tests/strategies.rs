@@ -30,7 +30,8 @@ const SERVE: &str = "python -m http.server %PORT% --bind 127.0.0.1";
 #[cfg(unix)]
 const FIRST_ONLY: &str = "if mkdir started.lock 2>/dev/null; then exec python3 -m http.server $PORT --bind 127.0.0.1; else exit 3; fi";
 #[cfg(windows)]
-const FIRST_ONLY: &str = "mkdir started.lock 2>nul && python -m http.server %PORT% --bind 127.0.0.1";
+const FIRST_ONLY: &str =
+    "mkdir started.lock 2>nul && python -m http.server %PORT% --bind 127.0.0.1";
 #[cfg(unix)]
 const BUILD: &str = "echo $AEGIS_RELEASE_VERSION > version.txt";
 #[cfg(windows)]
@@ -330,7 +331,10 @@ async fn rolling_updates_three_instances_without_dropping_requests() {
         sorted(proxy.ingress.upstreams(&project.to_string())),
         sorted(ports.clone())
     );
-    assert!(!ports.contains(&app.configured), "each instance has its own port");
+    assert!(
+        !ports.contains(&app.configured),
+        "each instance has its own port"
+    );
     let numbers: Vec<_> = view(control, project)
         .instances
         .iter()
@@ -377,7 +381,12 @@ async fn rolling_updates_three_instances_without_dropping_requests() {
 
     // A release whose second instance never comes up: the rollout stops
     // at step 2 and the old set is restored, with no failed request.
-    write_app(app.src.path(), app.configured, FIRST_ONLY, "[run]\ninstances = 3\n");
+    write_app(
+        app.src.path(),
+        app.configured,
+        FIRST_ONLY,
+        "[run]\ninstances = 3\n",
+    );
     let load = hammer(proxy.port);
     tokio::time::sleep(Duration::from_millis(300)).await;
     let d3 = deploy(&app, "r3", Some("Rolling")).await;
@@ -402,7 +411,10 @@ async fn rolling_updates_three_instances_without_dropping_requests() {
     let aborted = events_of(control, project, "RolloutAborted").await;
     assert_eq!(aborted.len(), 1);
     assert_eq!(aborted[0]["step"], 2);
-    assert_eq!(aborted[0]["restored_instances"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        aborted[0]["restored_instances"].as_array().unwrap().len(),
+        3
+    );
     assert_eq!(serving(proxy.port).await.as_deref(), Some("r2"));
     // Only the restored set (and nothing of r3) runs.
     let all_running = control
@@ -411,7 +423,12 @@ async fn rolling_updates_three_instances_without_dropping_requests() {
         .filter(|p| p.status == "Running")
         .count();
     assert_eq!(all_running, 3);
-    write_app(app.src.path(), app.configured, SERVE, "[run]\ninstances = 3\n");
+    write_app(
+        app.src.path(),
+        app.configured,
+        SERVE,
+        "[run]\ninstances = 3\n",
+    );
 
     // Restarting the app restarts one instance at a time.
     let pids: Vec<_> = view(control, project)
@@ -469,12 +486,83 @@ async fn rolling_updates_three_instances_without_dropping_requests() {
 }
 
 #[tokio::test]
+async fn a_rollout_interrupted_by_a_daemon_stop_comes_back_as_the_old_set() {
+    let app = app("[run]\ninstances = 3\n").await;
+    let (control, project) = (&app.control, app.project);
+    assert_eq!(deploy(&app, "r1", None).await.status, "Success");
+    let old: HashSet<_> = running(control, project).iter().map(|r| r.0).collect();
+    assert_eq!(old.len(), 3);
+
+    // Stop the daemon after the first rolling step.
+    let id = control
+        .queue_deployment(DeployRequest {
+            project_id: project,
+            version: Some("r2".into()),
+            strategy: Some("Rolling".into()),
+            trigger: "test".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut stepped = false;
+    for _ in 0..600 {
+        if !events_of(control, project, "RolloutStepCompleted")
+            .await
+            .is_empty()
+        {
+            stepped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(stepped, "the rollout never completed a step");
+    control.shutdown().await;
+    let interrupted = wait_deployment(control, id).await;
+    assert_ne!(interrupted.status, "Success", "{interrupted:?}");
+
+    // On boot, the recorded live set (all of r1, including the instance
+    // the rollout had already replaced) comes back.
+    let App {
+        store, data, proxy, ..
+    } = app;
+    drop(proxy);
+    let control = new_control(&store, data.path()).await;
+    let proxy = start_proxy(&control, &data.path().join("certs")).await;
+    assert_eq!(control.recover().await, 3);
+    let back = running(&control, project);
+    assert_eq!(back.len(), 3, "{back:?}");
+    assert!(back.iter().all(|(_, v, _)| v == "r1"), "{back:?}");
+    assert_eq!(back.iter().map(|r| r.0).collect::<HashSet<_>>(), old);
+    assert_eq!(serving(proxy.port).await.as_deref(), Some("r1"));
+    // Depending on when the stop came, the rollout either saw it between
+    // steps and put the old set back (RolledBack) or lost its new instance
+    // (Failed); it never went live.
+    let after = control.get_deployment(&id).unwrap();
+    assert!(
+        matches!(after.status.as_str(), "Failed" | "RolledBack"),
+        "{after:?}"
+    );
+    assert_eq!(
+        control
+            .resolve_project("web")
+            .unwrap()
+            .current_release
+            .as_deref(),
+        Some("r1")
+    );
+    control.shutdown().await;
+}
+
+#[tokio::test]
 async fn blue_green_keeps_the_old_set_for_an_instant_rollback() {
     // `extra` goes at the end of [deploy].
     let app = app("blue_green_keep_secs = 120\n[run]\ninstances = 2\n").await;
     let (control, project, proxy) = (&app.control, app.project, &app.proxy);
 
-    assert_eq!(deploy(&app, "r1", Some("BlueGreen")).await.status, "Success");
+    assert_eq!(
+        deploy(&app, "r1", Some("BlueGreen")).await.status,
+        "Success"
+    );
     let blue = running(control, project);
     assert_eq!(blue.len(), 2);
 
@@ -544,7 +632,10 @@ async fn blue_green_keeps_the_old_set_for_an_instant_rollback() {
         SERVE,
         "blue_green_keep_secs = 1\n[run]\ninstances = 2\n",
     );
-    assert_eq!(deploy(&app, "r3", Some("BlueGreen")).await.status, "Success");
+    assert_eq!(
+        deploy(&app, "r3", Some("BlueGreen")).await.status,
+        "Success"
+    );
     let previous: Vec<_> = live.iter().map(|l| l.0).collect();
     let mut stopped = Vec::new();
     for _ in 0..100 {

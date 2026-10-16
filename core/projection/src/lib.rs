@@ -1098,7 +1098,10 @@ mod tests {
         for (i, id) in set.iter().enumerate() {
             engine.apply_event(&started(*id, true, i as u32 + 1));
         }
-        assert_eq!(engine.get_project(&proj).unwrap().current_process, Some(single));
+        assert_eq!(
+            engine.get_project(&proj).unwrap().current_process,
+            Some(single)
+        );
         engine.apply_event(&ev(
             "ReleasePromoted",
             serde_json::json!({"project_id": p, "release_id": ReleaseId::new().to_string(), "version": "r2", "process_id": set[0].to_string(),
