@@ -20,7 +20,24 @@ Aegis builds and runs code. Anyone who can call its deploy API can run programs 
 - Sessions end after `web.session_idle_minutes` of inactivity (default 120) or `web.session_max_hours` after sign-in (default 24), whichever comes first. Changing or resetting the password ends every session.
 - **CSRF:** requests that change state with a session cookie must send the session's token in `X-CSRF-Token`. The token is returned by login and by `GET /api/v1/auth/session`. Those requests must also be `Content-Type: application/json`, which browsers can't send cross-site without a preflight, and Aegis never grants one.
 - **Throttling:** after 5 failed sign-ins from one client address within 15 minutes, that address is locked out for 15 minutes. After 20 failures for one username from any mix of addresses, the username is locked for 15 minutes. Locked attempts get `429` with `Retry-After`. The per-username limit is higher so a single attacker can't lock you out. Each attempt is counted *before* the password is checked, so parallel requests can't slip past the limit. At most 4 password checks run at once, which bounds the memory Argon2 can use. Failed attempts are recorded as `UserLoginFailed` events, never with the password, and with the username only if that account exists.
-- Lost the password? On the server run `sudo -u aegis AEGIS_CONFIG=/etc/aegis/aegis.toml aegis-daemon admin reset-password` (add `--stdin` to choose one).
+- Lost the password? On the server run `sudo -u aegis AEGIS_CONFIG=/etc/aegis/aegis.toml aegis-daemon admin reset-password` (add `--user NAME` for another account, `--stdin` to choose one).
+
+### Users and roles
+
+Each person signs in with their own account, so the audit log records who did what (`actor` = `user:<name>`). Every account has one role; each includes the ones before it:
+
+| Role | Can |
+| :--- | :--- |
+| **viewer** | Read everything except credentials: apps, releases, deployments, logs, events, metrics, domains. View the `aegis.toml` an app would get. Change their own password. |
+| **deployer** | Also deploy, roll back, and start, stop or restart apps. |
+| **admin** | Everything: create apps, change settings, variables, secrets, domains, schedules, webhooks and limits; manage API tokens, users and backups. |
+
+- Admins manage users in the dashboard (**Account → Users**) or with `GET/POST /api/v1/users`, `PUT/DELETE /api/v1/users/{name}`. New users and admin password resets get a random password that is shown once.
+- A role change applies to the user's open sessions immediately. A password reset or deletion signs them out.
+- There is always at least one admin: the last admin can't be demoted or deleted, and nobody can delete their own account.
+- On the server: `aegis-daemon admin create-user --name ana --role deployer`, `admin set-role --name ana --role admin` (e.g. to regain an admin) and `admin list-users`.
+- Roles are enforced by the server on every request; the dashboard only hides controls a role can't use.
+- Accounts that existed before roles were added (the original `admin`) are admins.
 
 ### API tokens
 

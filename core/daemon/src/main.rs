@@ -1,7 +1,7 @@
 mod service;
 
 use aegis_api::aegis::aegis_daemon_server::AegisDaemonServer;
-use aegis_auth::{AuthConfig, AuthStore, TokenScope, ADMIN_USER};
+use aegis_auth::{AuthConfig, AuthStore, Role, TokenScope, ADMIN_USER};
 use aegis_config::Config;
 use aegis_control::{ControlPlane, ControlSettings};
 use aegis_event_store::EventStore;
@@ -99,9 +99,15 @@ async fn shutdown_signal() {
 const USAGE: &str = "Usage:
   aegis-daemon [run]                     Start the daemon
   aegis-daemon check-config              Validate the configuration and exit
-  aegis-daemon admin reset-password [--stdin]
-                                         Set a new admin password (random, or read from stdin)
-                                         and sign out all sessions
+  aegis-daemon admin reset-password [--user NAME] [--stdin]
+                                         Set a new password (random, or read from stdin) for
+                                         NAME (default: admin) and sign out their sessions
+  aegis-daemon admin create-user --name NAME [--role viewer|deployer|admin] [--stdin]
+                                         Create a user (default role: viewer) with a random
+                                         password, or one read from stdin
+  aegis-daemon admin set-role --name NAME --role viewer|deployer|admin
+                                         Change a user's role (e.g. to regain an admin)
+  aegis-daemon admin list-users          List users and their roles
   aegis-daemon admin create-token --name NAME [--scope read|deploy]
                                          Create an API token for automation
 
@@ -361,32 +367,100 @@ async fn admin(config: &Config, args: &[&str]) -> Result<(), anyhow::Error> {
     let store = EventStore::new(pool);
     match args {
         ["reset-password", flags @ ..] => {
-            let password = if flags.contains(&"--stdin") {
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line)?;
-                line.trim_end_matches(['\r', '\n']).to_string()
-            } else {
-                let mut bytes = [0u8; 18];
-                use rand_core::RngCore;
-                rand_core::OsRng.fill_bytes(&mut bytes);
-                bytes.iter().map(|b| format!("{:02x}", b)).collect()
-            };
-            auth.set_password(ADMIN_USER, &password).await?;
+            let mut user = ADMIN_USER.to_string();
+            let mut it = flags.iter();
+            while let Some(flag) = it.next() {
+                match *flag {
+                    "--user" => {
+                        user = it
+                            .next()
+                            .ok_or_else(|| anyhow::anyhow!("--user needs a name"))?
+                            .to_string()
+                    }
+                    "--stdin" => {}
+                    other => anyhow::bail!("Unknown flag {}\n\n{}", other, USAGE),
+                }
+            }
+            if user != ADMIN_USER && !auth.user_exists(&user).await? {
+                anyhow::bail!("No user named '{}'", user);
+            }
+            let stdin = flags.contains(&"--stdin");
+            let password = new_password(stdin)?;
+            auth.set_password(&user, &password).await?;
             store
                 .append_event(
                     "PasswordReset",
-                    serde_json::json!({"username": ADMIN_USER, "actor": "local-admin"}),
+                    serde_json::json!({"username": user, "actor": "local-admin"}),
                 )
                 .await?;
-            let _ = std::fs::remove_file(initial_password_path(config));
-            if flags.contains(&"--stdin") {
+            if user == ADMIN_USER {
+                let _ = std::fs::remove_file(initial_password_path(config));
+            }
+            if stdin {
                 println!(
-                    "Password for '{}' updated. All sessions were signed out.",
-                    ADMIN_USER
+                    "Password for '{}' updated. Their sessions were signed out.",
+                    user
                 );
             } else {
-                println!("New password for '{}': {}", ADMIN_USER, password);
-                println!("All sessions were signed out.");
+                println!("New password for '{}': {}", user, password);
+                println!("Their sessions were signed out.");
+            }
+            Ok(())
+        }
+        ["create-user", flags @ ..] => {
+            let (name, role) = name_and_role(flags, Some(Role::Viewer))?;
+            let stdin = flags.contains(&"--stdin");
+            let password = new_password(stdin)?;
+            let user = auth
+                .create_user(&name, &password, role)
+                .await?
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            store
+                .append_event(
+                    "UserCreated",
+                    serde_json::json!({"username": user.username, "role": role.as_str(),
+                                       "actor": "local-admin"}),
+                )
+                .await?;
+            if stdin {
+                println!("Created '{}' ({}).", user.username, role.as_str());
+            } else {
+                println!(
+                    "Created '{}' ({}). Password: {}",
+                    user.username,
+                    role.as_str(),
+                    password
+                );
+            }
+            Ok(())
+        }
+        ["set-role", flags @ ..] => {
+            let (name, role) = name_and_role(flags, None)?;
+            let before = auth
+                .user(&name)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("No user named '{}'", name))?;
+            auth.set_role(&name, role)
+                .await?
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            store
+                .append_event(
+                    "UserRoleChanged",
+                    serde_json::json!({"username": name, "from": before.role.as_str(),
+                                       "to": role.as_str(), "actor": "local-admin"}),
+                )
+                .await?;
+            println!("'{}' is now {}.", name, role.as_str());
+            Ok(())
+        }
+        ["list-users"] => {
+            for user in auth.list_users().await? {
+                println!(
+                    "{:<24} {:<9} created {}",
+                    user.username,
+                    user.role.as_str(),
+                    user.created_at
+                );
             }
             Ok(())
         }
@@ -421,6 +495,45 @@ async fn admin(config: &Config, args: &[&str]) -> Result<(), anyhow::Error> {
         }
         _ => anyhow::bail!("Unknown admin command\n\n{}", USAGE),
     }
+}
+
+/// A password from stdin, or a random one.
+fn new_password(stdin: bool) -> Result<String, anyhow::Error> {
+    if stdin {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        return Ok(line.trim_end_matches(['\r', '\n']).to_string());
+    }
+    let mut bytes = [0u8; 18];
+    use rand_core::RngCore;
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+/// Parses `--name NAME --role ROLE` (ignoring `--stdin`).
+fn name_and_role(
+    flags: &[&str],
+    default_role: Option<Role>,
+) -> Result<(String, Role), anyhow::Error> {
+    let mut name = None;
+    let mut role = default_role;
+    let mut it = flags.iter();
+    while let Some(flag) = it.next() {
+        match *flag {
+            "--name" => name = it.next().map(|s| s.to_string()),
+            "--role" => {
+                role =
+                    Some(it.next().and_then(|s| Role::parse(s)).ok_or_else(|| {
+                        anyhow::anyhow!("--role must be viewer, deployer or admin")
+                    })?)
+            }
+            "--stdin" => {}
+            other => anyhow::bail!("Unknown flag {}\n\n{}", other, USAGE),
+        }
+    }
+    let name = name.ok_or_else(|| anyhow::anyhow!("--name is required"))?;
+    let role = role.ok_or_else(|| anyhow::anyhow!("--role is required"))?;
+    Ok((name, role))
 }
 
 async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {

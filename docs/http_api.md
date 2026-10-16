@@ -36,7 +36,7 @@ Every `/api/v1` route except sign-in requires one of:
   curl -H "Authorization: Bearer aegis_…" "$API/projects"
   ```
 
-The first admin password is in `<data_dir>/initial-admin-password`. Scopes, expiry, throttling and everything else are described in [security.md](security.md).
+The first admin password is in `<data_dir>/initial-admin-password`. Users have a role (`viewer`, `deployer` or `admin`; returned as `role` by login and `GET /auth/session`): viewers read, deployers also deploy, roll back and start/stop/restart, and admins change everything else. A request beyond the user's role gets **403**. Roles, scopes, expiry, throttling and everything else are described in [security.md](security.md).
 
 Requests that change state must also send `Content-Type: application/json` (an empty `{}` body is fine), and the `Host` header must be a loopback name or one listed in `web.allowed_hosts`.
 
@@ -82,7 +82,9 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `POST /auth/logout` | End the session |
 | `GET /auth/session` | Who is calling; the CSRF token for sessions |
 | `POST /auth/password` | `{"current_password", "new_password"}`; ends all sessions (users only) |
-| `GET /tokens` · `POST /tokens` · `DELETE /tokens/{id}` | List, create (`{"name", "scope": "read"\|"deploy"}`; shown once) and revoke API tokens (users only) |
+| `GET /tokens` · `POST /tokens` · `DELETE /tokens/{id}` | List, create (`{"name", "scope": "read"\|"deploy"}`; shown once) and revoke API tokens (admins only) |
+| `GET /users` · `POST /users` | List users; create one (**201**): `{"username", "password", "role"}` (admins only) |
+| `PUT /users/{name}` · `DELETE /users/{name}` | Change `role` and/or set a new `password` (signs them out); delete (**204**). The last admin can't be demoted or deleted; you can't delete yourself (**409**). Admins only |
 | `POST /projects/{project}/webhook` | Create or replace the GitHub webhook secret (users only; shown once) |
 
 Outside `/api/v1`:

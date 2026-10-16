@@ -28,7 +28,7 @@ An operator-focused summary of the Aegis roadmap. The detailed, phased plan is [
 ---
 
 ## 🟡 NEXT (Phase 6 — Operations polish)
-- **Multiple users and roles:** viewer, deployer, admin.
+- ✅ **Multiple users and roles:** viewer, deployer, admin, with every action in the audit log under the user who did it.
 - **Backup and restore** of the database and releases from the UI, with scheduled backups.
 - **Self-update** from the dashboard.
 - **Terminal UI:** a real `ratatui` dashboard on the same API as the web UI.

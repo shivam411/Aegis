@@ -566,3 +566,13 @@ pre.diff span { display: block; }
 pre.diff .add { background: var(--ok-soft); color: var(--ok); }
 pre.diff .del { background: var(--bad-soft); color: var(--bad); }
 ul.deliveries { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+
+/* ------------------------------------------------------------------ */
+/* Roles: hide controls the signed-in user can't use (the server       */
+/* refuses them anyway).                                               */
+/* ------------------------------------------------------------------ */
+
+body[data-role="viewer"] :is([data-action="deploy"], [data-action="rollback"],
+  [data-action="start"], [data-action="stop"], [data-action="restart"]),
+body:not([data-role="admin"]) [data-requires="admin"] { display: none; }
+fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
