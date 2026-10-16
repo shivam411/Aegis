@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phases 0–4 complete · Phase 5 in progress (domains and reverse proxy done) · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phases 0–5 complete · Phase 6 next · **Releases:** `v0.5.0` (web MVP), `v0.6.0` (resource control), `v0.7.0` (self-serve ops)
 
 ---
 
@@ -255,7 +255,7 @@ This is the "drag CPU and memory" feature.
 
 **Done when:** on a VPS, dragging the memory slider on a running app changes `memory.max` within 1 s without a restart; a test app that exceeds it gets OOM-killed, restarted by the supervisor, and the event shows in the UI; the CPU limit visibly caps a busy-loop app's CPU % on the chart.
 
-### Phase 5 — App configuration from the UI *(~2–3 weeks)*
+### Phase 5 — App configuration from the UI ✅ *done* → **v0.7.0**
 
 - ✅ **Environment variables and secrets:** `core/secrets` seals values with ChaCha20-Poly1305 under a key in `<data_dir>/secrets.key` (0600, outside the database), bound to their project and name. Secrets are write-only in the API and UI, injected when the process starts (never written to a release or an event), and a restart picks up changes; the UI offers it. Plain variables are dashboard settings, merged over `[env]` and written into each release.
 - **Domains and reverse proxy** ✅ *done*. Delivered:
@@ -327,4 +327,4 @@ memory_mb = 512
 | **M-API** ✅ | 1 + 2 | Secure HTTP API reachable on the VPS |
 | **v0.5.0 — Web MVP** ✅ | 3 | Manage all apps from the browser |
 | **v0.6.0 — Resource Control** ✅ | 4 | Live CPU/memory monitoring and slider limits |
-| **v0.7.0 — Self-serve Ops** | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |
+| **v0.7.0 — Self-serve Ops** ✅ | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |
