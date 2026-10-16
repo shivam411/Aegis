@@ -35,6 +35,10 @@ on:
         description: Compare the benchmarks with this run's results instead of the latest main run
         default: ''
         type: string
+      compare_ref:
+        description: Benchmark this branch, tag or commit first on the same runner and compare with it
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -64,7 +68,9 @@ jobs:
       actions: read  # only for downloading another run's results (baseline_run_id)
     env:
       AEGIS_BENCH_DEPLOYS: '15'
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      # What to benchmark first on the same runner: a PR's base commit, or
+      # compare_ref when started by hand.
+      BASE_REF: ${{ github.event.pull_request.base.sha || inputs.compare_ref }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,12 +103,15 @@ jobs:
           mkdir -p bench-baseline
           cp "$RUNNER_TEMP/baseline/bench-out/bench-results.json" bench-baseline/bench-results.json
 
-      - name: Benchmarks of the PR's base commit (same runner)
-        if: github.event_name == 'pull_request'
-        # A broken base shouldn't hide the PR's own numbers.
+      - name: Benchmarks of the base commit (same runner)
+        if: env.BASE_REF != ''
+        # A broken base shouldn't hide this commit's own numbers.
         continue-on-error: true
         run: |
-          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          base=$(git rev-parse --verify --quiet "origin/$BASE_REF^{commit}" \
+            || git rev-parse --verify "$BASE_REF^{commit}")
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
             scripts/run-benchmarks.sh bench-runs/base "$RUNNER_TEMP/base"
 
@@ -120,7 +129,7 @@ jobs:
           if [ -n "$BASE_SHA" ] && [ -d bench-runs/base/criterion ]; then
             args+=(--baseline-criterion-dir bench-runs/base/criterion
                    --baseline-extra bench-runs/base/deploy_saga.json
-                   --baseline-label "the PR's base commit \`${BASE_SHA:0:10}\`, run just before on the same runner"
+                   --baseline-label "the base commit \`${BASE_SHA:0:10}\`, run just before on the same runner"
                    --threshold "$THRESHOLD" --github-annotations)
             [ "$FAIL_ON_REGRESSION" = true ] && args+=(--fail-on-regression)
             if ! git diff --quiet "$BASE_SHA" HEAD -- benchmarks/; then
@@ -130,7 +139,7 @@ jobs:
             # Another runner: only differences beyond 2x are flagged, never as warnings.
             args+=(--baseline bench-baseline/bench-results.json --threshold 1.0
                    --note "Different runners: GitHub's shared runners differ by up to 2x for the same code, so this comparison is informational. PRs compare against their base commit on one runner.")
-          elif [ -n "$BASE_SHA" ]; then
+          elif [ -n "$BASE_REF" ]; then
             args+=(--note "The base commit's benchmarks didn't run (see the previous step), so there is nothing to compare with.")
           fi
           set +e
