@@ -166,6 +166,14 @@ async function api(method, path, body) {
 
 const enc = encodeURIComponent;
 
+const ROLE_RANK = { viewer: 0, deployer: 1, admin: 2 };
+
+/** Whether the signed-in user has at least `role`. Only hides controls; the
+ * server enforces roles on every request. */
+function can(role) {
+  return (ROLE_RANK[state.session?.role] ?? -1) >= ROLE_RANK[role];
+}
+
 // ----------------------------------------------------------------------
 // Toasts, dialogs, busy buttons
 // ----------------------------------------------------------------------
@@ -548,6 +556,7 @@ async function signOut() {
 
 function startSession(session) {
   state.session = session;
+  document.body.dataset.role = session.role || 'viewer';
   state.csrf = session.csrf_token;
   state.shell = null;
   connectEvents();
@@ -597,7 +606,7 @@ async function overviewPage(main, ctx) {
   const hostEl = h('div', { class: 'grid stats', id: 'host' });
   const appsEl = h('div', { id: 'apps' });
   append(main,
-    pageHeader('Overview', h('a', { class: 'btn primary', href: '#/apps/new' }, '+ New app')),
+    pageHeader('Overview', h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin' }, '+ New app')),
     hostEl,
     h('div', { class: 'section' }, h('h2', {}, 'Apps'), appsEl));
 
@@ -1445,6 +1454,16 @@ function webhookCard(ctx) {
 
 async function settingsTab(body, ctx) {
   const project = ctx.project();
+  if (!can('admin')) {
+    const viewBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'show-config' }, 'View aegis.toml');
+    viewBtn.addEventListener('click', () => showConfigFile(ctx.project(), viewBtn));
+    append(body, h('section', { class: 'card' },
+      h('div', { class: 'card-header' }, h('h2', {}, 'Settings')),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, "Only admins can change an app's build and run settings, variables, secrets, domains, schedule and webhook."),
+        viewBtn)));
+    return;
+  }
   const s = project.settings || {};
   const { inputs, layout } = settingsInputs(s);
   const env = envEditor(s.env, 'env');
@@ -2086,12 +2105,15 @@ async function resourcesTab(body, ctx) {
         : h('div', { class: 'alert warn', 'data-unsupported': '' },
           h('strong', {}, 'Limits are not available on this server. '), caps.reason || '',
           ' Usage is still measured.'),
-      limitRow('CPU', h('div', { class: 'slider' }, cpuRange, cpuValue),
-        h('label', { class: 'small', for: 'cpu-unlimited' }, cpuOff, ' No limit')),
-      limitRow('Memory', h('div', { class: 'slider' }, memRange, memNumber, h('span', { class: 'muted small' }, 'MiB')),
-        h('label', { class: 'small', for: 'mem-unlimited' }, memOff, ' No limit')),
-      h('p', { class: 'muted small' }, `Over the memory limit, the kernel stops the app and Aegis restarts it. The soft limit (90%) makes it reclaim memory first. Host: ${caps.host_cpu_cores} cores, ${fmtBytes(caps.host_memory_bytes)}; apps are promised ${fmtBytes(caps.committed_memory_bytes)} in total.`),
-      caps.pids ? limitRow('Processes', h('div', { class: 'slider' }, pidsInput), h('span', { class: 'muted small' }, 'Max processes and threads')) : null));
+      can('admin') ? null : h('p', { class: 'muted small' }, 'Only admins can change limits.'),
+      // A disabled fieldset disables every control in it, whatever their own state.
+      h('fieldset', { class: 'plain', disabled: !can('admin') },
+        limitRow('CPU', h('div', { class: 'slider' }, cpuRange, cpuValue),
+          h('label', { class: 'small', for: 'cpu-unlimited' }, cpuOff, ' No limit')),
+        limitRow('Memory', h('div', { class: 'slider' }, memRange, memNumber, h('span', { class: 'muted small' }, 'MiB')),
+          h('label', { class: 'small', for: 'mem-unlimited' }, memOff, ' No limit')),
+        caps.pids ? limitRow('Processes', h('div', { class: 'slider' }, pidsInput), h('span', { class: 'muted small' }, 'Max processes and threads')) : null),
+      h('p', { class: 'muted small' }, `Over the memory limit, the kernel stops the app and Aegis restarts it. The soft limit (90%) makes it reclaim memory first. Host: ${caps.host_cpu_cores} cores, ${fmtBytes(caps.host_memory_bytes)}; apps are promised ${fmtBytes(caps.committed_memory_bytes)} in total.`)));
 
   const chartCard = (title, chart) => h('section', { class: 'card' },
     h('div', { class: 'card-header' }, h('h2', {}, title)),
@@ -2549,7 +2571,7 @@ async function accountPage(main, ctx) {
   },
   h('div', { class: 'card-header' }, h('h2', {}, 'Password')),
   h('div', { class: 'card-body' },
-    h('p', { class: 'muted small' }, `Signed in as ${session.name}. Changing the password signs out every session.`),
+    h('p', { class: 'muted small' }, `Signed in as ${session.name} (${session.role || 'viewer'}). Changing the password signs out every session.`),
     h('div', { class: 'field' }, h('label', { for: 'pw-current' }, 'Current password'), current),
     h('div', { class: 'field' }, h('label', { for: 'pw-new' }, 'New password'), next, h('span', { class: 'hint' }, 'At least 12 characters')),
     h('div', { class: 'field' }, h('label', { for: 'pw-confirm' }, 'Repeat new password'), confirm),
@@ -2693,9 +2715,115 @@ async function accountPage(main, ctx) {
       h('div', { class: 'field' }, h('label', { for: 'theme' }, 'Theme'), themeSel),
       shortcutList()));
 
+  const admin = can('admin');
   append(main, pageHeader('Account', h('button', { class: 'btn', type: 'button', onclick: signOut }, 'Sign out')),
-    h('div', { class: 'grid' }, tokenCard, backupCard, h('div', { class: 'grid two' }, pwForm, prefs)));
-  await Promise.all([loadTokens(), loadBackups()]);
+    h('div', { class: 'grid' },
+      admin ? usersCard(ctx, session.name) : null,
+      admin ? tokenCard : null,
+      admin ? backupCard : null,
+      h('div', { class: 'grid two' }, pwForm, prefs)));
+  if (admin) await Promise.all([loadTokens(), loadBackups()]);
+}
+
+const ROLE_HELP = {
+  viewer: 'Viewer: read only',
+  deployer: 'Deployer: also deploy, roll back, start and stop',
+  admin: 'Admin: everything, including settings, secrets and users',
+};
+
+/** 32 hex characters from the browser's CSPRNG. */
+function randomPassword() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function roleSelect(id, value, label) {
+  return h('select', { id, 'aria-label': label },
+    Object.entries(ROLE_HELP).map(([v, text]) => h('option', { value: v, selected: v === value }, text)));
+}
+
+/** Admins: create users, change roles, reset passwords, delete users. */
+function usersCard(ctx, me) {
+  const tbody = h('tbody');
+  const shown = h('div');
+  const showPassword = (username, password) => replace(shown, h('div', { class: 'grid' },
+    h('div', { class: 'alert warn' }, `Give ${username} this password; it is not shown again. They can change it after signing in.`),
+    secretBox(password, `Password for ${username}`)));
+
+  const load = async () => {
+    const users = await api('GET', '/users');
+    if (!ctx.alive()) return;
+    replace(tbody, users.map((u) => {
+      const sel = roleSelect(`role-${u.username}`, u.role, `Role of ${u.username}`);
+      sel.addEventListener('change', async () => {
+        const done = await run(sel, () => api('PUT', `/users/${enc(u.username)}`, { role: sel.value }), `${u.username} is now ${sel.value}`);
+        if (!done) sel.value = u.role;
+        load().catch(() => {});
+      });
+      const resetBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'reset-password' }, 'Reset password');
+      resetBtn.addEventListener('click', async () => {
+        const ok = await confirmDialog({
+          title: `Reset ${u.username}'s password?`,
+          message: 'They are signed out everywhere and need the new password, which is shown once.',
+          confirmLabel: 'Reset password',
+        });
+        if (!ok) return;
+        const password = randomPassword();
+        const done = await run(resetBtn, () => api('PUT', `/users/${enc(u.username)}`, { password }));
+        if (done) showPassword(u.username, password);
+      });
+      const deleteBtn = h('button', { class: 'btn small danger', type: 'button', 'data-action': 'delete-user', disabled: u.username === me }, 'Delete');
+      deleteBtn.addEventListener('click', async () => {
+        const ok = await confirmDialog({
+          title: `Delete ${u.username}?`,
+          message: 'They are signed out and can no longer sign in. Their actions stay in the audit log.',
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
+        const done = await run(deleteBtn, () => api('DELETE', `/users/${enc(u.username)}`), `${u.username} deleted`);
+        if (done !== undefined) load().catch(() => {});
+      });
+      return h('tr', { 'data-user': u.username },
+        h('td', { 'data-label': 'User', class: 'mono' }, u.username, u.username === me ? h('span', { class: 'muted small' }, ' (you)') : null),
+        h('td', { 'data-label': 'Role' }, sel),
+        h('td', { 'data-label': 'Created' }, timeEl(u.created_at)),
+        h('td', { class: 'actions' }, resetBtn, ' ', deleteBtn));
+    }));
+  };
+
+  const nameIn = h('input', { id: 'user-name', class: 'mono', required: true, autocomplete: 'off', placeholder: 'ana', pattern: '[a-z0-9][a-z0-9._\\-]{0,63}' });
+  const roleIn = roleSelect('user-role', 'viewer', 'Role');
+  const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create-user' }, 'Add user');
+  const form = h('form', {
+    class: 'card-body',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const username = nameIn.value.trim();
+      const password = randomPassword();
+      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value }), `${username} added`);
+      if (!created) return;
+      nameIn.value = '';
+      showPassword(username, password);
+      load().catch(() => {});
+    },
+  },
+  h('div', { class: 'row' },
+    h('div', { class: 'field' }, h('label', { for: 'user-name' }, 'Username'), nameIn,
+      h('span', { class: 'hint' }, 'Lowercase letters, digits, . _ -')),
+    h('div', { class: 'field' }, h('label', { for: 'user-role' }, 'Role'), roleIn)),
+  h('div', { class: 'form-actions' }, addBtn),
+  shown);
+
+  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 4 }, errorBox(err)))));
+  return h('section', { class: 'card', id: 'users' },
+    h('div', { class: 'card-header' }, h('h2', {}, 'Users')),
+    h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Everyone signs in with their own account, so the audit log shows who did what. New users get a random password to pass on.')),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['User', 'Role', 'Created', ''].map((t) => h('th', {}, t)))),
+      tbody)),
+    form);
 }
 
 // ----------------------------------------------------------------------
@@ -2742,7 +2870,7 @@ document.addEventListener('keydown', (e) => {
       }, 1200);
       break;
     case 'n':
-      go('/apps/new');
+      if (can('admin')) go('/apps/new');
       break;
     case 't':
       toggleTheme();

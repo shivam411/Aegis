@@ -313,6 +313,8 @@ pub struct SessionDto {
     pub expires_at: Option<i64>,
     /// "read" or "deploy" (tokens only).
     pub scope: Option<String>,
+    /// "viewer", "deployer" or "admin" (users only).
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]

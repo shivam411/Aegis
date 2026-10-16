@@ -134,10 +134,11 @@ aegis-cli stream-events
 For a real-time interactive dashboard:
 
 ```bash
-aegis-tui
+aegis-tui                         # daemon address from ./aegis.toml [daemon]
+aegis-tui --addr 127.0.0.1:50051  # or point it at a daemon explicitly
 ```
 
-The TUI provides live views of projects, deployments, processes, and event streams.
+The TUI (experimental) shows your apps with status, live release, uptime, restarts and CPU/memory. Press `Enter` on an app for its releases, recent deployments and live log, `Tab` to switch panes or to the event stream, `/` to filter, `f` to follow or pause, and `?` for every key. `s`/`x`/`R` start, stop and restart, `d` deploys and `b` rolls back; each asks for confirmation. If the daemon stops, the TUI shows a banner and reconnects on its own.
 
 ---
 

@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | b
 | 🧹 **Automated Version Retention** | Keeps the last N releases on disk (default: 2). Older versions auto-pruned after each deploy. |
 | ⏰ **Scheduled Auto-Deployments** | Background scheduler triggers builds at specific daily hours (e.g. `02:00 AM`). |
 | 🛠️ **Runtime Detection** | Detects Node.js, Rust, Go, Python, Bun, Deno from project files. CI deploys Node.js apps; other stacks aren't deploy-tested yet. |
-| 🖥️ **Terminal Monitor** *(experimental)* | `aegis-tui` shows daemon status and streams live events. A full terminal dashboard is planned. |
+| 🖥️ **Terminal Dashboard** *(experimental)* | `aegis-tui` is a keyboard-driven terminal dashboard: apps with status, uptime, restarts and CPU/memory; releases, deployments and live logs per app; a filterable live event stream; and confirmed start/stop/restart, deploy and rollback. |
 | 🔒 **Event-Sourced Audit Trail** | Every mutation is an immutable domain event. Full replay on startup. |
 | 🔄 **Instant Rollbacks** | Roll back to any retained release without rebuilding from source. |
 | 🎛️ **Live Resource Limits** | Per-app CPU and memory limits with Linux cgroups (v2 or v1), changed from dashboard sliders without restarting the app. Live and 7-day charts, OOM and throttling alerts. |

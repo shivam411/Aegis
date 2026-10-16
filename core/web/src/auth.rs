@@ -13,7 +13,7 @@
 
 use crate::dto::*;
 use crate::{ApiError, ApiJson, ApiResult, AppState};
-use aegis_auth::{constant_time_eq, TokenScope};
+use aegis_auth::{constant_time_eq, Role, TokenScope};
 use aegis_control::{with_actor, ControlError};
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, Path, Request, State};
@@ -31,6 +31,7 @@ const MAX_REMEMBERED_DELIVERIES: usize = 1000;
 pub enum Principal {
     User {
         username: String,
+        role: Role,
         csrf_token: String,
         expires_at: i64,
     },
@@ -113,6 +114,7 @@ async fn authenticate(
                 (
                     Principal::User {
                         username: s.username,
+                        role: s.role,
                         csrf_token: s.csrf_token,
                         expires_at: s.expires_at,
                     },
@@ -130,6 +132,7 @@ fn user_only(path: &str) -> bool {
         .strip_prefix("/api/v1/projects/")
         .and_then(|rest| rest.split('/').nth(1));
     path.starts_with("/api/v1/tokens")
+        || path.starts_with("/api/v1/users")
         || path == "/api/v1/auth/password"
         // Backups hold the secrets key and password hashes.
         || path == "/api/v1/backups"
@@ -142,6 +145,32 @@ fn user_only(path: &str) -> bool {
 fn changes_domains(path: &str) -> bool {
     path.starts_with("/api/v1/projects/")
         && (path.ends_with("/domains") || path.contains("/domains/"))
+}
+
+/// The least role a signed-in user needs for a request. Viewers read,
+/// deployers also deploy, roll back and start/stop/restart apps, and admins
+/// change everything else (projects, settings, secrets, domains, limits,
+/// webhooks, tokens, users, backups).
+pub(crate) fn required_role(method: &Method, path: &str) -> Role {
+    let read = matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
+    let parts: Vec<&str> = path
+        .strip_prefix("/api/v1/")
+        .unwrap_or("")
+        .split('/')
+        .collect();
+    match parts.as_slice() {
+        // Everyone manages their own session and password.
+        ["auth", ..] => Role::Viewer,
+        // Credentials and secret material, even to read.
+        ["users" | "tokens" | "backups", ..] => Role::Admin,
+        ["projects", _, "secrets" | "webhook", ..] => Role::Admin,
+        _ if read => Role::Viewer,
+        // Shows the aegis.toml a settings change would produce; saves nothing.
+        ["projects", _, "settings", "preview"] => Role::Viewer,
+        ["projects", _, "deploy" | "rollback"] => Role::Deployer,
+        ["processes", _, "start" | "stop" | "restart"] => Role::Deployer,
+        _ => Role::Admin,
+    }
 }
 
 pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
@@ -185,7 +214,9 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
                 return ApiError::forbidden("This API token is read-only").into_response();
             }
         }
-        Principal::User { csrf_token, .. } => {
+        Principal::User {
+            csrf_token, role, ..
+        } => {
             let sent = req
                 .headers()
                 .get("x-csrf-token")
@@ -197,6 +228,15 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
                     "csrf",
                     "Missing or wrong X-CSRF-Token header (get it from GET /api/v1/auth/session)",
                 )
+                .into_response();
+            }
+            let needed = required_role(req.method(), &path);
+            if *role < needed {
+                return ApiError::forbidden(format!(
+                    "This needs the {} role; you are a {}",
+                    needed.as_str(),
+                    role.as_str()
+                ))
                 .into_response();
             }
         }
@@ -294,6 +334,13 @@ pub(crate) async fn login(
         return Err(ApiError::unauthenticated("Wrong username or password"));
     }
     st.limiter.record_success(&ip, &username);
+    let role = st
+        .auth
+        .user(&username)
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.role)
+        .unwrap_or(Role::Viewer);
     let session = st
         .auth
         .create_session(&username)
@@ -314,6 +361,7 @@ pub(crate) async fn login(
         csrf_token: Some(session.csrf_token),
         expires_at: Some(session.expires_at),
         scope: None,
+        role: Some(role.as_str().to_string()),
     })
     .into_response();
     res.headers_mut().insert(
@@ -359,6 +407,7 @@ pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> 
     Json(match principal {
         Principal::User {
             username,
+            role,
             csrf_token,
             expires_at,
         } => SessionDto {
@@ -367,6 +416,7 @@ pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> 
             csrf_token: Some(csrf_token),
             expires_at: Some(expires_at),
             scope: None,
+            role: Some(role.as_str().to_string()),
         },
         Principal::Token { name, scope } => SessionDto {
             kind: "token".into(),
@@ -374,6 +424,7 @@ pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> 
             csrf_token: None,
             expires_at: None,
             scope: Some(scope.as_str().to_string()),
+            role: None,
         },
     })
 }
@@ -693,5 +744,69 @@ async fn github_event(
             "ignored",
             Some(format!("Event '{}' is not handled", other)),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roles_needed_per_endpoint() {
+        let need = |m: Method, p: &str| required_role(&m, p);
+        // Reading is for everyone, except credentials and secret material.
+        for p in [
+            "/api/v1/projects",
+            "/api/v1/projects/web/releases",
+            "/api/v1/events/stream",
+            "/api/v1/processes/web/logs",
+            "/api/v1/projects/web/domains",
+        ] {
+            assert_eq!(need(Method::GET, p), Role::Viewer, "{p}");
+        }
+        for p in [
+            "/api/v1/users",
+            "/api/v1/tokens",
+            "/api/v1/backups",
+            "/api/v1/projects/web/secrets",
+            "/api/v1/projects/web/webhook",
+        ] {
+            assert_eq!(need(Method::GET, p), Role::Admin, "{p}");
+        }
+        assert_eq!(need(Method::POST, "/api/v1/auth/logout"), Role::Viewer);
+        assert_eq!(need(Method::POST, "/api/v1/auth/password"), Role::Viewer);
+        assert_eq!(
+            need(Method::POST, "/api/v1/projects/web/settings/preview"),
+            Role::Viewer
+        );
+        // Day-to-day operations.
+        assert_eq!(
+            need(Method::POST, "/api/v1/projects/web/deploy"),
+            Role::Deployer
+        );
+        assert_eq!(
+            need(Method::POST, "/api/v1/projects/web/rollback"),
+            Role::Deployer
+        );
+        for a in ["start", "stop", "restart"] {
+            assert_eq!(
+                need(Method::POST, &format!("/api/v1/processes/web/{a}")),
+                Role::Deployer
+            );
+        }
+        // Everything else that changes state.
+        for (m, p) in [
+            (Method::POST, "/api/v1/projects"),
+            (Method::PUT, "/api/v1/projects/web/settings"),
+            (Method::PUT, "/api/v1/projects/web/resources"),
+            (Method::PUT, "/api/v1/projects/web/schedule"),
+            (Method::POST, "/api/v1/projects/web/domains"),
+            (Method::PUT, "/api/v1/projects/web/secrets/A"),
+            (Method::POST, "/api/v1/users"),
+            (Method::POST, "/api/v1/detect"),
+            (Method::POST, "/api/v1/processes/web/unknown"),
+        ] {
+            assert_eq!(need(m.clone(), p), Role::Admin, "{m} {p}");
+        }
     }
 }

@@ -28,15 +28,27 @@ The Aegis TUI is built using `ratatui` + `crossterm`. It adheres to modern termi
 
 ## 3. Keyboard Navigation Matrix
 
+As implemented in `ui/tui` (the in-app `?` overlay is the source of truth):
+
 | Key Combo | Action Scope | Function |
 | :--- | :--- | :--- |
-| `Tab` / `Shift+Tab` | Global | Cycle through main tabs (`Projects`, `Deployments`, `Logs`, `System`) |
-| `j` / `k` or `↓` / `↑` | List / Table | Move cursor item focus up / down |
-| `Enter` | Selected Resource | Drill down into Resource Graph details (`aegis inspect`) |
-| `r` | Resource Action | Trigger manual restart signal for focused process |
-| `d` | Resource Action | Trigger new manual deployment trigger for focused project |
-| `l` | Resource Action | Switch instantly to live log tail stream for focused process |
-| `q` / `Esc` | Global | Exit TUI application or close modal overlay |
+| `Tab` / `Shift+Tab` | Global | Switch tabs (`Apps`, `Events`); in an app, cycle panes (`Releases`, `Deployments`, `Logs`) |
+| `1` / `2` | Global | Jump to the `Apps` / `Events` tab |
+| `j` / `k` or `↓` / `↑` | List / Table | Move the selection, or scroll a log/event pane |
+| `PgUp` / `PgDn`, `g` / `G` | Log / Events | Page; jump to top / bottom (bottom resumes following) |
+| `Enter` | Apps | Open the app view |
+| `l` | Apps | Open the app view on its live log |
+| `/` | Global | Filter app names, event types (`a,b` = either) or log text |
+| `f` | Log / Events | Follow or pause the tail |
+| `r` | Global | Refresh now (reconnect now while offline) |
+| `s` / `x` / `R` | App | Start / stop / restart, after confirmation |
+| `d` | App | Deploy from the app's configured source, after confirmation |
+| `b` | App | Roll back to the previous release, or to the release selected in `Releases` |
+| `?` | Global | Help overlay |
+| `Esc` | Global | Back, clear the filter, or close a dialog |
+| `q` / `Ctrl+C` | Global | Quit |
+
+`r` refreshes rather than restarts (restart is `R`), so a stray key never touches a running app; every action asks `y`/`n` first.
 
 ---
 

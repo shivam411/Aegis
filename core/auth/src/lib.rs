@@ -1,5 +1,5 @@
-//! Authentication for the HTTP API: the admin account, browser sessions,
-//! API tokens, login throttling and webhook secrets.
+//! Authentication for the HTTP API: user accounts and their roles, browser
+//! sessions, API tokens, login throttling and webhook secrets.
 //!
 //! Secrets are generated from the OS RNG and stored hashed: passwords with
 //! Argon2id, and session ids and API tokens (256 random bits each) with
@@ -77,6 +77,87 @@ impl Default for AuthConfig {
     }
 }
 
+/// What a user may do. Each role includes the ones below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    /// Read-only: dashboards, logs, events.
+    Viewer,
+    /// Also deploy, roll back, and start, stop or restart apps.
+    Deployer,
+    /// Everything, including users, settings, secrets and domains.
+    Admin,
+}
+
+impl Role {
+    pub const ALL: [Role; 3] = [Role::Viewer, Role::Deployer, Role::Admin];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Viewer => "viewer",
+            Self::Deployer => "deployer",
+            Self::Admin => "admin",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "viewer" => Some(Self::Viewer),
+            "deployer" => Some(Self::Deployer),
+            "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+}
+
+/// Usernames: 1-64 characters, lowercase letters, digits, `.`, `_`, `-`,
+/// starting with a letter or digit.
+pub fn validate_username(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let ok = matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+        && name.len() <= 64;
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "'{}' is not a valid username: use 1-64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit",
+            name
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserInfo {
+    pub username: String,
+    pub role: Role,
+    pub created_at: String,
+    pub password_changed_at: String,
+}
+
+/// Why a user change was refused.
+#[derive(Debug, PartialEq)]
+pub enum UserError {
+    Invalid(String),
+    NotFound,
+    Exists,
+    /// The change would leave no admin.
+    LastAdmin,
+}
+
+impl std::fmt::Display for UserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(m) => write!(f, "{}", m),
+            Self::NotFound => write!(f, "No such user"),
+            Self::Exists => write!(f, "A user with that name already exists"),
+            Self::LastAdmin => write!(f, "There must always be at least one admin"),
+        }
+    }
+}
+
+impl std::error::Error for UserError {}
+
 /// What an API token may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenScope {
@@ -114,6 +195,7 @@ pub struct NewSession {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
     pub username: String,
+    pub role: Role,
     pub csrf_token: String,
     pub created_at: i64,
     /// When the session will expire if it stays idle (unix seconds).
@@ -185,7 +267,7 @@ impl AuthStore {
         let hash = hash_blocking(password.clone()).await?;
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO users (username, password_hash, created_at, password_changed_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO users (username, password_hash, created_at, password_changed_at, role) VALUES (?, ?, ?, ?, 'admin')",
         )
         .bind(ADMIN_USER)
         .bind(hash)
@@ -196,8 +278,8 @@ impl AuthStore {
         Ok(Some(password))
     }
 
-    /// Sets a user's password (creating the user if needed) and ends all of
-    /// their sessions.
+    /// Sets a user's password (creating the user if needed: `admin` as an
+    /// admin, anyone else as a viewer) and ends all of their sessions.
     pub async fn set_password(&self, username: &str, password: &str) -> Result<(), anyhow::Error> {
         if password.chars().count() < MIN_PASSWORD_LEN {
             anyhow::bail!("Password must be at least {} characters", MIN_PASSWORD_LEN);
@@ -205,13 +287,18 @@ impl AuthStore {
         let hash = hash_blocking(password.to_string()).await?;
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO users (username, password_hash, created_at, password_changed_at) VALUES (?, ?, ?, ?)
+            "INSERT INTO users (username, password_hash, created_at, password_changed_at, role) VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, password_changed_at = excluded.password_changed_at",
         )
         .bind(username)
         .bind(hash)
         .bind(&now)
         .bind(&now)
+        .bind(if username == ADMIN_USER {
+            Role::Admin.as_str()
+        } else {
+            Role::Viewer.as_str()
+        })
         .execute(&self.pool)
         .await?;
         sqlx::query("DELETE FROM sessions WHERE username = ?")
@@ -281,7 +368,8 @@ impl AuthStore {
     pub async fn session(&self, token: &str) -> Result<Option<Session>, anyhow::Error> {
         let id_hash = sha256_hex(token);
         let Some(row) = sqlx::query(
-            "SELECT username, csrf_token, created_at, last_seen FROM sessions WHERE id_hash = ?",
+            "SELECT s.username, s.csrf_token, s.created_at, s.last_seen, u.role
+             FROM sessions s JOIN users u ON u.username = s.username WHERE s.id_hash = ?",
         )
         .bind(&id_hash)
         .fetch_optional(&self.pool)
@@ -295,6 +383,8 @@ impl AuthStore {
             row.try_get(2)?,
             row.try_get(3)?,
         );
+        // An unknown role (e.g. from a newer version) gets the least access.
+        let role = Role::parse(row.try_get::<&str, _>(4)?).unwrap_or(Role::Viewer);
         let now = now_secs();
         if now >= self.expiry(created_at, last_seen) {
             sqlx::query("DELETE FROM sessions WHERE id_hash = ?")
@@ -314,10 +404,138 @@ impl AuthStore {
         }
         Ok(Some(Session {
             username,
+            role,
             csrf_token,
             created_at,
             expires_at: self.expiry(created_at, last_seen),
         }))
+    }
+
+    // ------------------------------------------------------------------
+    // Users
+    // ------------------------------------------------------------------
+
+    pub async fn list_users(&self) -> Result<Vec<UserInfo>, anyhow::Error> {
+        sqlx::query(
+            "SELECT username, role, created_at, password_changed_at FROM users ORDER BY username",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(UserInfo {
+                username: row.try_get(0)?,
+                role: Role::parse(row.try_get::<&str, _>(1)?).unwrap_or(Role::Viewer),
+                created_at: row.try_get(2)?,
+                password_changed_at: row.try_get(3)?,
+            })
+        })
+        .collect()
+    }
+
+    pub async fn user(&self, username: &str) -> Result<Option<UserInfo>, anyhow::Error> {
+        Ok(self
+            .list_users()
+            .await?
+            .into_iter()
+            .find(|u| u.username == username))
+    }
+
+    /// Creates a user. The outer error is a database failure; the inner one
+    /// says why the request was refused.
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password: &str,
+        role: Role,
+    ) -> Result<Result<UserInfo, UserError>, anyhow::Error> {
+        if let Err(m) = validate_username(username) {
+            return Ok(Err(UserError::Invalid(m)));
+        }
+        if password.chars().count() < MIN_PASSWORD_LEN {
+            return Ok(Err(UserError::Invalid(format!(
+                "Password must be at least {} characters",
+                MIN_PASSWORD_LEN
+            ))));
+        }
+        let hash = hash_blocking(password.to_string()).await?;
+        let now = now_rfc3339();
+        let inserted = sqlx::query(
+            "INSERT INTO users (username, password_hash, created_at, password_changed_at, role)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT(username) DO NOTHING",
+        )
+        .bind(username)
+        .bind(hash)
+        .bind(&now)
+        .bind(&now)
+        .bind(role.as_str())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if inserted == 0 {
+            return Ok(Err(UserError::Exists));
+        }
+        Ok(Ok(UserInfo {
+            username: username.to_string(),
+            role,
+            created_at: now.clone(),
+            password_changed_at: now,
+        }))
+    }
+
+    /// Changes a user's role; their sessions continue with the new role.
+    /// Refuses to demote the last admin.
+    pub async fn set_role(
+        &self,
+        username: &str,
+        role: Role,
+    ) -> Result<Result<(), UserError>, anyhow::Error> {
+        // One statement, so two concurrent demotions can't both pass the check.
+        let changed = sqlx::query(
+            "UPDATE users SET role = ?1 WHERE username = ?2
+             AND (?1 = 'admin' OR role != 'admin'
+                  OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1)",
+        )
+        .bind(role.as_str())
+        .bind(username)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if changed == 1 {
+            return Ok(Ok(()));
+        }
+        Ok(Err(if self.user_exists(username).await? {
+            UserError::LastAdmin
+        } else {
+            UserError::NotFound
+        }))
+    }
+
+    /// Deletes a user and ends their sessions. Refuses to delete the last admin.
+    pub async fn delete_user(
+        &self,
+        username: &str,
+    ) -> Result<Result<(), UserError>, anyhow::Error> {
+        let deleted = sqlx::query(
+            "DELETE FROM users WHERE username = ?1
+             AND (role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1)",
+        )
+        .bind(username)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if deleted == 0 {
+            return Ok(Err(if self.user_exists(username).await? {
+                UserError::LastAdmin
+            } else {
+                UserError::NotFound
+            }));
+        }
+        sqlx::query("DELETE FROM sessions WHERE username = ?")
+            .bind(username)
+            .execute(&self.pool)
+            .await?;
+        Ok(Ok(()))
     }
 
     pub async fn delete_session(&self, token: &str) -> Result<(), anyhow::Error> {
@@ -601,6 +819,134 @@ impl LoginThrottle {
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     a.len() == b.len() && bool::from(a.as_bytes().ct_eq(b.as_bytes()))
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn store() -> AuthStore {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../event_store/migrations")
+            .run(&pool)
+            .await
+            .unwrap();
+        AuthStore::new(pool, AuthConfig::default()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn users_roles_and_the_last_admin() {
+        let auth = store().await;
+        auth.bootstrap_admin().await.unwrap().unwrap();
+        assert_eq!(
+            auth.user(ADMIN_USER).await.unwrap().unwrap().role,
+            Role::Admin
+        );
+
+        let pw = "long-enough-password";
+        let ana = auth
+            .create_user("ana", pw, Role::Deployer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ana.role, Role::Deployer);
+        assert_eq!(
+            auth.create_user("ana", pw, Role::Viewer).await.unwrap(),
+            Err(UserError::Exists)
+        );
+        assert!(matches!(
+            auth.create_user("Bad Name", pw, Role::Viewer)
+                .await
+                .unwrap(),
+            Err(UserError::Invalid(_))
+        ));
+        assert!(matches!(
+            auth.create_user("bob", "short", Role::Viewer)
+                .await
+                .unwrap(),
+            Err(UserError::Invalid(_))
+        ));
+
+        // Sessions carry the current role, including after a change.
+        assert!(auth.verify_login("ana", pw).await.unwrap());
+        let session = auth.create_session("ana").await.unwrap();
+        assert_eq!(
+            auth.session(&session.token).await.unwrap().unwrap().role,
+            Role::Deployer
+        );
+        auth.set_role("ana", Role::Viewer).await.unwrap().unwrap();
+        assert_eq!(
+            auth.session(&session.token).await.unwrap().unwrap().role,
+            Role::Viewer
+        );
+
+        // The only admin can't be demoted or deleted...
+        assert_eq!(
+            auth.set_role(ADMIN_USER, Role::Viewer).await.unwrap(),
+            Err(UserError::LastAdmin)
+        );
+        assert_eq!(
+            auth.delete_user(ADMIN_USER).await.unwrap(),
+            Err(UserError::LastAdmin)
+        );
+        // ...until there is another one.
+        auth.set_role("ana", Role::Admin).await.unwrap().unwrap();
+        auth.set_role(ADMIN_USER, Role::Viewer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            auth.set_role("nobody", Role::Admin).await.unwrap(),
+            Err(UserError::NotFound)
+        );
+
+        auth.delete_user(ADMIN_USER).await.unwrap().unwrap();
+        assert_eq!(
+            auth.delete_user(ADMIN_USER).await.unwrap(),
+            Err(UserError::NotFound)
+        );
+        let names: Vec<_> = auth
+            .list_users()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|u| u.username)
+            .collect();
+        assert_eq!(names, vec!["ana"]);
+        // ana is now the last admin.
+        assert_eq!(
+            auth.delete_user("ana").await.unwrap(),
+            Err(UserError::LastAdmin)
+        );
+
+        // Deleting a user ends their sessions.
+        auth.create_user("eve", pw, Role::Viewer)
+            .await
+            .unwrap()
+            .unwrap();
+        let eve = auth.create_session("eve").await.unwrap();
+        auth.delete_user("eve").await.unwrap().unwrap();
+        assert!(auth.session(&eve.token).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn usernames_and_roles_parse() {
+        for ok in ["a", "ana", "ci-bot", "j.doe_2"] {
+            assert!(validate_username(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "Ana", "-x", "a b", "a/b", &"a".repeat(65)] {
+            assert!(validate_username(bad).is_err(), "{bad}");
+        }
+        for role in Role::ALL {
+            assert_eq!(Role::parse(role.as_str()), Some(role));
+        }
+        assert!(Role::Admin > Role::Deployer && Role::Deployer > Role::Viewer);
+    }
 }
 
 #[cfg(test)]

@@ -234,7 +234,7 @@ test('full lifecycle from the browser', async ({ page }) => {
 test('API tokens, theme, shortcuts and sign-out', async ({ page }) => {
   await login(page);
   await page.getByRole('link', { name: 'Account' }).click();
-  await page.getByLabel('Name').fill('ci');
+  await page.getByLabel('Name', { exact: true }).fill('ci');
   await page.getByLabel('Scope').selectOption('read');
   await page.getByRole('button', { name: 'Create token' }).click();
   const token = await page.locator('[data-secret]').textContent();

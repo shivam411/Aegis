@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phases 0–4 complete · Phase 5 in progress (domains and reverse proxy done) · **Target:** `v0.5.0` (web MVP), `v0.6.0` (resource control)
+**Status:** Phases 0–5 complete · Phase 6 next · **Releases:** `v0.5.0` (web MVP), `v0.6.0` (resource control), `v0.7.0` (self-serve ops)
 
 ---
 
@@ -255,7 +255,7 @@ This is the "drag CPU and memory" feature.
 
 **Done when:** on a VPS, dragging the memory slider on a running app changes `memory.max` within 1 s without a restart; a test app that exceeds it gets OOM-killed, restarted by the supervisor, and the event shows in the UI; the CPU limit visibly caps a busy-loop app's CPU % on the chart.
 
-### Phase 5 — App configuration from the UI *(~2–3 weeks)*
+### Phase 5 — App configuration from the UI ✅ *done* → **v0.7.0**
 
 - ✅ **Environment variables and secrets:** `core/secrets` seals values with ChaCha20-Poly1305 under a key in `<data_dir>/secrets.key` (0600, outside the database), bound to their project and name. Secrets are write-only in the API and UI, injected when the process starts (never written to a release or an event), and a restart picks up changes; the UI offers it. Plain variables are dashboard settings, merged over `[env]` and written into each release.
 - **Domains and reverse proxy** ✅ *done*. Delivered:
@@ -271,10 +271,10 @@ This is the "drag CPU and memory" feature.
 
 ### Phase 6 — Operations polish *(ongoing)*
 
-- Multiple users with roles (viewer, deployer, admin).
+- ✅ **Multiple users with roles:** `viewer` (read), `deployer` (also deploy, roll back, start/stop/restart) and `admin` (everything). Enforced per request by the server (`required_role` in `core/web/src/auth.rs`); role changes apply to open sessions at once; there is always at least one admin. Users are managed under Account → Users, through `/api/v1/users`, or with `aegis-daemon admin create-user|set-role|list-users`. Events: `UserCreated`, `UserRoleChanged`, `UserDeleted`.
 - ✅ Backup and restore of `aegis.db` and releases from the UI; scheduled backups. *Done:* one `.tar.gz` per backup (a `VACUUM INTO` snapshot of the database, `secrets.key`, certificates and, optionally, releases, with a SHA-256 manifest), created from the dashboard (Account → Backups), the API (`/api/v1/backups`, signed-in users only), `aegis-daemon admin backup` or on a `[backup]` schedule, with retention. Restores are offline by design (`aegis-daemon admin restore`, refused while the daemon holds `<data_dir>/aegis.lock`); the dashboard shows the command. See [`disaster_recovery.md`](disaster_recovery.md).
 - Self-update: "a new Aegis version is available → upgrade" (building on `aegis upgrade`).
-- A real `ratatui` TUI on the same read API as the web UI.
+- ✅ *(first cut, experimental)* A real `ratatui` TUI. `aegis-tui` talks to the daemon over the local gRPC API, like the CLI (the web UI's REST API exposes the same control-plane queries). Screens: an apps table (status, live release, uptime, restarts, CPU/memory, PID), an app view (releases, recent deployments, live log tail with follow/pause/scroll/filter), a live event stream with a type filter, and a help overlay. Start/stop/restart, deploy and rollback (to the previous or a selected release) ask for confirmation first. It reconnects with backoff and shows a "disconnected" banner instead of exiting. `ProjectInfo` gained an optional `usage` field (CPU/memory sample) for the CPU and memory columns; older daemons leave it unset. Evidence: reducer, filter and worker unit tests, plus `TestBackend` render tests, in `ui/tui`. Two opt-in `--ignored` tests run the gRPC worker against a real daemon (including a reconnect after a restart). They are not in CI, and nothing tests the interactive terminal end to end.
 - Docker runtime (`integrations/docker`): container apps with `docker update --cpus/--memory` for the same sliders.
 - Later: multi-node fleet. A remote node agent reuses the `ControlPlane` API, and the dashboard gets a server selector.
 
@@ -327,4 +327,4 @@ memory_mb = 512
 | **M-API** ✅ | 1 + 2 | Secure HTTP API reachable on the VPS |
 | **v0.5.0 — Web MVP** ✅ | 3 | Manage all apps from the browser |
 | **v0.6.0 — Resource Control** ✅ | 4 | Live CPU/memory monitoring and slider limits |
-| **v0.7.0 — Self-serve Ops** | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |
+| **v0.7.0 — Self-serve Ops** ✅ | 5 | Env/secrets, domains + TLS, webhooks, schedules in the UI |

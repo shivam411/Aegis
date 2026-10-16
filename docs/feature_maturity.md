@@ -53,6 +53,8 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | Feature | Status | Evidence |
 | :--- | :---: | :--- |
 | **Built-in reverse proxy, domains and HTTPS** (`[proxy]`) | 🟡 Validated | [`runtime/ingress`](../runtime/ingress/) unit and integration tests (routing, headers, streaming, upgrades, HTTPS from files with SNI, ACME challenge), [`core/web/tests/domains.rs`](../core/web/tests/domains.rs). Certificate issuance against a real ACME CA is not tested. |
+| **Secret and plain environment variables** | 🟡 Validated | [`core/secrets`](../core/secrets/src/lib.rs) tests (encryption at rest, key mismatch, slot binding), [`core/web/tests/appconfig.rs`](../core/web/tests/appconfig.rs) (values reach the app, restart applies changes, never returned by the API or written to events/releases) |
+| **aegis.toml diff before saving, webhook status and test delivery** | 🟡 Validated | `appconfig.rs`, Playwright settings step in [`ui-tests/tests/dashboard.spec.js`](../ui-tests/tests/dashboard.spec.js) |
 | **Zero-downtime cutover behind the proxy** | 🟡 Validated | [`core/control/tests/proxy_cutover.rs`](../core/control/tests/proxy_cutover.rs): no failed requests through deploys, a failed deploy, a rollback and a daemon restart |
 
 ### CLI and tools
@@ -66,8 +68,8 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | **Outage investigation (`aegis investigate`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
 | **Self-update (`aegis upgrade`)** | 🧪 Experimental | Version comparison unit-tested in [`ui/cli/src/upgrade.rs`](../ui/cli/src/upgrade.rs); the install step is not run in CI |
 | **PM2 & systemd migration (`aegis migrate`)** | 🧪 Experimental | Parser unit tests in [`ui/cli/src/migrate.rs`](../ui/cli/src/migrate.rs); not checked against real PM2/systemd setups |
-| **Terminal UI (`aegis-tui`)** | 🧪 Experimental | Prints daemon status and streams events. A full `ratatui` dashboard is planned ([roadmap](roadmap_web_control_plane.md) Phase 6). |
+| **Terminal UI (`aegis-tui`)** | 🧪 Experimental | `ratatui` dashboard over the local gRPC API: apps table, app view (releases, deployments, live logs), live event stream, and confirmed start/stop/restart/deploy/rollback actions ([roadmap](roadmap_web_control_plane.md) Phase 6). The state reducer, filters and screen rendering (`TestBackend`) have unit tests in CI. Two opt-in tests (`cargo test -p aegis-tui -- --ignored` with `AEGIS_TUI_LIVE_ADDR` set) drive its gRPC worker against a real daemon, including a reconnect after a daemon restart; they are not in CI, and no test drives the interactive terminal, so it stays Experimental. |
 
 ### Not implemented yet
 
-`core/secrets`, `core/ssh`, `core/state`, `deployment/analytics`, `git/action`, `integrations/github` and `integrations/docker` are stubs. Secrets are planned for [Phase 5](roadmap_web_control_plane.md); Docker and fleet support come later.
+`core/ssh`, `core/state`, `deployment/analytics`, `git/action`, `integrations/github` and `integrations/docker` are stubs. Docker and fleet support come later ([roadmap](roadmap_web_control_plane.md) Phase 6).
