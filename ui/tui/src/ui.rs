@@ -335,11 +335,14 @@ fn render_apps(frame: &mut Frame, area: Rect, app: &App) {
                 .as_ref()
                 .map(|pr| pr.restart_count.to_string())
                 .unwrap_or_else(|| "-".into());
-            let release = if p.current_release.is_empty() {
+            let mut release = if p.current_release.is_empty() {
                 "-".to_string()
             } else {
                 p.current_release.clone()
             };
+            if p.instances.len() > 1 {
+                release = format!("{} ({}x)", release, p.instances.len());
+            }
             Row::new(vec![
                 Cell::from(Span::styled(
                     p.name.clone(),
@@ -456,8 +459,16 @@ fn render_events(
 // ---------------------------------------------------------------------------
 
 fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let info_height = if app
+        .detail_project()
+        .is_some_and(|p| p.instances.len() > 1 || !p.standby_version.is_empty())
+    {
+        6
+    } else {
+        5
+    };
     let [info_area, rest] =
-        Layout::vertical([Constraint::Length(5), Constraint::Min(6)]).areas(area);
+        Layout::vertical([Constraint::Length(info_height), Constraint::Min(6)]).areas(area);
     render_info(frame, info_area, app);
 
     let focus = app.detail.focus();
@@ -562,15 +573,46 @@ fn render_info(frame: &mut Frame, area: Rect, app: &App) {
             theme::muted(),
         )),
     }
+    let mut lines = vec![
+        Line::from(status),
+        Line::from(resources),
+        Line::from(process_line),
+    ];
+    if p.instances.len() > 1 || !p.standby_version.is_empty() {
+        lines.push(Line::from(instances_line(p)));
+    }
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(status),
-            Line::from(resources),
-            Line::from(process_line),
-        ])
-        .block(block(format!(" {} ", p.name), false)),
+        Paragraph::new(lines).block(block(format!(" {} ", p.name), false)),
         area,
     );
+}
+
+/// "Instances: #1 Running :41001  #2 Backoff ..." plus a BlueGreen standby.
+fn instances_line(p: &ProjectInfo) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled("Instances: ", theme::muted())];
+    for (i, instance) in p.instances.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::raw(format!(
+            "#{} ",
+            instance.instance.unwrap_or(i as u32 + 1)
+        )));
+        spans.push(status_span(&instance.status));
+        if let Some(port) = instance.port {
+            spans.push(Span::styled(format!(" :{}", port), theme::muted()));
+        }
+    }
+    if !p.standby_version.is_empty() {
+        spans.push(Span::styled(
+            format!(
+                "   standby {} (instant rollback until {})",
+                p.standby_version, p.standby_until
+            ),
+            theme::muted(),
+        ));
+    }
+    spans
 }
 
 fn render_releases(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
@@ -964,6 +1006,47 @@ mod tests {
         assert!(screen.contains("paused"), "{}", screen);
         assert!(screen.contains("Releases (2)"));
         assert!(screen.contains("Deployments (1)"));
+    }
+
+    #[test]
+    fn detail_screen_lists_instances() {
+        let mut app = app_with_projects();
+        let mut projects = app.projects.clone();
+        let instance = |n: u32, status: &str| aegis_api::aegis::ProcessInfo {
+            id: format!("proc-{}", n),
+            status: status.into(),
+            instance: Some(n),
+            port: Some(41000 + n),
+            ..Default::default()
+        };
+        projects[0].instances = vec![
+            instance(1, "Running"),
+            instance(2, "Running"),
+            instance(3, "Backoff"),
+        ];
+        projects[0].standby_version = "v1".into();
+        let name = projects[0].name.clone();
+        app.update(Msg::Projects(projects));
+        let screen = draw(&app, 140, 30);
+        assert!(screen.contains("(3x)"), "{}", screen);
+        let index = app
+            .filtered_projects()
+            .iter()
+            .position(|p| p.name == name)
+            .unwrap();
+        for _ in 0..index {
+            app.update(key(KeyCode::Down));
+        }
+        app.update(key(KeyCode::Enter));
+        let screen = draw(&app, 140, 30);
+        for expected in ["Instances:", "#1", "#3", ":41002", "Backoff", "standby v1"] {
+            assert!(
+                screen.contains(expected),
+                "missing {:?} in:\n{}",
+                expected,
+                screen
+            );
+        }
     }
 
     #[test]

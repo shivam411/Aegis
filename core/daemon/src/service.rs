@@ -76,6 +76,10 @@ fn process_info(p: ProcessState) -> ProcessInfo {
         command: p.command.unwrap_or_default(),
         last_start: p.last_start.unwrap_or_default(),
         last_exit_code: p.last_exit_code,
+        instance: p.instance,
+        port: p.port.map(u32::from),
+        cpu_cores: None,
+        memory_bytes: None,
     }
 }
 
@@ -98,6 +102,21 @@ fn project_info(view: ProjectView) -> ProjectInfo {
             memory_limit_bytes: s.memory_limit_bytes,
             sampled_at: s.at,
         }),
+        instances: view
+            .instances
+            .into_iter()
+            .map(|i| ProcessInfo {
+                cpu_cores: i.cpu_cores,
+                memory_bytes: i.memory_bytes,
+                ..process_info(i.process)
+            })
+            .collect(),
+        standby_version: view
+            .standby
+            .as_ref()
+            .map(|s| s.version.clone())
+            .unwrap_or_default(),
+        standby_until: view.standby.map(|s| s.until).unwrap_or_default(),
     }
 }
 
@@ -202,6 +221,8 @@ impl DaemonService {
             project,
             process: None,
             usage: None,
+            instances: Vec::new(),
+            standby: None,
         })))
     }
 

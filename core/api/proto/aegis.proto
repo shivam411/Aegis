@@ -84,6 +84,13 @@ message ProjectInfo {
   optional ProcessInfo process = 9;
   // Latest resource sample, while the app runs. Older daemons leave it unset.
   optional ResourceUsage usage = 10;
+  // Every instance serving the live release, in instance order (one for
+  // single-instance apps; `process` is the first). Older daemons send none.
+  repeated ProcessInfo instances = 11;
+  // After a BlueGreen switch: the previous release, still running as an
+  // instant rollback target until `standby_until` (RFC 3339). Empty otherwise.
+  string standby_version = 12;
+  string standby_until = 13;
 }
 
 message ResourceUsage {
@@ -100,6 +107,8 @@ message DeployRequest {
   // Project id or name.
   string project = 1;
   string branch = 2;
+  // GracefulSwitch, Immediate, Rolling or BlueGreen; empty for the
+  // project's default. Rolling and BlueGreen need the built-in proxy.
   string strategy = 3;
   // Copy code from this directory (takes precedence over repository_url).
   string source_dir = 4;
@@ -149,6 +158,13 @@ message ProcessInfo {
   string command = 8;
   string last_start = 9;
   optional int32 last_exit_code = 10;
+  // Instance number (1-based) when the app runs several instances.
+  optional uint32 instance = 11;
+  // The port the process listens on (its PORT).
+  optional uint32 port = 12;
+  // Latest CPU (cores) and memory (bytes) of this process, while it runs.
+  optional double cpu_cores = 13;
+  optional uint64 memory_bytes = 14;
 }
 
 message ConfigureScheduleRequest {

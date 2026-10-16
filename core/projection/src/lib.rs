@@ -1071,6 +1071,84 @@ mod tests {
     }
 
     #[test]
+    fn instance_sets_follow_promotions_restarts_and_recovery() {
+        let engine = ProjectionEngine::new();
+        let proj = ProjectId::new();
+        let p = proj.to_string();
+        engine.apply_event(&ev(
+            "ProjectCreated",
+            serde_json::json!({"project_id": p, "name": "web"}),
+        ));
+        let started = |id: ProcessId, candidate: bool, instance: u32| {
+            ev(
+                "ProcessStarted",
+                serde_json::json!({"process_id": id.to_string(), "project_id": p, "pid": 1,
+                    "release_version": "r1", "candidate": candidate, "instance": instance}),
+            )
+        };
+        // A single process, as before instances existed.
+        let single = ProcessId::new();
+        engine.apply_event(&started(single, false, 1));
+        let project = engine.get_project(&proj).unwrap();
+        assert_eq!(project.current_process, Some(single));
+        assert_eq!(project.live_processes(), vec![single]);
+
+        // Three candidates, then one promotion makes them the live set.
+        let set: Vec<ProcessId> = (0..3).map(|_| ProcessId::new()).collect();
+        for (i, id) in set.iter().enumerate() {
+            engine.apply_event(&started(*id, true, i as u32 + 1));
+        }
+        assert_eq!(engine.get_project(&proj).unwrap().current_process, Some(single));
+        engine.apply_event(&ev(
+            "ReleasePromoted",
+            serde_json::json!({"project_id": p, "release_id": ReleaseId::new().to_string(), "version": "r2", "process_id": set[0].to_string(),
+                "process_ids": set.iter().map(|i| i.to_string()).collect::<Vec<_>>()}),
+        ));
+        let project = engine.get_project(&proj).unwrap();
+        assert_eq!(project.instances, set);
+        assert_eq!(project.current_process, Some(set[0]));
+        assert_eq!(engine.get_process(&set[2]).unwrap().instance, Some(3));
+
+        // An automatic restart of instance 2 doesn't make it the only one.
+        engine.apply_event(&started(set[1], false, 2));
+        assert_eq!(engine.get_project(&proj).unwrap().instances, set);
+
+        // An instance replaced by an unfinished rollout stays wanted...
+        engine.apply_event(&ev(
+            "ProcessStopped",
+            serde_json::json!({"process_id": set[1].to_string(), "project_id": p, "reason": "replaced"}),
+        ));
+        assert_eq!(engine.get_process(&set[1]).unwrap().desired, "running");
+        // ...one the operator stopped does not.
+        engine.apply_event(&ev(
+            "ProcessStopped",
+            serde_json::json!({"process_id": set[2].to_string(), "project_id": p, "reason": "requested"}),
+        ));
+        assert_eq!(engine.get_process(&set[2]).unwrap().desired, "stopped");
+
+        // Recovery records a new set.
+        let fresh = ProcessId::new();
+        engine.apply_event(&ev(
+            "InstanceSetChanged",
+            serde_json::json!({"project_id": p,
+                "process_ids": [set[0].to_string(), set[1].to_string(), fresh.to_string()]}),
+        ));
+        assert_eq!(
+            engine.get_project(&proj).unwrap().instances,
+            vec![set[0], set[1], fresh]
+        );
+
+        // Back to a single-instance promotion.
+        engine.apply_event(&ev(
+            "ReleasePromoted",
+            serde_json::json!({"project_id": p, "release_id": ReleaseId::new().to_string(), "version": "r3", "process_id": single.to_string()}),
+        ));
+        let project = engine.get_project(&proj).unwrap();
+        assert_eq!(project.instances, vec![single]);
+        assert_eq!(project.current_process, Some(single));
+    }
+
+    #[test]
     fn test_projection_engine_replay_and_invalid_json() {
         let engine = ProjectionEngine::new();
         let invalid_event = Event::new("ProjectCreated", "{ invalid_json }");

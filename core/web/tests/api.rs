@@ -147,7 +147,7 @@ async fn projects_schedules_and_validation_errors() {
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("Supported: GracefulSwitch, Immediate"));
+        .contains("built-in proxy"));
     let (status, _) = api
         .call("POST", "/api/v1/projects/ghost/deploy", json!({}))
         .await;
@@ -194,6 +194,11 @@ async fn full_lifecycle_over_http() {
     let (_, project) = api.get("/api/v1/projects/web").await;
     assert_eq!(project["current_release"], "r2");
     assert_eq!(project["process"]["status"], "Running");
+    // A single-instance app lists its one process as its only instance.
+    let instances = project["instances"].as_array().unwrap();
+    assert_eq!(instances.len(), 1, "{project}");
+    assert_eq!(instances[0]["process"]["id"], project["process"]["id"]);
+    assert!(project["standby"].is_null());
     let (_, releases) = api.get("/api/v1/projects/web/releases").await;
     assert_eq!(releases.as_array().unwrap().len(), 2);
     let (_, deployments) = api.get("/api/v1/deployments?project=web").await;
