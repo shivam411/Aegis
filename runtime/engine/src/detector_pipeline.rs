@@ -150,7 +150,9 @@ impl DetectorPipeline {
                 max_retained_versions: Some(2),
                 drain_timeout_secs: None,
                 restart_policy: None,
+                ..Default::default()
             },
+            run: Default::default(),
             env: Default::default(),
         }
     }

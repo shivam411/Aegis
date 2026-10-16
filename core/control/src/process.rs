@@ -31,12 +31,17 @@ impl ProcessAction {
 
 impl ControlPlane {
     /// Starts, stops or restarts a process. `key` is a process id, or a
-    /// project id/name meaning that project's current process.
+    /// project id/name meaning that project's current process (all of its
+    /// instances when it runs several; a restart then goes one instance at
+    /// a time).
     pub async fn process_action(
         &self,
         key: &str,
         action: ProcessAction,
     ) -> ControlResult<ProcessState> {
+        if let Some(result) = self.project_instances_action(key, action).await {
+            return result;
+        }
         let process = self.resolve_process(key)?;
         let id = process.id;
         let lock = self.project_lock(process.project_id);
@@ -47,7 +52,8 @@ impl ControlPlane {
             .projection
             .get_project(&process.project_id)
             .ok_or_else(|| ControlError::NotFound("Process has no project".into()))?;
-        let is_current = project.current_process == Some(id);
+        let is_current = project.live_processes().contains(&id);
+        let several = project.live_processes().len() > 1;
         let release = process.release_version.clone();
         let dir = release
             .as_ref()
@@ -86,7 +92,11 @@ impl ControlPlane {
                     .start_release_process(project.id, id, &release, &dir, &config, port)
                     .await
                     .map_err(ControlError::Internal)?;
-                this.route_upstream(project.id, port);
+                if several {
+                    this.sync_routes(project.id);
+                } else {
+                    this.route_upstream(project.id, port);
+                }
                 Ok(())
             }
         };
@@ -94,6 +104,20 @@ impl ControlPlane {
         let running = self.is_running(&id);
         match action {
             ProcessAction::Stop if running => {
+                if several {
+                    // One instance of several: the others keep serving.
+                    let others: Vec<u16> = project
+                        .live_processes()
+                        .iter()
+                        .filter(|other| **other != id && self.is_running(other))
+                        .filter_map(|other| {
+                            self.inner.process_ports.lock().unwrap().get(other)?.port
+                        })
+                        .collect();
+                    if let Some(ingress) = self.ingress() {
+                        ingress.set_upstreams(&project.id.to_string(), others);
+                    }
+                }
                 self.inner
                     .supervisor
                     .stop(&id, drain, StopReason::Requested)
@@ -169,6 +193,7 @@ impl ControlPlane {
                 let release = self.inner.process_release.lock().unwrap().get(&id).cloned();
                 let port = self.inner.process_ports.lock().unwrap().get(&id).copied();
                 let candidate = self.inner.candidates.lock().unwrap().contains(&id);
+                let instance = self.inner.process_instance.lock().unwrap().get(&id).copied();
                 (
                     "ProcessStarted",
                     json!({
@@ -182,6 +207,7 @@ impl ControlPlane {
                         "port": port.and_then(|p| p.port),
                         "proxied": port.is_some_and(|p| p.proxied),
                         "candidate": candidate,
+                        "instance": instance,
                     }),
                 )
             }
@@ -259,23 +285,44 @@ impl ControlPlane {
 
         let mut restarted = 0;
         for project in self.inner.projection.get_projects() {
-            let Some(process) = project
-                .current_process
-                .and_then(|id| self.inner.projection.get_process(&id))
-            else {
-                continue;
-            };
+            // Every instance of the live release.
+            let processes: Vec<ProcessState> = project
+                .live_processes()
+                .iter()
+                .filter_map(|id| self.inner.projection.get_process(id))
+                .collect();
+            let several = processes.len() > 1;
+            for process in processes {
+                if self.recover_process(&project, process, several).await {
+                    restarted += 1;
+                }
+            }
+            if several || self.is_proxied(&project.id) {
+                restarted += self.top_up_instances(&project).await;
+            }
+        }
+        restarted
+    }
+
+    /// Restarts one recorded process of a project's live release, unless
+    /// its operator stopped it. Returns whether it was started.
+    async fn recover_process(
+        &self,
+        project: &aegis_projection::ProjectState,
+        process: ProcessState,
+        several: bool,
+    ) -> bool {
             if process.desired != "running" || self.inner.supervisor.get(&process.id).is_some() {
-                continue;
+                return false;
             }
             // Processes from before releases were tracked can't be rebuilt.
             let Some(version) = process.release_version.clone() else {
-                continue;
+                return false;
             };
             let dir = self.switcher(project.id).get_version_dir(&version);
             if !dir.is_dir() {
                 tracing::warn!(project = %project.name, version = %version, "Release directory missing; not restarting");
-                continue;
+                return false;
             }
             if let Some(pid) = process.pid {
                 kill_orphan(pid, &dir).await;
@@ -284,25 +331,35 @@ impl ControlPlane {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(project = %project.name, error = %e, "Invalid aegis.toml in release; not restarting");
-                    continue;
+                    return false;
                 }
             };
+            if let Some(number) = process.instance {
+                self.inner
+                    .process_instance
+                    .lock()
+                    .unwrap()
+                    .insert(process.id, number);
+            }
             let port = self.restart_port(&process.id);
             match self
                 .start_release_process(project.id, process.id, &version, &dir, &config, port)
                 .await
             {
                 Ok(port) => {
-                    self.route_upstream(project.id, port);
-                    restarted += 1;
+                    if several {
+                        self.sync_routes(project.id);
+                    } else {
+                        self.route_upstream(project.id, port);
+                    }
                     tracing::info!(project = %project.name, version = %version, "Restored app process");
+                    true
                 }
                 Err(e) => {
-                    tracing::error!(project = %project.name, error = %e, "Failed to restore app process")
+                    tracing::error!(project = %project.name, error = %e, "Failed to restore app process");
+                    false
                 }
             }
-        }
-        restarted
     }
 
     /// Stops all apps for a daemon shutdown. They are marked as still wanted,

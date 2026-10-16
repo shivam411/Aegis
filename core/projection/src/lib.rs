@@ -35,6 +35,23 @@ pub struct ProjectState {
     /// Domains the built-in proxy serves this app on.
     #[serde(default)]
     pub domains: Vec<DomainState>,
+    /// The processes serving the live release, one per instance (in
+    /// instance order). `current_process` is the first of them. Empty for
+    /// projects recorded before instances existed; see
+    /// [`ProjectState::live_processes`].
+    #[serde(default)]
+    pub instances: Vec<ProcessId>,
+}
+
+impl ProjectState {
+    /// The processes serving the live release (all instances).
+    pub fn live_processes(&self) -> Vec<ProcessId> {
+        if self.instances.is_empty() {
+            self.current_process.into_iter().collect()
+        } else {
+            self.instances.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,6 +133,9 @@ pub struct ProcessState {
     /// The port was allocated for the proxy (rather than the configured one).
     #[serde(default)]
     pub proxied: bool,
+    /// Instance number (1-based) when the app runs several instances.
+    #[serde(default)]
+    pub instance: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -156,6 +176,15 @@ fn id_field<T: std::str::FromStr>(payload: &Value, key: &str) -> Option<T> {
 
 fn string_field(payload: &Value, key: &str) -> Option<String> {
     str_field(payload, key).map(str::to_string)
+}
+
+/// A list of ids, e.g. `process_ids`; invalid entries are skipped.
+fn id_list<T: std::str::FromStr>(payload: &Value, key: &str) -> Vec<T> {
+    payload
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()?.parse().ok()).collect())
+        .unwrap_or_default()
 }
 
 /// The deployment an event refers to. Events written before deployment ids
@@ -235,7 +264,11 @@ impl ProjectionEngine {
                             .as_ref()
                             .map(|p| p.resources.clone())
                             .unwrap_or_default(),
-                        domains: previous.map(|p| p.domains).unwrap_or_default(),
+                        domains: previous
+                            .as_ref()
+                            .map(|p| p.domains.clone())
+                            .unwrap_or_default(),
+                        instances: previous.map(|p| p.instances).unwrap_or_default(),
                     },
                 );
             }
@@ -437,10 +470,16 @@ impl ProjectionEngine {
                     r.version.clone()
                 });
                 let process = id_field::<ProcessId>(&payload, "process_id");
+                // Several instances: `process_ids` lists them all.
+                let instances = id_list(&payload, "process_ids");
                 if let Some(project) = st.projects.get_mut(&project_id) {
                     project.current_release = version.or_else(|| string_field(&payload, "version"));
-                    if process.is_some() {
-                        project.current_process = process;
+                    if !instances.is_empty() {
+                        project.current_process = instances.first().copied();
+                        project.instances = instances;
+                    } else if let Some(process) = process {
+                        project.current_process = Some(process);
+                        project.instances = vec![process];
                     }
                 }
             }
@@ -501,16 +540,38 @@ impl ProjectionEngine {
                             .and_then(|v| v.as_bool())
                             .or(previous.as_ref().map(|p| p.proxied))
                             .unwrap_or(false),
+                        instance: payload
+                            .get("instance")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as u32)
+                            .or(previous.as_ref().and_then(|p| p.instance)),
                     },
                 );
                 // A candidate is a new release starting next to the live one
-                // (proxied cutover); it becomes current when promoted.
+                // (proxied cutover), or an instance outside the live set; it
+                // becomes current when promoted. A restart of an instance
+                // already in the live set changes nothing.
                 let candidate = payload
                     .get("candidate")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if let (false, Some(project)) = (candidate, st.projects.get_mut(&project_id)) {
-                    project.current_process = Some(id);
+                    if !project.instances.contains(&id) {
+                        project.current_process = Some(id);
+                        project.instances = vec![id];
+                    }
+                }
+            }
+            "InstanceSetChanged" => {
+                let Some(project_id) = id_field::<ProjectId>(&payload, "project_id") else {
+                    return;
+                };
+                let instances = id_list(&payload, "process_ids");
+                if let (Some(project), false) =
+                    (st.projects.get_mut(&project_id), instances.is_empty())
+                {
+                    project.current_process = instances.first().copied();
+                    project.instances = instances;
                 }
             }
             "ProcessCrashed" => {
@@ -538,14 +599,22 @@ impl ProjectionEngine {
                 }
             }
             "ProcessStopped" => {
-                if let Some(proc) = id_field::<ProcessId>(&payload, "process_id")
-                    .and_then(|id| st.processes.get_mut(&id))
-                {
+                let id = id_field::<ProcessId>(&payload, "process_id");
+                // An instance replaced by a rollout that hasn't finished is
+                // still in the live set: if the daemon stops before the new
+                // set is promoted, it is started again on boot.
+                let in_live_set = id.is_some_and(|id| {
+                    st.projects
+                        .values()
+                        .any(|p| p.instances.len() > 1 && p.instances.contains(&id))
+                });
+                if let Some(proc) = id.and_then(|id| st.processes.get_mut(&id)) {
                     proc.status = "Stopped".to_string();
                     proc.pid = None;
                     // Shutdown and restart stops are not operator intent to keep it down.
                     match str_field(&payload, "reason") {
                         Some("shutdown") | Some("restart") => {}
+                        Some("replaced") if in_live_set => {}
                         _ => proc.desired = "stopped".to_string(),
                     }
                     if let Some(code) = payload.get("exit_code").and_then(|v| v.as_i64()) {
