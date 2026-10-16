@@ -124,6 +124,18 @@ Every event recorded because of an API call carries `actor`: `user:<name>`, `tok
 | `WebhookSecretRotated` | A project's webhook secret was created or replaced | `project_id` |
 | `WebhookReceived` | A delivery with a valid signature was handled (including dashboard test deliveries) | `project_id`, `delivery`, `event`, `status` (`queued`, `ignored`, `duplicate`, `pong`, `error`), `reason`, `deployment_id`, `actor` |
 
+### Backups
+
+See [`disaster_recovery.md`](disaster_recovery.md). Payloads name archives only; their contents (the database, the secrets key) never appear in events. A backup's own database snapshot is taken before its `BackupCreated` is recorded, so the archive doesn't contain that event.
+
+| Event Type | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `BackupCreated` | An archive was written to `<data_dir>/backups` (or `--out`) | `name`, `size_bytes`, `includes_releases`, `file_count`, `trigger` (`manual` from the dashboard/API, `scheduled`, `cli`), `actor` |
+| `BackupFailed` | Creating a backup failed | `trigger`, `include_releases`, `error`, `actor` |
+| `BackupDeleted` | An archive was deleted | `name`, `reason` (`manual` or `retention`), `actor` |
+
+Restores are offline (the daemon is stopped), so they are not recorded as events; the restored database's history ends where the backup was taken.
+
 ---
 
 ## 3. Projection Invalidation Rules

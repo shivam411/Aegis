@@ -28,6 +28,7 @@ aegis-webhook = { path = "../../git/webhook" }
 aegis-metrics = { path = "../../runtime/metrics" }
 aegis-config = { path = "../config" }
 aegis-engine = { path = "../../runtime/engine" }
+tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 aegis-resources = { path = "../../runtime/resources" }

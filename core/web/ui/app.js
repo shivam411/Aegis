@@ -362,6 +362,7 @@ const EVENT_TYPES = [
   'ApiTokenCreated', 'ApiTokenRevoked', 'WebhookSecretRotated',
   'ResourceLimitsChanged', 'ResourcePressureDetected',
   'DomainMapped', 'DomainUnmapped',
+  'BackupCreated', 'BackupFailed', 'BackupDeleted',
 ];
 
 function connectEvents() {
@@ -2201,6 +2202,15 @@ function describeEvent(e) {
     case 'DomainMapped':
       bits.push(`${p.domain} (${TLS_LABELS[p.tls] || p.tls})`);
       break;
+    case 'BackupCreated':
+      bits.push(`${p.name} · ${fmtBytes(p.size_bytes)}${p.includes_releases ? '' : ' · without releases'} · ${p.trigger}`);
+      break;
+    case 'BackupFailed':
+      bits.push(`${p.trigger}: ${p.error || ''}`);
+      break;
+    case 'BackupDeleted':
+      bits.push(`${p.name} (${p.reason})`);
+      break;
     case 'DomainUnmapped':
       bits.push(p.domain);
       break;
@@ -2234,7 +2244,7 @@ function describeEvent(e) {
 function eventKind(type) {
   if (/Failed|Crashed|ResourcePressure/.test(type)) return 'bad';
   if (/RolledBack|LoginFailed/.test(type)) return 'warn';
-  if (/Completed|Succeeded|Promoted|LoggedIn/.test(type)) return 'ok';
+  if (/Completed|Succeeded|Promoted|LoggedIn|BackupCreated/.test(type)) return 'ok';
   return '';
 }
 
@@ -2256,6 +2266,7 @@ const EVENT_CATEGORIES = [
   ['access', 'Access & security', (t) => /^(User|Password|ApiToken|Webhook)/.test(t)],
   ['resources', 'Resources & alerts', (t) => t.startsWith('Resource')],
   ['config', 'App configuration', (t) => /^(Project|Schedule)/.test(t)],
+  ['backup', 'Backups', (t) => t.startsWith('Backup')],
 ];
 
 async function eventsPage(main, ctx) {
@@ -2626,6 +2637,74 @@ async function accountPage(main, ctx) {
       tokenBody)),
     tokenForm);
 
+  // Backups.
+  const backupBody = h('tbody');
+  const withReleases = h('input', { id: 'backup-releases', type: 'checkbox', checked: true });
+  const restoreHelp = h('div');
+  const backupBtn = h('button', {
+    class: 'btn primary',
+    type: 'button',
+    'data-action': 'backup-now',
+    onclick: async () => {
+      const res = await run(backupBtn, () => api('POST', '/backups', { include_releases: withReleases.checked }),
+        (b) => `Backup created (${fmtBytes(b.size_bytes)})`);
+      if (res) loadBackups().catch(() => {});
+    },
+  }, 'Back up now');
+  const restoreSteps = (path) => [
+    'sudo systemctl stop aegis',
+    `sudo -u aegis AEGIS_CONFIG=/etc/aegis/aegis.toml aegis-daemon admin restore ${path}`,
+    'sudo systemctl start aegis',
+  ].join('\n');
+  const loadBackups = async () => {
+    const backups = await api('GET', '/backups');
+    if (!ctx.alive()) return;
+    replace(backupBody, backups.length ? backups.map((b) => h('tr', { 'data-backup': b.name },
+      h('td', { 'data-label': 'Created' }, timeEl(b.created_at, `${fmtTime(b.created_at)} (${fmtAgo(b.created_at)})`)),
+      h('td', { 'data-label': 'Contents' }, b.problem
+        ? pill('unreadable', 'bad')
+        : h('span', { class: 'tag' }, b.includes_releases ? 'database, keys, releases' : 'database and keys')),
+      h('td', { 'data-label': 'Size' }, fmtBytes(b.size_bytes)),
+      h('td', { class: 'actions' },
+        h('a', { class: 'btn small', href: `/api/v1/backups/${enc(b.name)}/download`, download: b.name, 'data-action': 'download' }, 'Download'),
+        ' ',
+        h('button', {
+          class: 'btn small danger',
+          type: 'button',
+          'data-action': 'delete',
+          onclick: async (e) => {
+            const ok = await confirmDialog({
+              title: 'Delete this backup?',
+              message: `${b.name} is removed from the server. Downloaded copies are not affected.`,
+              confirmLabel: 'Delete',
+              danger: true,
+            });
+            if (!ok) return;
+            await run(e.currentTarget, () => api('DELETE', `/backups/${enc(b.name)}`), 'Backup deleted');
+            loadBackups().catch(() => {});
+          },
+        }, 'Delete'))))
+      : h('tr', {}, h('td', { colspan: 4, class: 'empty' }, 'No backups yet.')));
+    const steps = restoreSteps(backups[0] ? backups[0].path : '/path/to/aegis-backup-….tar.gz');
+    replace(restoreHelp,
+      h('p', { class: 'muted small' }, 'Restoring is done on the server with the daemon stopped. The archive is checked first; the current database, key and releases are moved to a ',
+        h('code', {}, 'pre-restore-…'), ' folder in the data directory, not deleted.'),
+      h('pre', { class: 'restore-steps' }, h('code', {}, steps)),
+      h('div', { class: 'form-actions' }, copyButton(steps)));
+  };
+  const backupCard = h('section', { class: 'card', id: 'backups' },
+    h('div', { class: 'card-header' }, h('h2', {}, 'Backups')),
+    h('div', { class: 'card-body' },
+      h('p', { class: 'muted small' }, 'A backup holds the database, the secrets key (without it, app secrets cannot be read), certificates and, optionally, the release directories. Keep downloads somewhere safe: they contain password hashes and the key. Scheduled backups are set with ',
+        h('code', {}, '[backup]'), ' in the daemon configuration.'),
+      h('div', { class: 'row' },
+        h('label', { class: 'small', for: 'backup-releases' }, withReleases, ' Include releases (can be large)'),
+        h('div', { class: 'form-actions' }, backupBtn))),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['Created', 'Contents', 'Size', ''].map((t) => h('th', {}, t)))),
+      backupBody)),
+    h('div', { class: 'card-body' }, h('h3', {}, 'Restore'), restoreHelp));
+
   // Appearance.
   const themeSel = h('select', { id: 'theme', 'aria-label': 'Theme' },
     [['system', 'Match the system'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => h('option', { value: v, selected: storedTheme() === v }, l)));
@@ -2641,8 +2720,9 @@ async function accountPage(main, ctx) {
     h('div', { class: 'grid' },
       admin ? usersCard(ctx, session.name) : null,
       admin ? tokenCard : null,
+      admin ? backupCard : null,
       h('div', { class: 'grid two' }, pwForm, prefs)));
-  if (admin) await loadTokens();
+  if (admin) await Promise.all([loadTokens(), loadBackups()]);
 }
 
 const ROLE_HELP = {

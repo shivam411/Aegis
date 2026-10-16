@@ -154,6 +154,8 @@ async fn roles_limit_what_each_user_can_do() {
         ("GET", "/api/v1/users"),
         ("POST", "/api/v1/users"),
         ("GET", "/api/v1/projects/ghost/secrets"),
+        ("GET", "/api/v1/backups"),
+        ("POST", "/api/v1/backups"),
     ] {
         let (status, _) = dee.call(&api, method, uri, json!({})).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");

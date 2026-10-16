@@ -40,6 +40,24 @@ impl EventStore {
         Ok(())
     }
 
+    /// The newest migration this build knows (the schema version it writes).
+    pub fn latest_schema_version() -> i64 {
+        sqlx::migrate!("./migrations")
+            .iter()
+            .map(|m| m.version)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The newest migration applied to `pool`'s database.
+    pub async fn schema_version(pool: &SqlitePool) -> Result<i64, anyhow::Error> {
+        let version: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success = 1")
+                .fetch_one(pool)
+                .await?;
+        Ok(version.unwrap_or(0))
+    }
+
     /// Registers a listener that runs for every appended event before it is
     /// broadcast. Used by read-model projections that must never miss or
     /// reorder events.

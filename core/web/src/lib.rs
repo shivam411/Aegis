@@ -9,6 +9,7 @@
 mod api;
 mod appconfig;
 mod auth;
+mod backup;
 mod domains;
 pub mod dto;
 mod guard;
@@ -249,7 +250,9 @@ impl Modify for SecuritySchemes {
         auth::rotate_webhook_secret, auth::github_webhook,
         domains::list_domains, domains::map_domain, domains::unmap_domain, domains::proxy_status,
         appconfig::list_secrets, appconfig::set_secret, appconfig::delete_secret,
-        appconfig::preview_settings, appconfig::webhook_status, appconfig::test_webhook
+        appconfig::preview_settings, appconfig::webhook_status, appconfig::test_webhook,
+        backup::list_backups, backup::create_backup, backup::download_backup,
+        backup::delete_backup
     ),
     components(schemas(
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, ReleaseDto, DeploymentDto, EventDto,
@@ -264,12 +267,12 @@ impl Modify for SecuritySchemes {
         domains::ProxyRouteDto, domains::ProxyStatusDto,
         SecretDto,
         SetSecretRequest, SecretSaved, DiffLineDto, ConfigPreviewDto, WebhookDeliveryDto,
-        WebhookStatusDto
+        WebhookStatusDto, backup::BackupDto, backup::CreateBackupRequest
     )),
     tags(
         (name = "auth"), (name = "users"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
-        (name = "domains"), (name = "secrets")
+        (name = "domains"), (name = "secrets"), (name = "backups")
     )
 )]
 pub struct ApiDoc;
@@ -359,6 +362,12 @@ pub fn router(state: AppState) -> Router {
         .route("/processes/:target/:action", post(api::process_action))
         .route("/events", get(api::list_events))
         .route("/events/stream", get(api::stream_events))
+        .route(
+            "/backups",
+            get(backup::list_backups).post(backup::create_backup),
+        )
+        .route("/backups/:name", delete(backup::delete_backup))
+        .route("/backups/:name/download", get(backup::download_backup))
         .route("/openapi.json", get(openapi))
         .fallback(not_found);
     let hooks = Router::new()

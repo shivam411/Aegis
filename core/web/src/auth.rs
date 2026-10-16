@@ -134,6 +134,9 @@ fn user_only(path: &str) -> bool {
     path.starts_with("/api/v1/tokens")
         || path.starts_with("/api/v1/users")
         || path == "/api/v1/auth/password"
+        // Backups hold the secrets key and password hashes.
+        || path == "/api/v1/backups"
+        || path.starts_with("/api/v1/backups/")
         || matches!(section, Some("webhook" | "secrets"))
 }
 
