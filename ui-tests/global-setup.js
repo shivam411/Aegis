@@ -95,12 +95,29 @@ log_level = "info"
 enabled = true
 host = "127.0.0.1"
 port = ${webPort}
+
+[update]
+check = true                # against the fake API below, never GitHub
 `);
+
+  // A fake GitHub releases API announcing v0.99.0 (no network access).
+  const githubPort = Number(webPort) + 2;
+  const fake = spawn(process.execPath, [path.join(__dirname, 'fake-github.js'), String(githubPort)], {
+    stdio: 'ignore',
+    detached: true,
+  });
+  fs.writeFileSync(path.join(WORK, 'fake-github.pid'), String(fake.pid));
+  fake.unref();
+  await waitFor(`http://127.0.0.1:${githubPort}/repos/shivam411/Aegis/releases/latest`, 10_000);
 
   const log = fs.openSync(path.join(WORK, 'daemon.log'), 'a');
   const child = spawn(daemon, ['run'], {
     cwd: WORK,
-    env: { ...process.env, AEGIS_CONFIG: configPath },
+    env: {
+      ...process.env,
+      AEGIS_CONFIG: configPath,
+      AEGIS_UPDATE_API_URL: `http://127.0.0.1:${githubPort}`,
+    },
     stdio: ['ignore', log, log],
     detached: true,
   });

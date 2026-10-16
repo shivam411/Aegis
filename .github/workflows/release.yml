@@ -53,6 +53,22 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # The binaries report this version (`aegis-daemon --version`, the
+      # dashboard, update checks). Without it they would report the crate
+      # version, and self-update would offer the same release forever.
+      - name: Version from the tag
+        shell: bash
+        env:
+          REF: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          version="${REF#[vV]}"
+          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "AEGIS_VERSION=${version}" >> "$GITHUB_ENV"
+            echo "Building Aegis ${version}"
+          else
+            echo "::warning::'${REF}' is not a version tag; the binaries report the crate version"
+          fi
+
       # Install cross-compilation tools for ARM64 Linux
       - name: Install cross (ARM64 Linux)
         if: matrix.cross
@@ -65,7 +81,16 @@ jobs:
 
       - name: Build (cross)
         if: matrix.cross
+        # Cross.toml passes AEGIS_VERSION into the build container.
         run: cross build --release --target ${{ matrix.target }}
+
+      - name: Check the reported version
+        if: "!matrix.cross && env.AEGIS_VERSION != ''"
+        shell: bash
+        run: |
+          out="$(target/${{ matrix.target }}/release/aegis-daemon --version)"
+          echo "${out}"
+          [ "${out}" = "aegis-daemon ${AEGIS_VERSION}" ]
 
       # Package — Linux/macOS
       - name: Package (tar.gz)

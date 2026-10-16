@@ -2,6 +2,14 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = async () => {
+  const fakeFile = path.join(__dirname, '.work', 'fake-github.pid');
+  if (fs.existsSync(fakeFile)) {
+    try {
+      process.kill(Number(fs.readFileSync(fakeFile, 'utf8')), 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  }
   const pidFile = path.join(__dirname, '.work', 'daemon.pid');
   if (!fs.existsSync(pidFile)) return;
   const pid = Number(fs.readFileSync(pidFile, 'utf8'));

@@ -215,6 +215,19 @@ A backup is one `.tar.gz` in `<data_dir>/backups` (directory 0700, archives 0600
 
 The daemon holds `<data_dir>/aegis.lock` (containing its pid) while it runs, so two daemons can't share a data directory and a restore can't run under a live daemon.
 
+### Update checks (`[update]`)
+
+```toml
+[update]
+check = true               # ask GitHub for the latest stable release; false = no update requests at all
+interval_hours = 12        # time between checks (1-744); the first is about a minute after start
+repo = "shivam411/Aegis"   # owner/name of the repository releases come from (for forks)
+```
+
+The result is shown to every signed-in user (`GET /api/v1/system/update`, the dashboard banner); admins can check now and upgrade. With `check = false`, checking and upgrading from the dashboard are refused. How an upgrade is installed, and what happens to running apps, is in [`upgrading.md`](upgrading.md).
+
+`AEGIS_UPDATE_API_URL` points checks at a fake GitHub API for tests. Only `http(s)://` URLs on a loopback address are accepted (anything else stops the daemon at startup), and release downloads must then come from that same address.
+
 ### Data directory layout
 
 ```
@@ -222,6 +235,7 @@ The daemon holds `<data_dir>/aegis.lock` (containing its pid) while it runs, so 
 ├── aegis.lock                   # held by the running daemon
 ├── secrets.key                  # encryption key for app secrets (0600); back it up with the database
 ├── backups/                     # aegis-backup-<timestamp>.tar.gz (0700 / 0600)
+├── update/                      # state.json (last check, pending update); request.json/result.json for the root helper
 ├── pre-restore-<timestamp>/     # what a restore replaced; delete when no longer needed
 ├── projects/<project-id>/
 │   ├── releases/<version>/      # one directory per release; the app runs from here

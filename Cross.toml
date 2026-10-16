@@ -1,0 +1,4 @@
+# Settings for `cross` (release.yml builds aarch64 Linux with it).
+[build.env]
+# The release version the binaries report (set from the git tag).
+passthrough = ["AEGIS_VERSION"]

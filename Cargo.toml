@@ -17,6 +17,7 @@ members = [
     "core/projection",
     "core/control",
     "core/web",
+    "core/update",
 
     # Deployment
     "deployment/builder",

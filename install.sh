@@ -17,6 +17,9 @@
 #   --domain NAME       Public hostname for the web API behind a reverse proxy (with --server)
 #   --bin-dir DIR       Install binaries from DIR instead of downloading a release
 #   --no-start          Write everything but don't enable/start the service
+#   --no-self-update    (with --server) Don't install the root-owned aegis-update
+#                       helper; "Upgrade now" in the dashboard then only shows the
+#                       command to run (see docs/upgrading.md)
 #   --print-unit        Print the systemd unit and exit
 #
 
@@ -28,10 +31,13 @@ SERVER=0
 DOMAIN=""
 BIN_DIR=""
 NO_START=0
+SELF_UPDATE=1
 AEGIS_USER="aegis"
 STATE_DIR="/var/lib/aegis"
 CONFIG_DIR="/etc/aegis"
 UNIT_PATH="/etc/systemd/system/aegis.service"
+UPDATE_PATH_UNIT="/etc/systemd/system/aegis-update.path"
+UPDATE_SERVICE_UNIT="/etc/systemd/system/aegis-update.service"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases/latest"
 
 # ──────────────────────────────────────────────
@@ -88,6 +94,24 @@ check_deps() {
 }
 
 # ──────────────────────────────────────────────
+# Check an archive against the release's SHA256SUMS
+# ──────────────────────────────────────────────
+verify_checksum() {
+    local dir="$1" name="$2" expected actual
+    expected="$(awk -v f="${name}" '$2 == f || $2 == "*"f { print $1; exit }' "${dir}/SHA256SUMS")"
+    [ -n "${expected}" ] || err "SHA256SUMS has no entry for ${name}."
+    if command -v sha256sum &>/dev/null; then
+        actual="$(sha256sum "${dir}/${name}" | awk '{ print $1 }')"
+    elif command -v shasum &>/dev/null; then
+        actual="$(shasum -a 256 "${dir}/${name}" | awk '{ print $1 }')"
+    else
+        err "Neither sha256sum nor shasum is installed; cannot verify the download."
+    fi
+    [ "${expected}" = "${actual}" ] \
+        || err "Checksum mismatch for ${name} (expected ${expected}, got ${actual}). Not installing."
+}
+
+# ──────────────────────────────────────────────
 # Query latest release tag from GitHub API
 # ──────────────────────────────────────────────
 get_latest_version() {
@@ -121,6 +145,8 @@ ExecStartPre=/usr/local/bin/aegis-daemon check-config
 ExecStart=/usr/local/bin/aegis-daemon run
 Restart=on-failure
 RestartSec=5
+# Exit status 75: a self-update installed a new binary; start it.
+RestartForceExitStatus=75
 
 # On SIGTERM Aegis stops its apps itself (they come back on the next start),
 # so signal only the daemon and give it time before anything is killed.
@@ -167,6 +193,56 @@ WantedBy=multi-user.target
 UNIT
 }
 
+# The self-update helper. The daemon (user aegis) can't replace the root-owned
+# binaries in /usr/local/bin. When an admin clicks "Upgrade now" it writes
+# ${STATE_DIR}/update/request.json naming only a version; this path unit then
+# starts a root one-shot service that downloads that release itself, checks
+# it against the release's SHA256SUMS, refuses anything not newer than the
+# installed version, swaps the binaries (keeping *.previous) and restarts aegis.
+print_update_path_unit() {
+    cat <<UNIT
+[Unit]
+Description=Watch for Aegis update requests from the dashboard
+Documentation=https://github.com/${REPO}/blob/main/docs/upgrading.md
+
+[Path]
+PathExists=${STATE_DIR}/update/request.json
+Unit=aegis-update.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+print_update_service_unit() {
+    cat <<UNIT
+[Unit]
+Description=Install an Aegis update requested from the dashboard
+Documentation=https://github.com/${REPO}/blob/main/docs/upgrading.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=AEGIS_CONFIG=${CONFIG_DIR}/aegis.toml
+ExecStart=/usr/local/bin/aegis-daemon self-update --from-request --restart-unit aegis.service
+TimeoutStartSec=15min
+# Root, but it may only write the binaries and the request directory.
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin -${STATE_DIR}/update
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0022
+UNIT
+}
+
 default_server_config() {
     cat <<CONFIG
 # Aegis daemon configuration. See docs/configuration.md.
@@ -176,6 +252,9 @@ port = 50051
 database_path = "${STATE_DIR}/aegis.db"
 data_dir = "${STATE_DIR}"
 log_level = "info"
+
+[update]
+check = true                # ask GitHub for new releases every 12 hours; false = never
 
 [web]
 enabled = true
@@ -220,7 +299,11 @@ install_binaries() {
         trap 'rm -rf "${TMP_DIR:-}"' EXIT
         curl -fsSL -o "${TMP_DIR}/${archive_name}" "${download_url}" \
             || err "Download failed. Check that release ${version} has asset ${archive_name}."
-        ok "Downloaded ${archive_name}"
+        curl -fsSL -o "${TMP_DIR}/SHA256SUMS" \
+            "https://github.com/${REPO}/releases/download/${version}/SHA256SUMS" \
+            || err "Release ${version} has no SHA256SUMS; refusing to install unverified binaries."
+        verify_checksum "${TMP_DIR}" "${archive_name}"
+        ok "Downloaded ${archive_name} (SHA-256 verified)"
 
         info "Extracting..."
         if [ "${os}" = "windows" ]; then
@@ -282,11 +365,27 @@ server_install() {
     chmod 0644 "${UNIT_PATH}"
     ok "Wrote ${UNIT_PATH}"
 
+    if [ "${SELF_UPDATE}" -eq 1 ]; then
+        print_update_path_unit > "${UPDATE_PATH_UNIT}"
+        print_update_service_unit > "${UPDATE_SERVICE_UNIT}"
+        chmod 0644 "${UPDATE_PATH_UNIT}" "${UPDATE_SERVICE_UNIT}"
+        ok "Wrote ${UPDATE_PATH_UNIT} and ${UPDATE_SERVICE_UNIT} (upgrades from the dashboard)"
+    else
+        if command -v systemctl &>/dev/null; then
+            systemctl disable --now aegis-update.path 2>/dev/null || true
+        fi
+        rm -f "${UPDATE_PATH_UNIT}" "${UPDATE_SERVICE_UNIT}"
+        warn "No self-update helper (--no-self-update). Upgrade with: sudo aegis-daemon self-update"
+    fi
+
     if [ "${NO_START}" -eq 1 ]; then
         warn "Not starting the service (--no-start). Start it with: systemctl enable --now aegis"
         return
     fi
     systemctl daemon-reload
+    if [ "${SELF_UPDATE}" -eq 1 ]; then
+        systemctl enable --now aegis-update.path
+    fi
     systemctl enable --now aegis
     ok "Service 'aegis' enabled and started"
 
@@ -338,6 +437,7 @@ parse_args() {
             --domain) shift; DOMAIN="${1:-}"; [ -n "${DOMAIN}" ] || err "--domain needs a hostname" ;;
             --bin-dir) shift; BIN_DIR="${1:-}"; [ -d "${BIN_DIR}" ] || err "--bin-dir needs a directory" ;;
             --no-start) NO_START=1 ;;
+            --no-self-update) SELF_UPDATE=0 ;;
             --print-unit) print_unit; exit 0 ;;
             -h|--help) sed -n '2,24p' "$0" 2>/dev/null || true; exit 0 ;;
             *) err "Unknown option: $1" ;;

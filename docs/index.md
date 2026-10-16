@@ -20,7 +20,7 @@ Aegis is pre-1.0 and early. What is tested in CI, and what isn't measured yet, i
 
 ## Quick Links
 
-- [Installation Guide](install.md)
+- [Installation Guide](install.md) · [Upgrading](upgrading.md)
 - [Quickstart Tutorial](quickstart.md)
 - [Architecture Deep Dive](architecture.md)
 - [Feature Maturity](feature_maturity.md) · [Scorecard](scorecard.md) · [Roadmap](public_roadmap.md)
