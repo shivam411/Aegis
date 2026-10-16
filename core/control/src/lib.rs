@@ -5,6 +5,7 @@
 //! then executed; state is read back from the projection, which is updated
 //! synchronously as each event is persisted.
 
+pub mod backup;
 mod config_file;
 mod deploy;
 mod domains;
@@ -103,6 +104,8 @@ pub struct ControlSettings {
     pub sample_interval: Duration,
     /// How long per-minute metric rollups are kept.
     pub metrics_retention: Duration,
+    /// Backup retention and defaults.
+    pub backup: backup::BackupSettings,
 }
 
 impl ControlSettings {
@@ -115,6 +118,7 @@ impl ControlSettings {
             resources: aegis_resources::Mode::Auto,
             sample_interval: Duration::from_secs(2),
             metrics_retention: Duration::from_secs(7 * 24 * 3600),
+            backup: backup::BackupSettings::default(),
         }
     }
 }
@@ -164,6 +168,8 @@ struct Inner {
     /// Serializes domain changes so uniqueness checks can't race.
     domain_lock: tokio::sync::Mutex<()>,
     secrets: aegis_secrets::SecretStore,
+    /// One backup at a time.
+    backup_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +240,7 @@ impl ControlPlane {
                 candidates: Mutex::new(HashSet::new()),
                 domain_lock: tokio::sync::Mutex::new(()),
                 secrets,
+                backup_lock: tokio::sync::Mutex::new(()),
             }),
         })
     }

@@ -272,7 +272,7 @@ This is the "drag CPU and memory" feature.
 ### Phase 6 — Operations polish *(ongoing)*
 
 - Multiple users with roles (viewer, deployer, admin).
-- Backup and restore of `aegis.db` and releases from the UI; scheduled backups.
+- ✅ Backup and restore of `aegis.db` and releases from the UI; scheduled backups. *Done:* one `.tar.gz` per backup (a `VACUUM INTO` snapshot of the database, `secrets.key`, certificates and, optionally, releases, with a SHA-256 manifest), created from the dashboard (Account → Backups), the API (`/api/v1/backups`, signed-in users only), `aegis-daemon admin backup` or on a `[backup]` schedule, with retention. Restores are offline by design (`aegis-daemon admin restore`, refused while the daemon holds `<data_dir>/aegis.lock`); the dashboard shows the command. See [`disaster_recovery.md`](disaster_recovery.md).
 - Self-update: "a new Aegis version is available → upgrade" (building on `aegis upgrade`).
 - A real `ratatui` TUI on the same read API as the web UI.
 - Docker runtime (`integrations/docker`): container apps with `docker update --cpus/--memory` for the same sliders.

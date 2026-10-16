@@ -3,7 +3,7 @@ mod service;
 use aegis_api::aegis::aegis_daemon_server::AegisDaemonServer;
 use aegis_auth::{AuthConfig, AuthStore, TokenScope, ADMIN_USER};
 use aegis_config::Config;
-use aegis_control::{ControlPlane, ControlSettings};
+use aegis_control::{backup, ControlPlane, ControlSettings};
 use aegis_event_store::EventStore;
 use aegis_plugins::PluginManager;
 use aegis_process::ProcessSupervisor;
@@ -104,6 +104,12 @@ const USAGE: &str = "Usage:
                                          and sign out all sessions
   aegis-daemon admin create-token --name NAME [--scope read|deploy]
                                          Create an API token for automation
+  aegis-daemon admin backup [--no-releases] [--out PATH]
+                                         Back up the database, secrets key, certificates and
+                                         releases (safe while the daemon runs); prints the path
+  aegis-daemon admin restore ARCHIVE [--force]
+                                         Restore a backup. The daemon must be stopped.
+                                         --force restores a backup made by another Aegis version
 
 The configuration is read from $AEGIS_CONFIG (default: ./aegis.toml).";
 
@@ -199,6 +205,7 @@ fn validate_config(config: &Config) -> Result<(), anyhow::Error> {
         config.web.validate()?;
     }
     config.proxy.validate(&config.web, &config.daemon)?;
+    config.backup.validate()?;
     Ok(())
 }
 
@@ -356,6 +363,10 @@ fn auth_store(config: &Config, pool: sqlx::SqlitePool) -> Result<AuthStore, anyh
 
 /// Local administration, authorized by access to the database file.
 async fn admin(config: &Config, args: &[&str]) -> Result<(), anyhow::Error> {
+    // Restoring replaces the database, so it must not open it first.
+    if let ["restore", flags @ ..] = args {
+        return admin_restore(config, flags);
+    }
     let pool = open_database(config).await?;
     let auth = auth_store(config, pool.clone())?;
     let store = EventStore::new(pool);
@@ -419,8 +430,188 @@ async fn admin(config: &Config, args: &[&str]) -> Result<(), anyhow::Error> {
             println!("{}", created.token);
             Ok(())
         }
+        ["backup", flags @ ..] => admin_backup(config, &store, flags).await,
         _ => anyhow::bail!("Unknown admin command\n\n{}", USAGE),
     }
+}
+
+/// `admin backup`: the same archive as the dashboard's, made from the CLI.
+/// VACUUM INTO gives a consistent snapshot even while the daemon runs.
+async fn admin_backup(
+    config: &Config,
+    store: &EventStore,
+    flags: &[&str],
+) -> Result<(), anyhow::Error> {
+    let mut include_releases = true;
+    let mut out = None;
+    let mut it = flags.iter();
+    while let Some(flag) = it.next() {
+        match *flag {
+            "--no-releases" => include_releases = false,
+            "--out" => {
+                let path = it
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--out needs a path"))?;
+                out = Some(PathBuf::from(path));
+            }
+            other => anyhow::bail!("Unknown flag {}\n\n{}", other, USAGE),
+        }
+    }
+    let data_dir = config.daemon.resolved_data_dir();
+    let dir = backup::backups_dir(&data_dir);
+    let path = match out {
+        Some(path) => path,
+        None => {
+            backup::create_private_dir(&dir)?;
+            dir.join(backup::new_backup_name(chrono::Utc::now()))
+        }
+    };
+    let created = backup::create_backup_file(
+        store.pool(),
+        &data_dir,
+        &path,
+        include_releases,
+        DAEMON_VERSION,
+    )
+    .await;
+    let manifest = match created {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            store
+                .append_event(
+                    "BackupFailed",
+                    serde_json::json!({"trigger": "cli", "include_releases": include_releases,
+                                       "error": format!("{:#}", e), "actor": "local-admin"}),
+                )
+                .await?;
+            return Err(e);
+        }
+    };
+    let size = std::fs::metadata(&path)?.len();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    store
+        .append_event(
+            "BackupCreated",
+            serde_json::json!({"name": name, "size_bytes": size,
+                               "includes_releases": include_releases,
+                               "file_count": manifest.file_count(),
+                               "trigger": "cli", "actor": "local-admin"}),
+        )
+        .await?;
+    // Retention applies to the backups directory only.
+    if path.parent() == Some(dir.as_path()) {
+        for removed in backup::apply_retention(&dir, config.backup.keep)? {
+            store
+                .append_event(
+                    "BackupDeleted",
+                    serde_json::json!({"name": removed, "reason": "retention",
+                                       "actor": "local-admin"}),
+                )
+                .await?;
+        }
+    }
+    eprintln!(
+        "Backup created ({} files, {} bytes{}).",
+        manifest.file_count(),
+        size,
+        if include_releases {
+            ""
+        } else {
+            ", without releases"
+        }
+    );
+    // Only the path on stdout, so scripts can capture it.
+    println!("{}", path.display());
+    Ok(())
+}
+
+/// Is something listening on `host:port`? (A running daemon, most likely.)
+fn port_in_use(host: &str, port: u16) -> Option<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    (host, port)
+        .to_socket_addrs()
+        .ok()?
+        .find(|addr| std::net::TcpStream::connect_timeout(addr, Duration::from_millis(500)).is_ok())
+}
+
+/// `admin restore`: offline only. Refuses while a daemon runs (it holds the
+/// data directory lock, and its ports answer), then verifies and restores.
+fn admin_restore(config: &Config, flags: &[&str]) -> Result<(), anyhow::Error> {
+    let mut archive = None;
+    let mut force = false;
+    for flag in flags {
+        match *flag {
+            "--force" => force = true,
+            other if other.starts_with("--") => {
+                anyhow::bail!("Unknown flag {}\n\n{}", other, USAGE)
+            }
+            path if archive.is_none() => archive = Some(PathBuf::from(path)),
+            other => anyhow::bail!("Unexpected argument {}\n\n{}", other, USAGE),
+        }
+    }
+    let archive = archive.ok_or_else(|| anyhow::anyhow!("Which backup?\n\n{}", USAGE))?;
+    if !archive.is_file() {
+        anyhow::bail!("{} is not a file", archive.display());
+    }
+    let report = restore_offline(config, &archive, force)?;
+    let m = &report.manifest;
+    println!(
+        "Restored the backup from {} (Aegis {}, {} files{}).",
+        m.created_at,
+        m.aegis_version,
+        m.file_count(),
+        if m.includes_releases {
+            ""
+        } else {
+            ", without releases"
+        }
+    );
+    println!("Restored: {}", report.restored.join(", "));
+    println!(
+        "The previous files are in {}; delete it once the daemon runs fine.",
+        report.moved_aside.display()
+    );
+    println!("Start the daemon again (e.g. `sudo systemctl start aegis`).");
+    Ok(())
+}
+
+fn restore_offline(
+    config: &Config,
+    archive: &Path,
+    force: bool,
+) -> Result<backup::RestoreReport, anyhow::Error> {
+    let data_dir = config.daemon.resolved_data_dir();
+    // Held for the whole restore, so the daemon can't start halfway through.
+    let _lock = backup::DataDirLock::acquire(&data_dir)
+        .map_err(|e| anyhow::anyhow!("{}. Stop it first (e.g. `sudo systemctl stop aegis`).", e))?;
+    let mut ports = vec![(config.daemon.host.as_str(), config.daemon.port)];
+    if config.web.enabled {
+        ports.push((config.web.host.as_str(), config.web.port));
+    }
+    for (host, port) in ports {
+        if let Some(addr) = port_in_use(host, port) {
+            anyhow::bail!(
+                "Something is listening on {} (a daemon port). Stop the daemon before restoring \
+                 (e.g. `sudo systemctl stop aegis`).",
+                addr
+            );
+        }
+    }
+    backup::restore(
+        archive,
+        &backup::RestoreTarget {
+            data_dir,
+            database_path: config.daemon.database_path.clone(),
+        },
+        &backup::RestoreOptions {
+            force,
+            aegis_version: DAEMON_VERSION.to_string(),
+            latest_schema_version: EventStore::latest_schema_version(),
+        },
+    )
 }
 
 async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
@@ -428,18 +619,27 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
     aegis_logs::init_logging(&config.daemon.log_level);
     tracing::info!("Aegis Daemon v{} starting up...", DAEMON_VERSION);
 
+    // One daemon per data directory. The lock also keeps offline restores
+    // (`admin restore`) out while the daemon runs.
+    let data_dir = config.daemon.resolved_data_dir();
+    let _data_dir_lock = backup::DataDirLock::acquire(&data_dir)?;
+
     // 3. Connect to Database
     let pool = open_database(&config).await?;
     let auth = auth_store(&config, pool.clone())?;
     let event_store = EventStore::new(pool);
 
     // 4. Control plane: rebuilds state from history and runs deployments.
-    let data_dir = config.daemon.resolved_data_dir();
     let mut settings = ControlSettings::new(data_dir.clone());
     settings.max_retained_versions = config.daemon.max_retained_versions;
     settings.resources = resource_mode(&config.resources);
     settings.sample_interval = Duration::from_secs(config.resources.sample_interval_secs);
     settings.metrics_retention = Duration::from_secs(config.resources.retention_days * 86400);
+    settings.backup = backup::BackupSettings {
+        keep: config.backup.keep,
+        include_releases: config.backup.include_releases,
+        aegis_version: DAEMON_VERSION.to_string(),
+    };
     let control = ControlPlane::new(event_store.clone(), ProcessSupervisor::new(), settings)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -472,6 +672,20 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
         "Resource limits"
     );
     tracing::info!(data_dir = %data_dir.display(), "Control plane ready");
+    if config.backup.enabled {
+        let schedule = match config.backup.daily_time() {
+            Some((hour, minute)) => backup::BackupSchedule::DailyAt(hour, minute),
+            None => backup::BackupSchedule::Every(Duration::from_secs(
+                config.backup.interval_hours * 3600,
+            )),
+        };
+        tracing::info!(
+            ?schedule,
+            keep = config.backup.keep,
+            "Scheduled backups enabled"
+        );
+        control.spawn_backup_scheduler(schedule);
+    }
 
     // 6. Scheduler: restore persisted schedules, then follow new ones.
     let scheduler = Arc::new(aegis_scheduler::SchedulerEngine::new());
@@ -747,6 +961,78 @@ mod tests {
         let streamed_msg = stream.next().await.unwrap().unwrap();
         assert_eq!(streamed_msg.event_type, "StreamedEvent");
         assert!(streamed_msg.payload_json.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn admin_backup_and_offline_restore() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let free_port = || {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let mut config = Config::default();
+        config.daemon.database_path = dir.path().join("db").join("aegis.db");
+        config.daemon.data_dir = Some(dir.path().join("data"));
+        config.daemon.port = free_port();
+        let data_dir = config.daemon.resolved_data_dir();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("secrets.key"), [7u8; 32]).unwrap();
+
+        let pool = open_database(&config).await.unwrap();
+        let store = EventStore::new(pool.clone());
+        store
+            .append_event("Before", serde_json::json!({}))
+            .await
+            .unwrap();
+        admin_backup(&config, &store, &["--no-releases"])
+            .await
+            .unwrap();
+        let backups = backup::list_backups(&backup::backups_dir(&data_dir)).unwrap();
+        assert_eq!(backups.len(), 1);
+        assert!(!backups[0].includes_releases);
+        let archive = backups[0].path.clone();
+        store
+            .append_event("After", serde_json::json!({}))
+            .await
+            .unwrap();
+        drop(store);
+        pool.close().await;
+        std::fs::write(data_dir.join("secrets.key"), [9u8; 32]).unwrap();
+
+        // Refused while a daemon holds the data directory...
+        let lock = backup::DataDirLock::acquire(&data_dir).unwrap();
+        let err = restore_offline(&config, &archive, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Stop it first"), "{err}");
+        drop(lock);
+        // ...or its port answers.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", config.daemon.port)).unwrap();
+        let err = restore_offline(&config, &archive, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("listening"), "{err}");
+        drop(listener);
+
+        let report = restore_offline(&config, &archive, false).unwrap();
+        assert!(report.moved_aside.join("aegis.db").exists());
+        assert_eq!(
+            std::fs::read(data_dir.join("secrets.key")).unwrap(),
+            [7u8; 32]
+        );
+        let pool = open_database(&config).await.unwrap();
+        let types: Vec<String> = EventStore::new(pool.clone())
+            .get_events()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.event_type)
+            .collect();
+        assert_eq!(types, vec!["Before"]);
+        pool.close().await;
     }
 
     #[tokio::test]

@@ -159,6 +159,187 @@
         }
       }
     },
+    "/api/v1/backups": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "operationId": "list_backups",
+        "responses": {
+          "200": {
+            "description": "Backups, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupDto"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "API tokens can't manage backups",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "operationId": "create_backup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBackupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created (older backups beyond `[backup] keep` are deleted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "API tokens can't manage backups",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The backup failed (recorded as a BackupFailed event)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/backups/{name}": {
+      "delete": {
+        "tags": [
+          "backups"
+        ],
+        "operationId": "delete_backup",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Backup file name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Not a backup name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/backups/{name}/download": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "operationId": "download_backup",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Backup file name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The archive (application/gzip)",
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a backup name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/deployments": {
       "get": {
         "tags": [
@@ -1938,6 +2119,57 @@
   },
   "components": {
     "schemas": {
+      "BackupDto": {
+        "type": "object",
+        "description": "A backup archive.",
+        "required": [
+          "name",
+          "path",
+          "size_bytes",
+          "created_at",
+          "includes_releases",
+          "aegis_version",
+          "file_count"
+        ],
+        "properties": {
+          "aegis_version": {
+            "type": "string",
+            "description": "The Aegis version that made it."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "file_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "includes_releases": {
+            "type": "boolean",
+            "description": "False for database-and-keys-only backups."
+          },
+          "name": {
+            "type": "string",
+            "description": "File name, e.g. `aegis-backup-20261016T030000000Z.tar.gz`."
+          },
+          "path": {
+            "type": "string",
+            "description": "Where the archive is on the server (for `aegis-daemon admin restore`)."
+          },
+          "problem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the archive can't be read (it can still be deleted)."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "BuildLogDto": {
         "type": "object",
         "required": [
@@ -2028,6 +2260,18 @@
           },
           "proposed": {
             "type": "string"
+          }
+        }
+      },
+      "CreateBackupRequest": {
+        "type": "object",
+        "properties": {
+          "include_releases": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Include release directories. Defaults to `[backup] include_releases`."
           }
         }
       },
@@ -3711,6 +3955,9 @@
     },
     {
       "name": "secrets"
+    },
+    {
+      "name": "backups"
     }
   ]
 }

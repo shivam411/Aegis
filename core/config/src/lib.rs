@@ -46,6 +46,61 @@ pub struct Config {
     pub notifications: NotificationsConfig,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub backup: BackupConfig,
+}
+
+/// `[backup]`: scheduled backups of the database, the secrets key,
+/// certificates and (optionally) release directories.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BackupConfig {
+    /// Run scheduled backups. Manual backups (dashboard, API,
+    /// `aegis-daemon admin backup`) work either way.
+    pub enabled: bool,
+    /// Hours between scheduled backups (ignored when `daily_at` is set).
+    pub interval_hours: u64,
+    /// Back up once a day at this time, "HH:MM" in UTC.
+    pub daily_at: Option<String>,
+    /// How many backups to keep in `<data_dir>/backups`; older ones are deleted.
+    pub keep: usize,
+    /// Include release directories (can be large). The database, the
+    /// secrets key and certificates are always included.
+    pub include_releases: bool,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_hours: 24,
+            daily_at: None,
+            keep: 7,
+            include_releases: true,
+        }
+    }
+}
+
+impl BackupConfig {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if !(1..=24 * 366).contains(&self.interval_hours) {
+            anyhow::bail!("backup.interval_hours must be 1-8784");
+        }
+        if !(1..=1000).contains(&self.keep) {
+            anyhow::bail!("backup.keep must be 1-1000");
+        }
+        if self.daily_at.is_some() && self.daily_time().is_none() {
+            anyhow::bail!("backup.daily_at must be a UTC time like \"03:30\"");
+        }
+        Ok(())
+    }
+
+    /// `daily_at` as (hour, minute), if set and valid.
+    pub fn daily_time(&self) -> Option<(u32, u32)> {
+        let (h, m) = self.daily_at.as_deref()?.trim().split_once(':')?;
+        let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+        (h < 24 && m < 60).then_some((h, m))
+    }
 }
 
 /// `[resources]`: per-app limits and metrics.
@@ -790,5 +845,38 @@ log_level = "info"
         assert_eq!(file.env.get("NODE_ENV").unwrap(), "production");
 
         assert_eq!(ProjectFile::parse("").unwrap(), ProjectFile::default());
+    }
+
+    #[test]
+    fn backup_section_defaults_and_validation() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.backup, BackupConfig::default());
+        assert!(config.backup.validate().is_ok());
+
+        let config: Config = toml::from_str(
+            r#"
+[backup]
+enabled = true
+daily_at = "03:30"
+keep = 3
+include_releases = false
+"#,
+        )
+        .unwrap();
+        assert!(config.backup.enabled);
+        assert_eq!(config.backup.daily_time(), Some((3, 30)));
+        assert_eq!(config.backup.keep, 3);
+        assert!(config.backup.validate().is_ok());
+
+        for bad in [
+            r#"daily_at = "25:00""#,
+            r#"daily_at = "noon""#,
+            "keep = 0",
+            "interval_hours = 0",
+        ] {
+            let config: Config = toml::from_str(&format!("[backup]\n{bad}\n")).unwrap();
+            assert!(config.backup.validate().is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<Config>("[backup]\nkeepp = 3\n").is_err());
     }
 }

@@ -26,10 +26,13 @@ aegis-metrics = { path = "../../runtime/metrics" }
 aegis-secrets = { path = "../secrets" }
 serde = { workspace = true }
 toml = { workspace = true }
+sqlx = { workspace = true }
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
-sqlx = { workspace = true }
 tempfile = { workspace = true }

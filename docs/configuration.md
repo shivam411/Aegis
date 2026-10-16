@@ -200,10 +200,29 @@ The daemon refuses a proxy configuration that:
 - has an invalid `host`, ACME email or directory URL;
 - sets up a dashboard domain without HTTPS.
 
+### Backups (`[backup]`)
+
+```toml
+[backup]
+enabled = false            # scheduled backups; manual ones work either way
+interval_hours = 24        # time between scheduled backups (1-8784), counted from the newest backup
+daily_at = "03:30"         # optional: once a day at this UTC time instead of interval_hours
+keep = 7                   # backups kept in <data_dir>/backups (1-1000); older ones are deleted
+include_releases = true    # false: database, secrets key and certificates only
+```
+
+A backup is one `.tar.gz` in `<data_dir>/backups` (directory 0700, archives 0600) with a consistent snapshot of the database (SQLite `VACUUM INTO`, safe while the daemon runs), `secrets.key`, `certs/` and, unless excluded, every release directory with its `current.json` and the release metadata in `artifacts/` (rollbacks need it). Logs are not included. Retention counts every archive in the directory, whether it was scheduled, made in the dashboard or with `aegis-daemon admin backup`. A scheduled backup that was missed while the daemon was down runs about a minute after it starts. Restoring is offline only: see [`disaster_recovery.md`](disaster_recovery.md).
+
+The daemon holds `<data_dir>/aegis.lock` (containing its pid) while it runs, so two daemons can't share a data directory and a restore can't run under a live daemon.
+
 ### Data directory layout
 
 ```
 <data_dir>/
+├── aegis.lock                   # held by the running daemon
+├── secrets.key                  # encryption key for app secrets (0600); back it up with the database
+├── backups/                     # aegis-backup-<timestamp>.tar.gz (0700 / 0600)
+├── pre-restore-<timestamp>/     # what a restore replaced; delete when no longer needed
 ├── projects/<project-id>/
 │   ├── releases/<version>/      # one directory per release; the app runs from here
 │   ├── current.json             # pointer to the live release
