@@ -16,4 +16,4 @@ This document defines version compatibility guarantees and deprecation policies 
 ---
 
 ## 2. Upgrade Safety Policy
-Running `aegis upgrade` will perform a zero-downtime binary swap of the daemon and CLI, verifying health probes before replacing active binary symlinks.
+*Planned.* `aegis upgrade` is experimental and does not upgrade anything yet. The goal is a binary swap of the daemon and CLI that verifies health before replacing the active binaries (roadmap Phase 6, self-update).

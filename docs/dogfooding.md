@@ -1,35 +1,35 @@
-# Aegis Dogfooding Deployment Architecture
+# Aegis Dogfooding Plan
 
-This document specifies the "Aegis deploying Aegis" self-deployment pipeline.
+This document describes the planned "Aegis deploying Aegis" pipeline.
 
-Aegis is maintained and deployed using Aegis itself on production infrastructure.
-
----
-
-## 1. Dogfood Pipeline Architecture
-
-```
-GitHub Push (main branch)
-       ↓
-GitHub Actions CI Build (Linux amd64 / arm64)
-       ↓
-Publish Aegis Release Artifacts
-       ↓
-Webhook Signal to Live Aegis Daemon
-       ↓
-Aegis Builder Stage: Package & Verify Aegis Binary
-       ↓
-Aegis Strategy Stage: GracefulSwitch to New Aegis Daemon
-       ↓
-Pre-Activation Health Probe (gRPC GetStatus HTTP/gRPC check)
-       ↓
-Atomic Symlink Pointer Swap
-       ↓
-Graceful Drain & Restart of Daemon Process
-```
+> **Status: planned, not running.** Aegis does not deploy itself yet, and there are no dogfooding results. When it does, results go in a report based on [`dogfood-report.md`](../validation/_templates/dogfood/dogfood-report.md).
 
 ---
 
-## 2. Advantages of Dogfooding
-1. **Immediate Feedback**: Weaknesses in signal handling, log streaming, or configuration reloading are discovered internally before end users encounter them.
-2. **Stress Testing**: Verifies zero-downtime gRPC streaming and event persistence during live upgrades.
+## 1. Planned Pipeline
+
+```
+GitHub push (main branch)
+       ↓
+GitHub Actions CI build (Linux amd64 / arm64)
+       ↓
+Publish Aegis release artifacts
+       ↓
+Signed webhook to a live Aegis daemon
+       ↓
+Aegis builder: package and verify the Aegis binary
+       ↓
+Health check of the new daemon
+       ↓
+Switch to the new release
+       ↓
+Graceful drain and restart of the daemon process
+```
+
+The webhook endpoint, builder, health checks and release switch exist and are tested in CI (see [`feature_maturity.md`](feature_maturity.md)). What's missing is a host running this pipeline, and a safe way for a daemon to replace itself (planned with self-update in [roadmap](roadmap_web_control_plane.md) Phase 6).
+
+---
+
+## 2. Why dogfood
+1. **Fast feedback:** problems with signal handling, log streaming or config reloading show up internally before users hit them.
+2. **Real load:** it exercises event persistence and live streams during real upgrades.
