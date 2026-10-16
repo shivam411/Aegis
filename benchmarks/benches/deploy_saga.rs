@@ -2,9 +2,11 @@
 //! saga (copy, build, package, start, health check, cutover, stop the old
 //! release), for a tiny app: `python3 -m http.server`.
 //!
-//! Not a Criterion benchmark: one deployment takes seconds, mostly spent
-//! waiting on the app and on the health-check poll interval, so it is timed
-//! a few times and summarised (min, median, p95, max). Results are printed
+//! Not a Criterion benchmark: one deployment takes hundreds of milliseconds,
+//! much of it waiting for the app to start, so each scenario is timed a few
+//! times and summarised (min, median, p95, max). Health checks are polled
+//! every 20 ms here (the daemon uses 500 ms), so the numbers track the
+//! saga's own work rather than the poll interval. Results are printed
 //! and written to `target/bench-results/deploy_saga.json`, which
 //! `scripts/bench_report.py` folds into the CI report.
 //!
@@ -143,8 +145,11 @@ drain_timeout_secs = 5
 
     async fn new_control(data: &Path) -> ControlPlane {
         let mut settings = ControlSettings::new(data.to_path_buf());
-        // Same as the daemon's defaults (500 ms health polls etc.), but no
-        // cgroups, so runs with and without root compare.
+        // The daemon polls health checks every 500 ms, which would round
+        // every deployment up to a multiple of it and hide changes in the
+        // saga's own work; poll every 20 ms instead. No cgroups, so runs
+        // with and without root compare.
+        settings.health_poll_interval = Duration::from_millis(20);
         settings.resources = aegis_resources::Mode::Off;
         let store = open_store(&data.join("aegis.db")).await;
         let control = ControlPlane::new(store, ProcessSupervisor::new(), settings)
@@ -249,9 +254,15 @@ drain_timeout_secs = 5
         let mut out = Vec::new();
         for s in &results {
             let j = s.json();
+            let ms = |k: &str| j[k].as_f64().unwrap_or(f64::NAN);
             println!(
-                "{:<38} {:>4} {:>9.0} {:>9.0} {:>9.0} {:>9.0}",
-                s.name, j["n"], j["min"], j["median"], j["p95"], j["max"]
+                "{:<38} {:>4} {:>9.1} {:>9.1} {:>9.1} {:>9.1}",
+                s.name,
+                j["n"],
+                ms("min"),
+                ms("median"),
+                ms("p95"),
+                ms("max")
             );
             out.push(j);
         }

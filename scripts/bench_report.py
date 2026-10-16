@@ -194,7 +194,7 @@ def main():
             md.append(f"| `{name}` | {c['n']} | {fmt_time(c['low'])} | {fmt_time(c['value'])} | "
                       f"{fmt_time(c['high'])} | {fmt_time(c['max'])} |")
     md.append("")
-    with open(args.out_md, "w") as f:
+    with open(args.out_md, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
 
     if args.github_annotations:

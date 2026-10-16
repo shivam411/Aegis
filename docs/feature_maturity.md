@@ -70,6 +70,13 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | **PM2 & systemd migration (`aegis migrate`)** | 🧪 Experimental | Parser unit tests in [`ui/cli/src/migrate.rs`](../ui/cli/src/migrate.rs); not checked against real PM2/systemd setups |
 | **Terminal UI (`aegis-tui`)** | 🧪 Experimental | `ratatui` dashboard over the local gRPC API: apps table, app view (releases, deployments, live logs), live event stream, and confirmed start/stop/restart/deploy/rollback actions ([roadmap](roadmap_web_control_plane.md) Phase 6). The state reducer, filters and screen rendering (`TestBackend`) have unit tests in CI. Two opt-in tests (`cargo test -p aegis-tui -- --ignored` with `AEGIS_TUI_LIVE_ADDR` set) drive its gRPC worker against a real daemon, including a reconnect after a daemon restart; they are not in CI, and no test drives the interactive terminal, so it stays Experimental. |
 
+### Performance and stability evidence
+
+| Feature | Status | Evidence |
+| :--- | :---: | :--- |
+| **Benchmarks in CI** (event store append/replay, projection rebuild, proxy overhead, deploy saga wall time) | 🟡 Validated (warn only) | [`benchmarks/`](../benchmarks/) run on every PR and push to `main` in [`perf.yml`](../.github/workflows/perf.yml), compared with the latest `main` run. A >30% regression is a warning, not a failure, and the numbers come from shared CI runners. See [`benchmarks.md`](benchmarks.md). |
+| **Soak test** (real daemon, load through the proxy, deploys/rollbacks/restarts/limit changes/daemon restarts, leak and error checks) | 🟡 Validated (5 min per push to `main`, 60 min nightly) | [`scripts/soak.sh`](../scripts/soak.sh), [`benchmarks.md`](benchmarks.md). No 24 h+ soak has been run; leak detection over 5 minutes only catches fast leaks. |
+
 ### Not implemented yet
 
 `core/ssh`, `core/state`, `deployment/analytics`, `git/action`, `integrations/github` and `integrations/docker` are stubs. Docker and fleet support come later ([roadmap](roadmap_web_control_plane.md) Phase 6).

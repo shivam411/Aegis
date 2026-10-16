@@ -80,11 +80,39 @@ cleanup() {
   fi
   wait 2>/dev/null || true
   rm -rf "$WORK"
+  # App cgroups are removed by the daemon; remove what is left of ours.
+  if [ -n "${CGROUP_CREATED:-}" ]; then
+    find "$CGROUP_ROOT" -mindepth 1 -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    rmdir "$CGROUP_ROOT" 2>/dev/null || true
+  fi
   exit "$code"
 }
 trap cleanup EXIT
 
 # --- daemon ----------------------------------------------------------------
+
+# As root on cgroup v2, give the daemon a cgroup of its own with the cpu,
+# memory and pids controllers enabled, so limit changes are exercised. (On
+# hosted runners the daemon's own systemd service has no delegated
+# controllers, so automatic detection finds none.)
+CGROUP_ROOT="${SOAK_CGROUP_ROOT:-}"
+CGROUP_CREATED=""
+if [ -z "$CGROUP_ROOT" ] && [ "$(id -u)" = 0 ] && [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+  candidate="/sys/fs/cgroup/aegis-soak-$$"
+  if echo "+cpu +memory +pids" >/sys/fs/cgroup/cgroup.subtree_control 2>/dev/null \
+    && mkdir -p "$candidate" \
+    && echo "+cpu +memory +pids" >"$candidate/cgroup.subtree_control" 2>/dev/null; then
+    CGROUP_ROOT="$candidate"
+    CGROUP_CREATED=1
+  else
+    rmdir "$candidate" 2>/dev/null || true
+  fi
+fi
+RESOURCES_TOML=""
+if [ -n "$CGROUP_ROOT" ]; then
+  RESOURCES_TOML="[resources]
+cgroup_root = \"$CGROUP_ROOT\""
+fi
 
 cat >"$WORK/daemon.toml" <<EOF
 [daemon]
@@ -104,6 +132,8 @@ enabled = true
 host = "127.0.0.1"
 http_port = $PROXY_HTTP_PORT
 https_port = $PROXY_HTTPS_PORT
+
+$RESOURCES_TOML
 EOF
 
 start_daemon() {
@@ -245,7 +275,7 @@ op_limits() {
   local t0 body
   t0=$(now_ms)
   if [ "$LIMITS_BACKEND" = none ]; then
-    record limits "$t0" skipped "no cgroup backend (run as root on cgroup v2)"; return
+    record limits "$t0" skipped "no cgroup backend (run as root on cgroup v2; see resources.json)"; return
   fi
   LIMITS_N=$((LIMITS_N + 1))
   if [ $((LIMITS_N % 2)) = 1 ]; then
@@ -261,8 +291,11 @@ op_limits() {
   fi
 }
 
+DAEMON_RESTARTS=0
 op_daemon_restart() {
   local t0 waited
+  DAEMON_RESTARTS=$((DAEMON_RESTARTS + 1))
+  fd_snapshot "before-daemon-restart-$DAEMON_RESTARTS"
   t0=$(now_ms)
   touch "$WORK/restarting"
   stop_daemon
@@ -276,9 +309,29 @@ op_daemon_restart() {
   fi
 }
 
+# Where each of the daemon's open fds points, for telling what kind of fd
+# grows when the count does (fds-<label>.txt).
+fd_snapshot() {
+  local pid fd
+  pid=$(cat "$WORK/daemon.pid" 2>/dev/null || echo 0)
+  kill -0 "$pid" 2>/dev/null || return 0
+  for fd in /proc/"$pid"/fd/*; do
+    printf '%s %s\n' "${fd##*/}" "$(readlink "$fd" 2>/dev/null)"
+  done >"$OUT_DIR/fds-$1.txt"
+}
+
 # --- sampler ----------------------------------------------------------------
 
 proc_field() { awk -v k="$2:" '$1 == k {print $2}' "/proc/$1/status" 2>/dev/null || true; }
+# RSS of a process and its children, in kB.
+tree_rss() {
+  local total=0 p r
+  for p in "$1" $(pgrep -P "$1" 2>/dev/null); do
+    r=$(proc_field "$p" VmRSS)
+    total=$((total + ${r:-0}))
+  done
+  echo "$total"
+}
 size_of() { du -sb "$@" 2>/dev/null | awk '{s += $1} END {print s + 0}'; }
 
 sampler() {
@@ -307,7 +360,7 @@ except Exception:
     print(" ")' 2>/dev/null || echo " ")
     app_pid="${app%% *}"; restarts="${app#* }"
     app_rss=""
-    [ -n "$app_pid" ] && app_rss=$(proc_field "$app_pid" VmRSS)
+    [ -n "$app_pid" ] && app_rss=$(tree_rss "$app_pid")
     echo "$(date +%s),$pid,$alive,$rss,$fds,$threads,$zombies,$(size_of "$DATA/aegis.db"),$(size_of "$DATA/aegis.db-wal"),$(size_of "$DATA"/projects/*/logs),$(size_of "$DATA"),$(size_of "$DAEMON_LOG"),$app_pid,$app_rss,$restarts" >>"$SAMPLES"
     sleep "$SAMPLE_SECS"
   done
@@ -344,8 +397,9 @@ case "$RESP_CODE" in 200|201) ;; *) log "registering the app failed: $RESP_CODE 
 call POST "/projects/$PROJECT/domains" "{\"domain\":\"$DOMAIN\",\"tls\":\"off\"}"
 [ "$RESP_CODE" = 201 ] || { log "mapping $DOMAIN failed: $RESP_CODE $RESP_BODY"; exit 1; }
 call GET /resources
+echo "$RESP_BODY" >"$OUT_DIR/resources.json"
 LIMITS_BACKEND=$(echo "$RESP_BODY" | json 'd.get("backend", "none")' 2>/dev/null || echo none)
-log "Resource limits backend: $LIMITS_BACKEND"
+log "Resource limits backend: $LIMITS_BACKEND ($(echo "$RESP_BODY" | json 'd.get("reason") or d.get("location")' 2>/dev/null || true))"
 
 op_deploy
 grep -q '^deploy,.*,ok,' "$OPS" || { log "first deploy failed"; cat "$OPS"; tail -n 40 "$DAEMON_LOG"; exit 1; }
@@ -354,6 +408,7 @@ log "First deploy is live behind http://$DOMAIN (proxy port $PROXY_HTTP_PORT)"
 
 sampler &
 SAMPLER_PID=$!
+fd_snapshot start
 python3 "$ROOT/scripts/soak_load.py" --port "$PROXY_HTTP_PORT" --host-header "$DOMAIN" \
   --rate "$LOAD_RATE" --workers "$LOAD_WORKERS" --out-dir "$OUT_DIR" &
 LOAD_PID=$!
@@ -397,17 +452,30 @@ kill -TERM "$SAMPLER_PID" 2>/dev/null; wait "$SAMPLER_PID" 2>/dev/null || true; 
 DAEMON_ALIVE_AT_END=0
 if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
   DAEMON_ALIVE_AT_END=1
-  ensure_login
-  call GET "/events?project=$PROJECT&limit=100000"
-  echo "$RESP_BODY" >"$OUT_DIR/events.json"
+  fd_snapshot end
   t0=$(now_ms)
   stop_daemon
   echo "daemon_stop,$t0,$(now_ms),ok,graceful shutdown" >>"$OPS"
 fi
 
+# Event counts by type, and every crash/failure event, straight from the
+# database (the API returns at most 1000 events).
+python3 - "$DATA/aegis.db" "$OUT_DIR/events.json" <<'PY' || echo '{}' >"$OUT_DIR/events.json"
+import json, sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+counts = dict(db.execute("SELECT event_type, COUNT(*) FROM events GROUP BY event_type"))
+crashes = [
+    {"event_type": t, "created_at": c, "payload": json.loads(p)}
+    for t, p, c in db.execute(
+        "SELECT event_type, payload_json, created_at FROM events WHERE event_type IN "
+        "('ProcessCrashed', 'ProcessFailed', 'DeploymentFailed', 'ResourceAlert') ORDER BY seq")
+]
+json.dump({"counts": counts, "events": crashes}, open(sys.argv[2], "w"), indent=1)
+PY
+
 cat >"$OUT_DIR/run.json" <<EOF
 {"duration_min": $DURATION_MIN, "load_rate": $LOAD_RATE, "load_workers": $LOAD_WORKERS,
- "op_interval_secs": $OP_INTERVAL_SECS, "sample_secs": $SAMPLE_SECS,
+ "op_interval_secs": $OP_INTERVAL_SECS, "cgroup_root": "$CGROUP_ROOT", "sample_secs": $SAMPLE_SECS,
  "daemon_restart_every_secs": $DAEMON_RESTART_EVERY_SECS, "limits_backend": "$LIMITS_BACKEND",
  "daemon_alive_at_end": $DAEMON_ALIVE_AT_END, "domain": "$DOMAIN",
  "kernel": "$(uname -r)", "cpus": $(nproc), "commit": "${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"}

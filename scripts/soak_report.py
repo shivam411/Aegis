@@ -95,7 +95,39 @@ def segment_trend(points):
 
 
 def fmt_ms(v):
-    return "-" if v is None else f"{v:,.0f} ms"
+    if v is None:
+        return "-"
+    return f"{v:.2f} ms" if v < 10 else f"{v:,.0f} ms"
+
+
+def fd_kind(target):
+    for prefix in ("socket:", "pipe:", "anon_inode:"):
+        if target.startswith(prefix):
+            return prefix[:-1]
+    if target.startswith("/dev/"):
+        return "device"
+    return "file" if target else "unknown"
+
+
+def read_fd_snapshots(out):
+    """{label: [target, ...]} from fds-<label>.txt, in the order taken."""
+    snaps = []
+    for name in os.listdir(out):
+        if name.startswith("fds-") and name.endswith(".txt"):
+            path = os.path.join(out, name)
+            with open(path, errors="replace") as f:
+                targets = [line.rstrip("\n").split(" ", 1)[1] if " " in line else ""
+                           for line in f if line.strip()]
+            label = name[4:-4]
+            if label == "start":
+                key = (0, 0)
+            elif label == "end":
+                key = (2, 0)
+            else:
+                digits = "".join(c for c in label if c.isdigit())
+                key = (1, int(digits) if digits else 0)
+            snaps.append((key, label, targets))
+    return [(label, targets) for _, label, targets in sorted(snaps)]
 
 
 def main():
@@ -229,18 +261,22 @@ def main():
 
     # --- app crashes ----------------------------------------------------------
     crashes = 0
+    event_counts = {}
     events_path = os.path.join(out, "events.json")
     if os.path.exists(events_path):
         try:
             with open(events_path) as f:
                 data = json.load(f)
-            items = data.get("events", data) if isinstance(data, dict) else data
-            for ev in items:
-                kind = ev.get("event_type") or ev.get("type") or ""
-                if kind == "ProcessCrashed":
-                    crashes += 1
-        except (ValueError, AttributeError):
+            event_counts = data.get("counts", {})
+            crashes = int(event_counts.get("ProcessCrashed", 0))
+            for ev in data.get("events", []):
+                if ev.get("event_type") != "ProcessCrashed":
+                    notes.append(f"{ev.get('event_type')} at {ev.get('created_at')}: "
+                                 f"{json.dumps(ev.get('payload'))[:200]}")
+        except (ValueError, AttributeError, TypeError):
             notes.append("events.json could not be read")
+    else:
+        notes.append("no events.json (the daemon's database could not be read)")
     if crashes > max_crashes:
         problems.append(f"the app crashed {crashes} time(s) (ProcessCrashed events)")
 
@@ -332,7 +368,31 @@ def main():
         restarts = [num(s["app_restarts"]) for s in samples if num(s["app_restarts"]) is not None]
         md.append(f"App: supervisor restart count of the live process peaked at "
                   f"{max(restarts) if restarts else 0:.0f}; ProcessCrashed events: {crashes}.")
+        if event_counts:
+            md.append(f"Events recorded: {sum(event_counts.values()):,} ("
+                      + ", ".join(f"{k} {v}" for k, v in sorted(event_counts.items(), key=lambda kv: -kv[1])[:8])
+                      + ", ...).")
         md.append("")
+
+    snaps = read_fd_snapshots(out)
+    if snaps:
+        kinds = ["socket", "pipe", "anon_inode", "file", "device"]
+        md += ["### Daemon fds by kind", "",
+               "| Snapshot | Total | " + " | ".join(kinds) + " |",
+               "| :--- | ---: | " + " | ".join("---:" for _ in kinds) + " |"]
+        for label, targets in snaps:
+            counts = {}
+            for t in targets:
+                counts[fd_kind(t)] = counts.get(fd_kind(t), 0) + 1
+            md.append(f"| {label} | {len(targets)} | " + " | ".join(str(counts.get(k, 0)) for k in kinds) + " |")
+        first_files = {t for t in snaps[0][1] if fd_kind(t) == "file"}
+        new_files = sorted({t for _, ts in snaps[1:] for t in ts if fd_kind(t) == "file"} - first_files)
+        if new_files:
+            md += ["", "Files open in later snapshots but not in the first: "
+                   + ", ".join(f"`{t}`" for t in new_files[:10])
+                   + (" ..." if len(new_files) > 10 else "")]
+        md += ["", "Snapshots are taken after the first deploy, before each daemon restart and at the end "
+               "(full lists in `fds-*.txt`).", ""]
 
     md += ["### Daemon log", "", f"{len(errors)} ERROR line(s) (not allow-listed), {warns} WARN line(s)."]
     if errors:
@@ -359,7 +419,7 @@ def main():
         md += ["", "</details>"]
     md.append("")
 
-    with open(os.path.join(out, "report.md"), "w") as f:
+    with open(os.path.join(out, "report.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(md))
     summary = {
         "passed": passed,
@@ -370,6 +430,7 @@ def main():
                      "zero_success_seconds": zero_ok_secs,
                      "p50_ms": pct(p50s, 0.5), "worst_p99_ms": p99s[-1] if p99s else None},
         "app_crashes": crashes,
+        "event_counts": event_counts,
         "error_lines": len(errors),
         "segments": [
             {"pid": pid, "span_secs": span,
@@ -379,7 +440,7 @@ def main():
             for pid, span, rss, fds, thr, rt, ft, tt, verdict in seg_rows],
         "run": run,
     }
-    with open(os.path.join(out, "summary.json"), "w") as f:
+    with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print("\n".join(md))
     return 0 if passed else 1
