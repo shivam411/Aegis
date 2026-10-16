@@ -29,6 +29,8 @@ pub struct MetricsUpdate {
 #[derive(Debug, Clone, Serialize)]
 pub struct ResourceOverview {
     pub capabilities: Capabilities,
+    /// Whether container apps can run (`None` before the first check).
+    pub docker: Option<aegis_docker::DockerStatus>,
     pub host_cpu_cores: usize,
     pub host_memory_bytes: u64,
     /// Sum of all apps' memory limits.
@@ -88,11 +90,20 @@ impl ControlPlane {
         &self.inner.host
     }
 
+    /// [`ControlPlane::resource_overview`] with the capabilities that apply
+    /// to this project: Docker's for container apps.
+    pub fn project_resource_overview(&self, project: &ProjectState) -> ResourceOverview {
+        let mut overview = self.resource_overview();
+        overview.capabilities = self.project_capabilities(project);
+        overview
+    }
+
     pub fn resource_overview(&self) -> ResourceOverview {
         let host = self.inner.host.latest();
         let projects = self.inner.projection.get_projects();
         ResourceOverview {
             capabilities: self.resource_capabilities(),
+            docker: self.docker_status(),
             host_cpu_cores: host.cpu_count,
             host_memory_bytes: host.memory_total_bytes,
             committed_memory_bytes: projects
@@ -139,7 +150,14 @@ impl ControlPlane {
             .projection
             .get_project(&project_id)
             .ok_or_else(|| ControlError::NotFound(format!("Unknown project {}", project_id)))?;
-        let caps = self.resource_capabilities();
+        // Container apps are limited by Docker, whatever the host's cgroups allow.
+        let docker = self.project_uses_docker(&project);
+        let caps = if docker {
+            let status = self.inner.docker.current_status().await;
+            self.docker_capabilities(Some(&status))
+        } else {
+            self.resource_capabilities()
+        };
         let unavailable = |what: &str| {
             ControlError::FailedPrecondition(format!(
                 "{} limits are not available on this host: {}",
@@ -216,15 +234,33 @@ impl ControlPlane {
         }
 
         let previous = project.resources.clone();
-        let applied = match self.inner.resources.set_limits(project_id, limits.clone()) {
-            Ok(n) => n,
-            Err(e) => {
-                // Keep what the kernel and the event log agree on.
-                let _ = self.inner.resources.set_limits(project_id, previous);
-                return Err(ControlError::FailedPrecondition(format!(
-                    "The kernel refused the new limits: {}",
-                    e
-                )));
+        let applied = if docker {
+            // Stored for the next container start, applied to running ones now.
+            self.inner.resources.load_limits(project_id, limits.clone());
+            match self.apply_docker_limits(project_id, &limits).await {
+                Ok(n) => n,
+                Err(e) => {
+                    self.inner
+                        .resources
+                        .load_limits(project_id, previous.clone());
+                    let _ = self.apply_docker_limits(project_id, &previous).await;
+                    return Err(ControlError::FailedPrecondition(format!(
+                        "Docker refused the new limits: {}",
+                        e
+                    )));
+                }
+            }
+        } else {
+            match self.inner.resources.set_limits(project_id, limits.clone()) {
+                Ok(n) => n,
+                Err(e) => {
+                    // Keep what the kernel and the event log agree on.
+                    let _ = self.inner.resources.set_limits(project_id, previous);
+                    return Err(ControlError::FailedPrecondition(format!(
+                        "The kernel refused the new limits: {}",
+                        e
+                    )));
+                }
             }
         };
         self.record(
@@ -469,7 +505,14 @@ fn measure(
     let now = Instant::now();
     let mut out = Vec::new();
     for p in processes {
-        let cg = resources.stats(&p.id);
+        // A container's counters come from its own cgroup, found through
+        // its main process.
+        let cg = resources.stats(&p.id).or_else(|| {
+            p.runtime
+                .as_ref()
+                .and(p.pid)
+                .and_then(aegis_resources::stats_for_pid)
+        });
         let pids = match &cg {
             Some(c) if !c.procs.is_empty() => c.procs.clone(),
             _ => p

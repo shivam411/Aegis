@@ -4,6 +4,10 @@
 //!
 //! Stages: Clone (fetch source) -> Install -> Build -> Test -> Package
 //! (content checksum) -> Verify. Activation ("Promote") is the caller's job.
+//!
+//! For container apps (`[run] runtime = "docker"`) the Build stage also
+//! builds the release's image from its Dockerfile, or pulls and tags a
+//! prebuilt one, as `aegis/<project id>:<release>`.
 
 use aegis_artifact_store::ArtifactStore;
 use aegis_engine::ResolvedProjectConfig;
@@ -232,7 +236,8 @@ impl<'a> BuildPipeline<'a> {
             (PipelineStage::Build, &config.build_command),
             (PipelineStage::Test, &config.test_command),
         ] {
-            let Some(command) = command else {
+            let image_build = stage == PipelineStage::Build && config.is_docker();
+            if command.is_none() && !image_build {
                 self.reporter
                     .report(
                         stage,
@@ -241,21 +246,30 @@ impl<'a> BuildPipeline<'a> {
                     )
                     .await;
                 continue;
-            };
-            self.begin(stage).await;
-            log.line(&format!("==> {}: {}", stage.as_str(), command));
-            if let Err(e) = run_command(
-                command,
-                &req.release_dir,
-                &env,
-                config.build_timeout,
-                &mut log,
-            )
-            .await
-            {
-                return Err(self.fail(stage, e, &log).await);
             }
-            self.succeed(stage, None).await;
+            self.begin(stage).await;
+            if let Some(command) = command {
+                log.line(&format!("==> {}: {}", stage.as_str(), command));
+                if let Err(e) = run_command(
+                    command,
+                    &req.release_dir,
+                    &env,
+                    config.build_timeout,
+                    &mut log,
+                )
+                .await
+                {
+                    return Err(self.fail(stage, e, &log).await);
+                }
+            }
+            let mut detail = None;
+            if image_build {
+                match build_image(req, &config, &mut log).await {
+                    Ok(tag) => detail = Some(tag),
+                    Err(e) => return Err(self.fail(stage, e, &log).await),
+                }
+            }
+            self.succeed(stage, detail).await;
         }
 
         // 5. Package
@@ -349,6 +363,90 @@ impl<'a> BuildPipeline<'a> {
             log_tail: log.tail(),
         }
     }
+}
+
+/// Builds (or pulls and tags) a container app's image for this release.
+/// Returns the image tag.
+async fn build_image(
+    req: &BuildRequest,
+    config: &ResolvedProjectConfig,
+    log: &mut BuildLog,
+) -> Result<String, anyhow::Error> {
+    use aegis_docker::args;
+    let bin = aegis_docker::docker_bin();
+    let status = aegis_docker::probe(&bin).await;
+    if !status.available {
+        anyhow::bail!(
+            "{} (this app runs in a container: [run] runtime = \"docker\")",
+            status.reason.unwrap_or_default()
+        );
+    }
+    let tag = args::image_tag(&req.project_id, &req.version);
+    let env = HashMap::from([("BUILDKIT_PROGRESS".to_string(), "plain".to_string())]);
+    match (&config.run.image, config.run.dockerfile()) {
+        (Some(image), _) => {
+            let present = aegis_docker::run_docker(
+                &bin,
+                &["image".into(), "inspect".into(), image.clone()],
+                Duration::from_secs(30),
+            )
+            .await
+            .is_ok();
+            if config.run.always_pull() || !present {
+                log.line(&format!("==> Image: docker pull {}", image));
+                run_argv(
+                    &bin,
+                    &["pull", image.as_str()],
+                    &req.release_dir,
+                    &env,
+                    config.build_timeout,
+                    log,
+                )
+                .await?;
+            }
+            log.line(&format!("==> Image: docker tag {} {}", image, tag));
+            run_argv(
+                &bin,
+                &["tag", image.as_str(), tag.as_str()],
+                &req.release_dir,
+                &env,
+                Duration::from_secs(60),
+                log,
+            )
+            .await?;
+        }
+        (None, Some(dockerfile)) => {
+            if !req.release_dir.join(dockerfile).is_file() {
+                anyhow::bail!(
+                    "{} not found in the release ([run] dockerfile, relative to the app's root)",
+                    dockerfile
+                );
+            }
+            let labels = vec![
+                (args::LABEL_MANAGED.to_string(), "true".to_string()),
+                (args::LABEL_PROJECT.to_string(), req.project_id.to_string()),
+                (args::LABEL_RELEASE.to_string(), req.version.clone()),
+            ];
+            let argv = args::build_args(&tag, &req.release_dir, dockerfile, &labels);
+            log.line(&format!(
+                "==> Image: docker build -t {} -f {}",
+                tag, dockerfile
+            ));
+            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+            run_argv(
+                &bin,
+                &argv,
+                &req.release_dir,
+                &env,
+                config.build_timeout,
+                log,
+            )
+            .await?;
+        }
+        (None, None) => anyhow::bail!("[run] needs a dockerfile or an image"),
+    }
+    log.line(&format!("==> Image ready: {}", tag));
+    Ok(tag)
 }
 
 struct CommitInfo {
@@ -1040,6 +1138,38 @@ GREETING = "hi"
             .unwrap_err();
         assert_eq!(err.stage, PipelineStage::Clone);
         assert!(err.message.contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_container_app_without_docker_fails_in_build_stage() {
+        let src = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        std::fs::write(src.path().join("package.json"), "{}").unwrap();
+        std::fs::write(src.path().join("Dockerfile"), "FROM busybox").unwrap();
+        std::fs::write(
+            src.path().join("aegis.toml"),
+            "[run]\nruntime = \"docker\"\n",
+        )
+        .unwrap();
+        let store = ArtifactStore::new(out.path().join("artifacts"));
+        let recorder = Recorder::default();
+        let req = request(SourceSpec::LocalDir(src.path().to_path_buf()), out.path());
+        // Only this test changes the variable, and only to a missing binary.
+        std::env::set_var("AEGIS_DOCKER_BIN", "/definitely/not/docker-aegis-test");
+        let err = BuildPipeline::new(&store, &recorder)
+            .run(&req)
+            .await
+            .unwrap_err();
+        std::env::remove_var("AEGIS_DOCKER_BIN");
+        assert_eq!(err.stage, PipelineStage::Build);
+        assert!(
+            err.message.contains("Docker is not installed"),
+            "{}",
+            err.message
+        );
+        let reports = recorder.0.lock().unwrap().clone();
+        // The detected `npm install` is not run on the host for a container app.
+        assert!(reports.contains(&(PipelineStage::Install, StageStatus::Skipped)));
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 
 Aegis reads two kinds of settings from `aegis.toml` files:
 
-- **Project settings** (`[project]`, `[build]`, `[deploy]`, `[env]`) live in your application's directory. They are copied into every release, so a release always runs with the settings it was built with, and a rollback uses the old release's settings.
+- **Project settings** (`[project]`, `[build]`, `[deploy]`, `[run]`, `[env]`) live in your application's directory. They are copied into every release, so a release always runs with the settings it was built with, and a rollback uses the old release's settings.
 - **Daemon settings** (`[daemon]`) tell the daemon where to listen and store data, and tell the CLI where to find the daemon.
 
 `aegis init` generates the project sections, and `aegis validate` shows the effective settings after defaults are applied.
@@ -52,6 +52,40 @@ NODE_ENV = "production"
 | `deploy.max_retained_versions` | `2` | Release directories kept on disk for rollback, including the live one. |
 | `deploy.restart_policy` | `always` | What the supervisor does when the app exits. A crash loop (more than 5 restarts within 2 minutes) stops restarting and marks the process `Failed`. |
 | `[env]` | none | Environment variables for build commands and the app. |
+
+### Containers (`[run]`)
+
+An app runs as a plain process unless `[run] runtime = "docker"` is set. Then it runs in a container built from its Dockerfile (or from a prebuilt `image`), with the same health checks, cutover, rollback, restart policy, logs and resource sliders. See the [Docker runtime guide](docker_runtime.md) for how it works.
+
+```toml
+[run]
+runtime = "docker"              # "process" (default) or "docker"
+dockerfile = "Dockerfile"       # default; relative to the app's root. Or: image = "nginx:1.27"
+container_port = 8080           # default: deploy.port; exported to the container as PORT
+# command = ["node", "server.js"]
+# user = "1000:1000"
+# read_only = true
+# tmpfs = ["/tmp"]
+# volumes = ["data:/var/lib/app"]   # named volumes only, scoped to this app
+# init = true
+# pull = "missing"                  # with image: "missing" or "always"
+```
+
+| Key | Default | Meaning |
+| :--- | :--- | :--- |
+| `run.runtime` | `process` | `process` or `docker`. The other `[run]` keys are only accepted with `docker`. |
+| `run.dockerfile` | `Dockerfile` | Built with the release directory as context. Must stay inside the release. |
+| `run.image` | none | A prebuilt image instead of a build (exclusive with `dockerfile`). It is tagged per release, so rollbacks run exactly the same image. |
+| `run.pull` | `missing` | With `image`: pull only when missing, or `always`. |
+| `run.container_port` | `deploy.port` | The port inside the container. It is published on `127.0.0.1:<deploy.port>` (or the release's own port behind the proxy). |
+| `run.command` | image `CMD` | An argument list that replaces the image's command. |
+| `run.user` | image user | `name`, `uid` or `uid:gid`. |
+| `run.read_only` | `false` | Read-only root filesystem. |
+| `run.init` | `true` | `--init` (signal forwarding, zombie reaping). |
+| `run.tmpfs` | none | In-memory directories (absolute paths, no options). |
+| `run.volumes` | none | `name:/path[:ro]`. These are named volumes `aegis-<project id>-<name>` that keep data across releases. Host paths are refused. |
+
+There is no setting for privileged mode, host networking, extra capabilities, devices or bind mounts, and unknown `[run]` keys are rejected. For container apps, only explicitly set `[build]` commands run on the host (before the image build), `build.start_command` is ignored, and the default health check is `http://127.0.0.1:<port>/`.
 
 ### Variables and secrets from the dashboard
 

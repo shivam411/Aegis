@@ -128,6 +128,7 @@ fn project_file(
             restart_policy,
             ..Default::default()
         },
+        run: Default::default(),
         env,
     }
 }

@@ -17,4 +17,5 @@ aegis-config = { path = "../../core/config" }
 aegis-api = { path = "../../core/api" }
 aegis-types = { path = "../../core/types" }
 aegis-engine = { path = "../../runtime/engine" }
+aegis-docker = { path = "../../integrations/docker" }
 aegis-projection = { path = "../../core/projection" }

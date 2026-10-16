@@ -24,3 +24,6 @@ scripts/generate_scorecard.py
 # Fabricated validation artifacts (not real telemetry). Never commit these;
 # real results go in validation/<area>/ with the script that produced them.
 validation/artifacts/
+
+# The example container app ships its config.
+!examples/docker-app/aegis.toml

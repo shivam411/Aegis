@@ -493,14 +493,19 @@ impl ControlPlane {
         if let Some(port) = proxied_port {
             env.insert("PORT".to_string(), port.to_string());
         }
+        // Container apps run through a launcher (see docker.rs).
+        let runtime = self.runtime_launcher(project_id, dir, config);
         ProcessSpec {
             project_id,
-            command: config.start_command.clone(),
+            command: runtime
+                .as_ref()
+                .map_or_else(|| config.start_command.clone(), |(_, what)| what.clone()),
             cwd: dir.to_path_buf(),
             env,
             restart_policy: RestartPolicy::parse(&config.restart_policy)
                 .unwrap_or(RestartPolicy::Always),
             log_file: Some(self.process_log_path(project_id, process_id)),
+            launcher: runtime.map(|(launcher, _)| launcher),
         }
     }
 

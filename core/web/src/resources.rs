@@ -69,6 +69,8 @@ fn project_resources(st: &AppState, key: &str) -> ApiResult<ProjectResourcesDto>
         .current_process
         .and_then(|id| st.control.supervisor().get(&id))
         .is_some_and(|p| p.status == aegis_process::ProcessStatus::Running);
+    // Container apps are limited by Docker rather than host cgroups.
+    let capabilities = st.control.project_resource_overview(&project).into();
     Ok(ProjectResourcesDto {
         project_id: project.id.to_string(),
         limits: project.resources.into(),
@@ -76,7 +78,7 @@ fn project_resources(st: &AppState, key: &str) -> ApiResult<ProjectResourcesDto>
             .then(|| st.control.latest_sample(&project.id.to_string()))
             .flatten()
             .map(Into::into),
-        capabilities: overview(st),
+        capabilities,
     })
 }
 

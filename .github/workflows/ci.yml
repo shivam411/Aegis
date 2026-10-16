@@ -35,7 +35,15 @@ jobs:
       - name: Run Clippy lints
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Docker for container-app tests
+        # GitHub's Ubuntu runners ship Docker. The container-app integration
+        # test (core/control/tests/docker.rs) would skip itself without it;
+        # AEGIS_REQUIRE_DOCKER below makes that a failure here instead.
+        run: docker version
+
       - name: Run unit and integration tests
+        env:
+          AEGIS_REQUIRE_DOCKER: '1'
         run: cargo test --workspace --all-targets
 
       - name: Resource limits against the real kernel (cgroup v2, as root)

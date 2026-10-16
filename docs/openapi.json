@@ -2780,6 +2780,32 @@
           }
         }
       },
+      "DockerStatusDto": {
+        "type": "object",
+        "description": "Whether container apps (`[run] runtime = \"docker\"`) can run here.",
+        "required": [
+          "available"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why Docker can't be used (not installed, daemon not running, no permission)."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Docker Engine version."
+          }
+        }
+      },
       "DomainDto": {
         "type": "object",
         "required": [
@@ -3151,7 +3177,8 @@
           "project_id",
           "status",
           "desired",
-          "restart_count"
+          "restart_count",
+          "runtime"
         ],
         "properties": {
           "command": {
@@ -3160,12 +3187,26 @@
               "null"
             ]
           },
+          "container": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The container's name (docker only)."
+          },
           "desired": {
             "type": "string",
             "description": "\"running\" or \"stopped\": what the operator last asked for."
           },
           "id": {
             "type": "string"
+          },
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The image the container runs (docker only)."
           },
           "last_exit_code": {
             "type": [
@@ -3201,6 +3242,10 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "runtime": {
+            "type": "string",
+            "description": "\"process\" or \"docker\". For \"docker\", `pid` is the container's main\nprocess (as seen from the host)."
           },
           "status": {
             "type": "string",
@@ -3543,7 +3588,7 @@
         "properties": {
           "backend": {
             "type": "string",
-            "description": "\"cgroup2\", \"cgroup1\" or \"none\"."
+            "description": "\"cgroup2\", \"cgroup1\", \"docker\" (a container app's limits, applied by\nDocker) or \"none\"."
           },
           "committed_cpu_cores": {
             "type": "number",
@@ -3557,6 +3602,17 @@
           },
           "cpu": {
             "type": "boolean"
+          },
+          "docker": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DockerStatusDto",
+                "description": "Docker's status, once checked."
+              }
+            ]
           },
           "host_cpu_cores": {
             "type": "integer",

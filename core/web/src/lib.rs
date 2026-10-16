@@ -262,7 +262,7 @@ impl Modify for SecuritySchemes {
         NewTokenDto, users::UserDto, users::CreateUserRequest, users::UpdateUserRequest,
         WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
         DetectedDto, HostDto, BuildLogDto, ResourceLimitsDto, SetResourcesRequest, SampleDto,
-        PointDto, MetricsDto, ResourceCapabilitiesDto, ProjectResourcesDto,
+        PointDto, MetricsDto, ResourceCapabilitiesDto, DockerStatusDto, ProjectResourcesDto,
         domains::DomainDto, domains::CertStatusDto, domains::MapDomainRequest,
         domains::ProxyRouteDto, domains::ProxyStatusDto,
         SecretDto,
