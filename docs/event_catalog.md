@@ -116,7 +116,10 @@ Every event recorded because of an API call carries `actor`: `user:<name>`, `tok
 | `UserLoggedIn` | Successful sign-in | `username`, `ip` |
 | `UserLoginFailed` | Wrong username or password (the attempted password is never recorded) | `username`, `ip` |
 | `UserLoggedOut` | Session ended by the user | `username` |
-| `PasswordChanged` / `PasswordReset` | Password changed in the API / reset on the server; all sessions end | `username` |
+| `PasswordChanged` / `PasswordReset` | Password changed by its owner / reset by an admin or on the server; that user's sessions end | `username` |
+| `UserCreated` | An admin (or `aegis-daemon admin create-user`) added an account | `username`, `role`, `actor` |
+| `UserRoleChanged` | An account's role changed; open sessions use the new role at once | `username`, `from`, `to`, `actor` |
+| `UserDeleted` | An account was removed and signed out | `username`, `actor` |
 | `ApiTokenCreated` / `ApiTokenRevoked` | API token lifecycle | `token_id`, plus `name` and `scope` when created |
 | `WebhookSecretRotated` | A project's webhook secret was created or replaced | `project_id` |
 | `WebhookReceived` | A delivery with a valid signature was handled (including dashboard test deliveries) | `project_id`, `delivery`, `event`, `status` (`queued`, `ignored`, `duplicate`, `pong`, `error`), `reason`, `deployment_id`, `actor` |

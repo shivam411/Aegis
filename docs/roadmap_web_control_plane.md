@@ -271,7 +271,7 @@ This is the "drag CPU and memory" feature.
 
 ### Phase 6 — Operations polish *(ongoing)*
 
-- Multiple users with roles (viewer, deployer, admin).
+- ✅ **Multiple users with roles:** `viewer` (read), `deployer` (also deploy, roll back, start/stop/restart) and `admin` (everything). Enforced per request by the server (`required_role` in `core/web/src/auth.rs`); role changes apply to open sessions at once; there is always at least one admin. Users are managed under Account → Users, through `/api/v1/users`, or with `aegis-daemon admin create-user|set-role|list-users`. Events: `UserCreated`, `UserRoleChanged`, `UserDeleted`.
 - Backup and restore of `aegis.db` and releases from the UI; scheduled backups.
 - Self-update: "a new Aegis version is available → upgrade" (building on `aegis upgrade`).
 - A real `ratatui` TUI on the same read API as the web UI.

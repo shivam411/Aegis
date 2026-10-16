@@ -15,6 +15,7 @@ mod guard;
 mod resources;
 pub mod tls;
 mod ui;
+mod users;
 
 use aegis_auth::{AuthStore, LoginThrottle};
 use aegis_control::{ControlError, ControlPlane};
@@ -244,6 +245,7 @@ impl Modify for SecuritySchemes {
         resources::project_metrics, resources::host_metrics, resources::stream_metrics,
         auth::login, auth::logout, auth::session_info, auth::change_password,
         auth::list_tokens, auth::create_token, auth::revoke_token,
+        users::list_users, users::create_user, users::update_user, users::delete_user,
         auth::rotate_webhook_secret, auth::github_webhook,
         domains::list_domains, domains::map_domain, domains::unmap_domain, domains::proxy_status,
         appconfig::list_secrets, appconfig::set_secret, appconfig::delete_secret,
@@ -254,7 +256,8 @@ impl Modify for SecuritySchemes {
         LogLineDto, LogsDto, CreateProjectRequest, DeployRequest, DeployAccepted,
         RollbackRequest, RollbackResult, ScheduleRequest, ErrorBody, ErrorDetail,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
-        NewTokenDto, WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
+        NewTokenDto, users::UserDto, users::CreateUserRequest, users::UpdateUserRequest,
+        WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
         DetectedDto, HostDto, BuildLogDto, ResourceLimitsDto, SetResourcesRequest, SampleDto,
         PointDto, MetricsDto, ResourceCapabilitiesDto, ProjectResourcesDto,
         domains::DomainDto, domains::CertStatusDto, domains::MapDomainRequest,
@@ -264,7 +267,7 @@ impl Modify for SecuritySchemes {
         WebhookStatusDto
     )),
     tags(
-        (name = "auth"), (name = "system"), (name = "projects"), (name = "deployments"),
+        (name = "auth"), (name = "users"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
         (name = "domains"), (name = "secrets")
     )
@@ -291,6 +294,11 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/password", post(auth::change_password))
         .route("/tokens", get(auth::list_tokens).post(auth::create_token))
         .route("/tokens/:id", delete(auth::revoke_token))
+        .route("/users", get(users::list_users).post(users::create_user))
+        .route(
+            "/users/:username",
+            put(users::update_user).delete(users::delete_user),
+        )
         .route("/status", get(api::status))
         .route("/host", get(api::host))
         .route("/host/metrics", get(resources::host_metrics))
