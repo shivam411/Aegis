@@ -72,8 +72,8 @@ log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 cleanup() {
   local code=$?
-  [ -n "$LOAD_PID" ] && kill -TERM "$LOAD_PID" 2>/dev/null || true
-  [ -n "$SAMPLER_PID" ] && kill -TERM "$SAMPLER_PID" 2>/dev/null || true
+  if [ -n "$LOAD_PID" ]; then kill -TERM "$LOAD_PID" 2>/dev/null || true; fi
+  if [ -n "$SAMPLER_PID" ]; then kill -TERM "$SAMPLER_PID" 2>/dev/null || true; fi
   if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
     kill -TERM "$DAEMON_PID" 2>/dev/null || true
     wait "$DAEMON_PID" 2>/dev/null || true
@@ -292,8 +292,8 @@ sampler() {
       alive=1
       rss=$(proc_field "$pid" VmRSS)
       threads=$(proc_field "$pid" Threads)
-      fds=$(ls "/proc/$pid/fd" 2>/dev/null | wc -l)
-      zombies=$(ps -o stat= --ppid "$pid" 2>/dev/null | grep -c '^Z' || true)
+      fds=$(find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+      zombies=$(pgrep -c -r Z -P "$pid" || true)
     elif [ -e "$WORK/restarting" ]; then
       alive=2  # stopped on purpose
     fi
