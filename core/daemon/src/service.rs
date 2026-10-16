@@ -91,6 +91,13 @@ fn project_info(view: ProjectView) -> ProjectInfo {
         current_release: p.current_release.unwrap_or_default(),
         created_at: p.created_at,
         process: view.process.map(process_info),
+        usage: view.usage.map(|s| pb::ResourceUsage {
+            cpu_cores: s.cpu_cores,
+            memory_bytes: s.memory_bytes,
+            cpu_limit_cores: s.cpu_limit_cores,
+            memory_limit_bytes: s.memory_limit_bytes,
+            sampled_at: s.at,
+        }),
     }
 }
 
