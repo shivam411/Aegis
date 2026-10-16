@@ -470,20 +470,26 @@ impl ControlPlane {
     ) -> Option<Result<(), CutoverFailure>> {
         let wanted = target.config.instances;
         let old = self.live_instances(project);
-        if !(strategy_needs_proxy(strategy) || wanted != 1 || old.len() > 1) {
+        let several = old.len() > 1 || project.live_processes().len() > 1;
+        if !(strategy_needs_proxy(strategy) || wanted != 1 || several) {
             return None;
         }
         let proxied = self.is_proxied(&project.id);
+        if !proxied && wanted == 1 && !strategy_needs_proxy(strategy) {
+            // Back to one instance without the proxy (its domain was
+            // removed): stop the other instances, then the usual cutover
+            // replaces the current process on the configured port.
+            let extra: Vec<ProcessId> = old
+                .iter()
+                .filter(|i| Some(i.id) != project.current_process)
+                .map(|i| i.id)
+                .collect();
+            let drain = self.release_drain(project, strategy, &target.config);
+            self.stop_processes(&extra, drain, StopReason::Replaced)
+                .await;
+            return None;
+        }
         if let Err(reason) = check_requirements(strategy, wanted, proxied, &project.name) {
-            if !proxied && wanted == 1 && !strategy_needs_proxy(strategy) {
-                // Back to one instance without the proxy (its domain was
-                // removed): keep the first instance for the usual cutover.
-                let extra: Vec<ProcessId> = old.iter().skip(1).map(|i| i.id).collect();
-                let drain = self.release_drain(project, strategy, &target.config);
-                self.stop_processes(&extra, drain, StopReason::Replaced)
-                    .await;
-                return None;
-            }
             return Some(Err(CutoverFailure {
                 reason,
                 log_tail: Vec::new(),
@@ -1008,7 +1014,15 @@ impl ControlPlane {
         match action {
             ProcessAction::Stop => {
                 self.drop_standby(project.id, "stopped").await;
+                // No new requests; let the ones in flight finish first.
                 self.set_routes(project.id, Vec::new());
+                if let Some(ingress) = self.ingress() {
+                    let deadline = Instant::now() + drain;
+                    for port in ids.iter().filter_map(|id| self.port_of(id)) {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        ingress.wait_idle(port, left).await;
+                    }
+                }
                 for id in &ids {
                     if self.is_running(id) {
                         self.inner
@@ -1102,7 +1116,14 @@ impl ControlPlane {
             let port = if self.is_running(id) {
                 // Pick up secrets changed since it started, keeping its port.
                 let mut env = self.process_env(project.id, config);
-                if let Some(port) = instance_port.filter(|_| self.is_proxied(&project.id)) {
+                let proxied = self
+                    .inner
+                    .process_ports
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .is_some_and(|p| p.proxied);
+                if let Some(port) = instance_port.filter(|_| proxied) {
                     env.insert("PORT".to_string(), port.to_string());
                 }
                 self.inner.supervisor.set_env(id, env);
