@@ -143,7 +143,15 @@ test('full lifecycle from the browser', async ({ page }) => {
     await page.getByRole('link', { name: 'Settings' }).click();
     await expect(page.getByLabel('Port')).toHaveValue(String(APP_PORT));
     await page.getByLabel('Build command').fill('echo dashboard build');
+    await page.getByRole('button', { name: 'Add variable' }).click();
+    await page.getByLabel('Variable 1 name').fill('GREETING');
+    await page.getByLabel('Variable 1 value').fill('hello');
     await page.getByRole('button', { name: 'Save settings' }).click();
+    // The aegis.toml diff is shown before saving.
+    const diff = page.locator('dialog[open] pre.diff');
+    await expect(diff.locator('.add', { hasText: 'build_command = "echo dashboard build"' })).toBeVisible();
+    await expect(diff.locator('.add', { hasText: 'GREETING = "hello"' })).toBeVisible();
+    await confirm(page, 'Save settings');
     await expect(page.locator('.toast', { hasText: 'Settings saved' })).toBeVisible();
     // The server validates what the browser can't.
     await page.getByLabel('Health check URL').fill('ftp://example.com/');
@@ -151,9 +159,26 @@ test('full lifecycle from the browser', async ({ page }) => {
     await expect(page.locator('.toast.bad', { hasText: 'health check URL' })).toBeVisible();
     await page.reload();
     await expect(page.getByLabel('Build command')).toHaveValue('echo dashboard build');
-    await page.getByRole('button', { name: 'Generate webhook secret' }).click();
+    await expect(page.getByLabel('Variable 1 value')).toHaveValue('hello');
+    await page.getByRole('button', { name: 'View aegis.toml' }).click();
+    await expect(page.locator('dialog[open] pre.diff')).toContainText('GREETING = "hello"');
+    await confirm(page, 'Close');
+
+    // Secrets are write-only; saving one offers a restart.
+    await page.getByLabel('Name', { exact: true }).fill('API_KEY');
+    await page.getByLabel('Value', { exact: true }).fill('s3cret-value');
+    await page.getByRole('button', { name: 'Save secret' }).click();
+    await confirm(page, 'Restart');
+    await expect(page.locator('.toast', { hasText: 'Restarted' })).toBeVisible();
+    await expect(page.locator('td', { hasText: 'API_KEY' })).toBeVisible();
+    await expect(page.locator('body')).not.toContainText('s3cret-value');
+
+    await page.getByRole('button', { name: 'Generate secret' }).click();
     await confirm(page, 'Generate');
     await expect(page.locator('[data-secret]').nth(1)).toHaveText(/\S{20,}/);
+    await page.getByRole('button', { name: 'Send test delivery' }).click();
+    await expect(page.locator('.toast', { hasText: 'Test delivery accepted' })).toBeVisible();
+    await expect(page.locator('ul.deliveries li').first()).toContainText('pong');
   });
 
   await test.step('domains are added and removed', async () => {

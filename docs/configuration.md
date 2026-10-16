@@ -53,6 +53,12 @@ NODE_ENV = "production"
 | `deploy.restart_policy` | `always` | What the supervisor does when the app exits. A crash loop (more than 5 restarts within 2 minutes) stops restarting and marks the process `Failed`. |
 | `[env]` | none | Environment variables for build commands and the app. |
 
+### Variables and secrets from the dashboard
+
+- **Variables** set in an app's Settings tab (or `PUT /api/v1/projects/{p}/settings` with `env`) are merged over `[env]` and written into each new release's `aegis.toml`, like the other dashboard settings.
+- **Secrets** (Settings → Secrets, or `PUT /api/v1/projects/{p}/secrets/{NAME}`) are stored encrypted in the database with a key kept in `<data_dir>/secrets.key` (created on first start, mode 0600). They are passed to the app when its process starts and override variables of the same name; they are never written into a release, an event or a log. After changing one, restart the app to apply it. Only signed-in users can manage secrets; API tokens cannot. `PORT` is reserved.
+- **Back up `secrets.key` together with `aegis.db`.** Without it the secrets can't be decrypted, and the daemon refuses to start rather than run apps without them; delete the `secrets` table rows (or restore the key) to recover.
+
 Build commands also receive `AEGIS_RELEASE_VERSION`.
 
 ### What a deployment copies

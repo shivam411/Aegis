@@ -129,6 +129,7 @@ dependencies = [
  "aegis-projection",
  "aegis-release",
  "aegis-resources",
+ "aegis-secrets",
  "aegis-types",
  "anyhow",
  "async-trait",
@@ -139,6 +140,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -388,6 +390,16 @@ dependencies = [
 [[package]]
 name = "aegis-secrets"
 version = "0.1.0"
+dependencies = [
+ "aegis-event-store",
+ "anyhow",
+ "chrono",
+ "ring",
+ "serde",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "aegis-ssh"

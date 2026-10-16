@@ -397,6 +397,9 @@ pub struct ProjectSettingsDto {
     pub start_command: Option<String>,
     pub port: Option<u16>,
     pub health_check_url: Option<String>,
+    /// Plain environment variables, merged over aegis.toml's `[env]` and
+    /// written into each release. Use secrets for sensitive values.
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 impl From<aegis_config::ProjectOverrides> for ProjectSettingsDto {
@@ -408,6 +411,7 @@ impl From<aegis_config::ProjectOverrides> for ProjectSettingsDto {
             start_command: o.start_command,
             port: o.port,
             health_check_url: o.health_check_url,
+            env: o.env,
         }
     }
 }
@@ -421,6 +425,7 @@ impl From<ProjectSettingsDto> for aegis_config::ProjectOverrides {
             start_command: d.start_command,
             port: d.port,
             health_check_url: d.health_check_url,
+            env: d.env,
         }
     }
 }
@@ -669,4 +674,107 @@ pub struct ProjectResourcesDto {
     pub limits: ResourceLimitsDto,
     pub usage: Option<SampleDto>,
     pub capabilities: ResourceCapabilitiesDto,
+}
+
+// ----------------------------------------------------------------------
+// App configuration: secrets, aegis.toml preview, webhook setup
+// ----------------------------------------------------------------------
+
+/// A secret's name and when it last changed. Values are write-only.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SecretDto {
+    pub name: String,
+    pub updated_at: String,
+}
+
+impl From<aegis_control::SecretInfo> for SecretDto {
+    fn from(s: aegis_control::SecretInfo) -> Self {
+        Self {
+            name: s.name,
+            updated_at: s.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetSecretRequest {
+    /// The value; stored encrypted and never returned.
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SecretSaved {
+    pub name: String,
+    /// False when an existing secret was replaced.
+    pub created: bool,
+    /// The running process still has the old value; restart it to apply.
+    pub restart_required: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DiffLineDto {
+    /// " " unchanged, "-" removed, "+" added.
+    pub op: String,
+    pub text: String,
+}
+
+/// The project's aegis.toml with current and proposed settings applied.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ConfigPreviewDto {
+    /// "source" (the project's directory), "release" (the live release) or
+    /// "none" (no aegis.toml yet).
+    pub base: String,
+    pub current: String,
+    pub proposed: String,
+    pub diff: Vec<DiffLineDto>,
+    pub changed: bool,
+}
+
+impl From<aegis_control::ConfigPreview> for ConfigPreviewDto {
+    fn from(p: aegis_control::ConfigPreview) -> Self {
+        Self {
+            base: p.base.to_string(),
+            current: p.current,
+            proposed: p.proposed,
+            diff: p
+                .diff
+                .into_iter()
+                .map(|l| DiffLineDto {
+                    op: l.op.to_string(),
+                    text: l.text,
+                })
+                .collect(),
+            changed: p.changed,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WebhookDeliveryDto {
+    pub received_at: String,
+    /// GitHub's X-GitHub-Delivery id.
+    pub delivery: String,
+    /// GitHub event name, e.g. "push" or "ping".
+    pub event: String,
+    /// "queued", "ignored", "duplicate", "pong" or "error".
+    pub status: String,
+    pub reason: Option<String>,
+    pub deployment_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WebhookStatusDto {
+    /// A secret exists, so deliveries are accepted.
+    pub configured: bool,
+    /// Payload URL path; prefix it with the API's public base URL.
+    pub path: String,
+    pub content_type: String,
+    pub events: Vec<String>,
+    /// Branch whose pushes deploy.
+    pub branch: String,
+    /// Pushes need a repository to clone.
+    pub repository_url: String,
+    /// Most recent signed deliveries, newest first.
+    pub recent: Vec<WebhookDeliveryDto>,
 }

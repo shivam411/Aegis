@@ -560,6 +560,19 @@ impl ProcessSupervisor {
         Ok(())
     }
 
+    /// Replaces a process's environment for its next start (manual or
+    /// automatic restart), e.g. after its app's secrets changed. Returns
+    /// false for an unknown process.
+    pub fn set_env(&self, id: &ProcessId, env: HashMap<String, String>) -> bool {
+        match self.get_managed(id) {
+            Some(managed) => {
+                managed.spec.lock().unwrap().env = env;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Stops every running process concurrently.
     pub async fn stop_all(&self, drain: Duration, reason: StopReason) {
         let ids: Vec<ProcessId> = self

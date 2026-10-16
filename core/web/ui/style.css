@@ -541,3 +541,28 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   *, *::before { animation: none !important; transition: none !important; }
 }
+
+/* ------------------------------------------------------------------ */
+/* App configuration: variables, secrets, aegis.toml diff, webhooks    */
+/* ------------------------------------------------------------------ */
+
+.form-actions .spacer { flex: 1; }
+fieldset.env { border: 0; padding: 0; margin: 14px 0; min-width: 0; }
+fieldset.env legend { font-weight: 550; font-size: 13px; padding: 0; margin-bottom: 4px; }
+.env-rows { display: grid; gap: 6px; margin: 6px 0 8px; }
+.env-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 2fr) auto; gap: 8px; align-items: center; }
+@media (max-width: 560px) {
+  .env-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .env-row > span { display: none; }
+}
+dialog:has(form.wide) { width: min(760px, calc(100vw - 32px)); }
+pre.diff {
+  max-height: 55vh; overflow: auto; margin: 8px 0 0; padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 12.5px; line-height: 1.5; white-space: pre;
+}
+pre.diff span { display: block; }
+pre.diff .add { background: var(--ok-soft); color: var(--ok); }
+pre.diff .del { background: var(--bad-soft); color: var(--bad); }
+ul.deliveries { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }

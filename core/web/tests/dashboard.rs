@@ -194,7 +194,7 @@ async fn settings_build_log_and_deployment_events() {
         project["settings"],
         json!({
             "install_command": null, "build_command": null, "test_command": null,
-            "start_command": null, "port": null, "health_check_url": null
+            "start_command": null, "port": null, "health_check_url": null, "env": {}
         })
     );
 

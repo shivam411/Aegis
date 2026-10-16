@@ -147,7 +147,7 @@ async fn projects_schedules_and_validation_errors() {
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("Phase 5"));
+        .contains("Supported: GracefulSwitch, Immediate"));
     let (status, _) = api
         .call("POST", "/api/v1/projects/ghost/deploy", json!({}))
         .await;

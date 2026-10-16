@@ -5,10 +5,12 @@
 //! then executed; state is read back from the projection, which is updated
 //! synchronously as each event is persisted.
 
+mod config_file;
 mod deploy;
 mod domains;
 mod process;
 mod resources;
+mod secrets;
 
 use aegis_artifact_store::ArtifactStore;
 use aegis_event_store::EventStore;
@@ -25,6 +27,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+pub use aegis_secrets::SecretInfo;
+pub use config_file::ConfigPreview;
 pub use deploy::DeployRequest;
 pub use domains::DomainView;
 pub use process::ProcessAction;
@@ -159,6 +163,7 @@ struct Inner {
     candidates: Mutex<HashSet<ProcessId>>,
     /// Serializes domain changes so uniqueness checks can't race.
     domain_lock: tokio::sync::Mutex<()>,
+    secrets: aegis_secrets::SecretStore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +197,12 @@ impl ControlPlane {
         );
 
         std::fs::create_dir_all(&settings.data_dir).map_err(anyhow::Error::from)?;
+        // The key lives in the data directory, apart from the database.
+        let secrets = aegis_secrets::SecretStore::open(
+            store.pool().clone(),
+            &settings.data_dir.join("secrets.key"),
+        )
+        .await?;
         let resources = Arc::new(aegis_resources::ResourceManager::new(&settings.resources));
         for project in projection.get_projects() {
             resources.load_limits(project.id, project.resources.clone());
@@ -222,6 +233,7 @@ impl ControlPlane {
                 process_ports: Mutex::new(HashMap::new()),
                 candidates: Mutex::new(HashSet::new()),
                 domain_lock: tokio::sync::Mutex::new(()),
+                secrets,
             }),
         })
     }
@@ -423,49 +435,7 @@ impl ControlPlane {
                 project_id
             )));
         }
-        let clean = |v: Option<String>| v.map(|s| s.trim().to_string());
-        let settings = aegis_config::ProjectOverrides {
-            install_command: clean(settings.install_command),
-            build_command: clean(settings.build_command),
-            test_command: clean(settings.test_command),
-            start_command: clean(settings.start_command).filter(|s| !s.is_empty()),
-            port: settings.port,
-            health_check_url: clean(settings.health_check_url),
-        };
-        if settings.port == Some(0) {
-            return Err(ControlError::InvalidArgument("Port must be 1-65535".into()));
-        }
-        if let Some(url) = settings
-            .health_check_url
-            .as_deref()
-            .filter(|u| !u.is_empty())
-        {
-            if !(url.starts_with("http://") || url.starts_with("tcp://")) {
-                return Err(ControlError::InvalidArgument(
-                    "The health check URL must start with http:// (or tcp:// for a port check)"
-                        .into(),
-                ));
-            }
-            let target = url.strip_prefix("tcp://").unwrap_or(url);
-            aegis_health::parse_http_target(target).map_err(|e| {
-                ControlError::InvalidArgument(format!("Invalid health check URL: {}", e))
-            })?;
-        }
-        for command in [
-            &settings.install_command,
-            &settings.build_command,
-            &settings.test_command,
-            &settings.start_command,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if command.contains('\n') || command.len() > 4096 {
-                return Err(ControlError::InvalidArgument(
-                    "Commands must be a single line of at most 4096 characters".into(),
-                ));
-            }
-        }
+        let settings = validate_settings(settings)?;
         self.record(
             "ProjectSettingsUpdated",
             json!({"project_id": project_id.to_string(), "settings": settings}),
@@ -707,4 +677,63 @@ impl ControlPlane {
         let skip = filtered.len().saturating_sub(limit);
         Ok(filtered.into_iter().skip(skip).collect())
     }
+}
+
+/// Trims and validates dashboard settings.
+pub(crate) fn validate_settings(
+    settings: aegis_config::ProjectOverrides,
+) -> ControlResult<aegis_config::ProjectOverrides> {
+    let clean = |v: Option<String>| v.map(|s| s.trim().to_string());
+    let settings = aegis_config::ProjectOverrides {
+        install_command: clean(settings.install_command),
+        build_command: clean(settings.build_command),
+        test_command: clean(settings.test_command),
+        start_command: clean(settings.start_command).filter(|s| !s.is_empty()),
+        port: settings.port,
+        health_check_url: clean(settings.health_check_url),
+        env: settings
+            .env
+            .into_iter()
+            .map(|(k, v)| (k.trim().to_string(), v))
+            .collect(),
+    };
+    for (name, value) in &settings.env {
+        aegis_secrets::validate_name(name)
+            .and_then(|_| aegis_secrets::validate_value(value))
+            .map_err(ControlError::InvalidArgument)?;
+    }
+    if settings.port == Some(0) {
+        return Err(ControlError::InvalidArgument("Port must be 1-65535".into()));
+    }
+    if let Some(url) = settings
+        .health_check_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+    {
+        if !(url.starts_with("http://") || url.starts_with("tcp://")) {
+            return Err(ControlError::InvalidArgument(
+                "The health check URL must start with http:// (or tcp:// for a port check)".into(),
+            ));
+        }
+        let target = url.strip_prefix("tcp://").unwrap_or(url);
+        aegis_health::parse_http_target(target).map_err(|e| {
+            ControlError::InvalidArgument(format!("Invalid health check URL: {}", e))
+        })?;
+    }
+    for command in [
+        &settings.install_command,
+        &settings.build_command,
+        &settings.test_command,
+        &settings.start_command,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if command.contains('\n') || command.len() > 4096 {
+            return Err(ControlError::InvalidArgument(
+                "Commands must be a single line of at most 4096 characters".into(),
+            ));
+        }
+    }
+    Ok(settings)
 }

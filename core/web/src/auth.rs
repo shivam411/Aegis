@@ -125,9 +125,13 @@ async fn authenticate(
 
 /// Endpoints only a signed-in person may use, never an automation token.
 fn user_only(path: &str) -> bool {
+    // /api/v1/projects/<project>/<section>/...
+    let section = path
+        .strip_prefix("/api/v1/projects/")
+        .and_then(|rest| rest.split('/').nth(1));
     path.starts_with("/api/v1/tokens")
         || path == "/api/v1/auth/password"
-        || (path.starts_with("/api/v1/projects/") && path.ends_with("/webhook"))
+        || matches!(section, Some("webhook" | "secrets"))
 }
 
 /// Mapping a domain decides where public traffic (and certificates) go, so
@@ -580,7 +584,40 @@ pub(crate) async fn github_webhook(
         ));
     }
 
-    let delivery = header_str(&headers, "x-github-delivery");
+    let event = header_str(&headers, "x-github-event").to_string();
+    let delivery = header_str(&headers, "x-github-delivery").to_string();
+    let result = github_event(&st, &project, &headers, &body).await;
+    // Signed deliveries are recorded so the dashboard can show them.
+    let (status, reason, deployment_id) = match &result {
+        Ok((_, Json(r))) => (r.status.clone(), r.reason.clone(), r.deployment_id.clone()),
+        Err(e) => ("error".to_string(), Some(e.message().to_string()), None),
+    };
+    let _ = with_actor(
+        "webhook:github".into(),
+        st.control.record(
+            "WebhookReceived",
+            json!({
+                "project_id": project.id.to_string(),
+                "delivery": delivery,
+                "event": event,
+                "status": status,
+                "reason": reason,
+                "deployment_id": deployment_id,
+            }),
+        ),
+    )
+    .await;
+    result
+}
+
+/// Handles a delivery whose signature has been verified.
+async fn github_event(
+    st: &AppState,
+    project: &aegis_projection::ProjectState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> ApiResult<(StatusCode, Json<WebhookResult>)> {
+    let delivery = header_str(headers, "x-github-delivery");
     if !delivery.is_empty() {
         let mut seen = st.deliveries.lock().unwrap();
         if seen.iter().any(|d| d == delivery) {
@@ -592,10 +629,10 @@ pub(crate) async fn github_webhook(
         seen.push_back(delivery.to_string());
     }
 
-    match header_str(&headers, "x-github-event") {
+    match header_str(headers, "x-github-event") {
         "ping" => Ok(webhook_result(StatusCode::OK, "pong", None)),
         "push" => {
-            let push = aegis_webhook::parse_push(&body)
+            let push = aegis_webhook::parse_push(body)
                 .map_err(|e| ApiError::bad_request(e.to_string()))?;
             if push.deleted || push.branch.as_deref() != Some(project.branch.as_str()) {
                 return Ok(webhook_result(

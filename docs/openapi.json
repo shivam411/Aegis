@@ -1345,6 +1345,141 @@
         }
       }
     },
+    "/api/v1/projects/{project}/secrets": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "list_secrets",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret names (values are never returned)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SecretDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/secrets/{name}": {
+      "put": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "set_secret",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Variable name, e.g. DATABASE_URL",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored encrypted; applies when the app next starts or restarts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretSaved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "delete_secret",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Variable name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted; the running process keeps it until restarted"
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/settings": {
       "put": {
         "tags": [
@@ -1396,7 +1531,87 @@
         }
       }
     },
+    "/api/v1/projects/{project}/settings/preview": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "preview_settings",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectSettingsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "aegis.toml before and after the proposed settings, with a line diff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/webhook": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhook_status",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook setup and recent deliveries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookStatusDto"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "webhooks"
@@ -1431,6 +1646,58 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WebhookSecretDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/webhook/test": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "test_webhook",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A signed ping went through the webhook endpoint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No webhook secret yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -1732,6 +1999,38 @@
         },
         "additionalProperties": false
       },
+      "ConfigPreviewDto": {
+        "type": "object",
+        "description": "The project's aegis.toml with current and proposed settings applied.",
+        "required": [
+          "base",
+          "current",
+          "proposed",
+          "diff",
+          "changed"
+        ],
+        "properties": {
+          "base": {
+            "type": "string",
+            "description": "\"source\" (the project's directory), \"release\" (the live release) or\n\"none\" (no aegis.toml yet)."
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "current": {
+            "type": "string"
+          },
+          "diff": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffLineDto"
+            }
+          },
+          "proposed": {
+            "type": "string"
+          }
+        }
+      },
       "CreateProjectRequest": {
         "type": "object",
         "properties": {
@@ -2014,6 +2313,22 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "DiffLineDto": {
+        "type": "object",
+        "required": [
+          "op",
+          "text"
+        ],
+        "properties": {
+          "op": {
+            "type": "string",
+            "description": "\" \" unchanged, \"-\" removed, \"+\" added."
+          },
+          "text": {
+            "type": "string"
           }
         }
       },
@@ -2573,6 +2888,17 @@
             ],
             "default": null
           },
+          "env": {
+            "type": "object",
+            "description": "Plain environment variables, merged over aegis.toml's `[env]` and\nwritten into each release. Use secrets for sensitive values.",
+            "default": {},
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "health_check_url": {
             "type": [
               "string",
@@ -3003,6 +3329,43 @@
         },
         "additionalProperties": false
       },
+      "SecretDto": {
+        "type": "object",
+        "description": "A secret's name and when it last changed. Values are write-only.",
+        "required": [
+          "name",
+          "updated_at"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "SecretSaved": {
+        "type": "object",
+        "required": [
+          "name",
+          "created",
+          "restart_required"
+        ],
+        "properties": {
+          "created": {
+            "type": "boolean",
+            "description": "False when an existing secret was replaced."
+          },
+          "name": {
+            "type": "string"
+          },
+          "restart_required": {
+            "type": "boolean",
+            "description": "The running process still has the old value; restart it to apply."
+          }
+        }
+      },
       "SessionDto": {
         "type": "object",
         "required": [
@@ -3080,6 +3443,19 @@
         },
         "additionalProperties": false
       },
+      "SetSecretRequest": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "The value; stored encrypted and never returned."
+          }
+        },
+        "additionalProperties": false
+      },
       "StatusDto": {
         "type": "object",
         "required": [
@@ -3144,6 +3520,44 @@
           }
         }
       },
+      "WebhookDeliveryDto": {
+        "type": "object",
+        "required": [
+          "received_at",
+          "delivery",
+          "event",
+          "status"
+        ],
+        "properties": {
+          "delivery": {
+            "type": "string",
+            "description": "GitHub's X-GitHub-Delivery id."
+          },
+          "deployment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event": {
+            "type": "string",
+            "description": "GitHub event name, e.g. \"push\" or \"ping\"."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "\"queued\", \"ignored\", \"duplicate\", \"pong\" or \"error\"."
+          }
+        }
+      },
       "WebhookResult": {
         "type": "object",
         "required": [
@@ -3197,6 +3611,52 @@
             "description": "Shown once. Paste into the GitHub webhook's \"Secret\" field."
           }
         }
+      },
+      "WebhookStatusDto": {
+        "type": "object",
+        "required": [
+          "configured",
+          "path",
+          "content_type",
+          "events",
+          "branch",
+          "repository_url",
+          "recent"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string",
+            "description": "Branch whose pushes deploy."
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "A secret exists, so deliveries are accepted."
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "path": {
+            "type": "string",
+            "description": "Payload URL path; prefix it with the API's public base URL."
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookDeliveryDto"
+            },
+            "description": "Most recent signed deliveries, newest first."
+          },
+          "repository_url": {
+            "type": "string",
+            "description": "Pushes need a repository to clone."
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -3248,6 +3708,9 @@
     },
     {
       "name": "domains"
+    },
+    {
+      "name": "secrets"
     }
   ]
 }

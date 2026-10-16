@@ -7,6 +7,7 @@
 //! webhooks under `/hooks` are authenticated by their HMAC signature.
 
 mod api;
+mod appconfig;
 mod auth;
 mod domains;
 pub mod dto;
@@ -112,6 +113,10 @@ impl ApiError {
             code,
             message: message.into(),
         }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
     }
 
     pub fn forbidden(message: impl Into<String>) -> Self {
@@ -240,7 +245,9 @@ impl Modify for SecuritySchemes {
         auth::login, auth::logout, auth::session_info, auth::change_password,
         auth::list_tokens, auth::create_token, auth::revoke_token,
         auth::rotate_webhook_secret, auth::github_webhook,
-        domains::list_domains, domains::map_domain, domains::unmap_domain, domains::proxy_status
+        domains::list_domains, domains::map_domain, domains::unmap_domain, domains::proxy_status,
+        appconfig::list_secrets, appconfig::set_secret, appconfig::delete_secret,
+        appconfig::preview_settings, appconfig::webhook_status, appconfig::test_webhook
     ),
     components(schemas(
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, ReleaseDto, DeploymentDto, EventDto,
@@ -251,12 +258,15 @@ impl Modify for SecuritySchemes {
         DetectedDto, HostDto, BuildLogDto, ResourceLimitsDto, SetResourcesRequest, SampleDto,
         PointDto, MetricsDto, ResourceCapabilitiesDto, ProjectResourcesDto,
         domains::DomainDto, domains::CertStatusDto, domains::MapDomainRequest,
-        domains::ProxyRouteDto, domains::ProxyStatusDto
+        domains::ProxyRouteDto, domains::ProxyStatusDto,
+        SecretDto,
+        SetSecretRequest, SecretSaved, DiffLineDto, ConfigPreviewDto, WebhookDeliveryDto,
+        WebhookStatusDto
     )),
     tags(
         (name = "auth"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
-        (name = "domains")
+        (name = "domains"), (name = "secrets")
     )
 )]
 pub struct ApiDoc;
@@ -305,8 +315,21 @@ pub fn router(state: AppState) -> Router {
         .route("/projects/:project/schedule", put(api::set_schedule))
         .route("/projects/:project/settings", put(api::update_settings))
         .route(
+            "/projects/:project/settings/preview",
+            post(appconfig::preview_settings),
+        )
+        .route("/projects/:project/secrets", get(appconfig::list_secrets))
+        .route(
+            "/projects/:project/secrets/:name",
+            put(appconfig::set_secret).delete(appconfig::delete_secret),
+        )
+        .route(
             "/projects/:project/webhook",
-            post(auth::rotate_webhook_secret),
+            get(appconfig::webhook_status).post(auth::rotate_webhook_secret),
+        )
+        .route(
+            "/projects/:project/webhook/test",
+            post(appconfig::test_webhook),
         )
         .route("/projects/:project/releases", get(api::list_releases))
         .route(
