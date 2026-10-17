@@ -25,7 +25,9 @@ use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// `AEGIS_VERSION` at build time (release builds: the tag), else the crate
+/// version.
+pub const DAEMON_VERSION: &str = aegis_update::VERSION;
 
 type ResponseStream<T> = Pin<Box<dyn futures_core::Stream<Item = Result<T, Status>> + Send>>;
 

@@ -40,6 +40,8 @@ pub use aegis_config::ResourceLimits;
 pub enum BackendKind {
     CgroupV2,
     CgroupV1,
+    /// Container apps: limits are applied by Docker (`docker update`).
+    Docker,
     None,
 }
 
@@ -48,6 +50,7 @@ impl BackendKind {
         match self {
             Self::CgroupV2 => "cgroup2",
             Self::CgroupV1 => "cgroup1",
+            Self::Docker => "docker",
             Self::None => "none",
         }
     }
@@ -354,6 +357,46 @@ impl ResourceManager {
             }
         }
     }
+}
+
+/// Counters of the cgroup another process lives in, such as a container's
+/// main process, found through `/proc/<pid>/cgroup`. `None` off Linux or
+/// when it can't be read.
+pub fn stats_for_pid(pid: u32) -> Option<CgroupStats> {
+    if !cfg!(target_os = "linux") || pid == 0 {
+        return None;
+    }
+    let text = std::fs::read_to_string(format!("/proc/{}/cgroup", pid)).ok()?;
+    group_of(&text, Path::new(CGROUP_ROOT)).map(|g| read_stats(&g))
+}
+
+/// The cgroup described by a `/proc/<pid>/cgroup` file, under `root`.
+/// Never the root cgroup itself (that would count the whole host).
+fn group_of(proc_cgroup: &str, root: &Path) -> Option<Group> {
+    if root.join("cgroup.controllers").exists() {
+        let path = proc_cgroup
+            .lines()
+            .find_map(|l| l.strip_prefix("0::"))?
+            .trim()
+            .trim_start_matches('/');
+        if path.is_empty() {
+            return None;
+        }
+        return Some(Group::V2(root.join(path)));
+    }
+    let dir = |controller: &str, mount: &str| {
+        let path = own_cgroup_v1(proc_cgroup, controller)?;
+        let path = path.trim().trim_start_matches('/');
+        let dir = root.join(mount).join(path);
+        (!path.is_empty() && dir.is_dir()).then_some(dir)
+    };
+    let dirs = V1Dirs {
+        memory: dir("memory", "memory"),
+        cpu: dir("cpu", "cpu"),
+        cpuacct: dir("cpuacct", "cpuacct"),
+        pids: dir("pids", "pids"),
+    };
+    (dirs.memory.is_some() || dirs.cpu.is_some()).then_some(Group::V1(dirs))
 }
 
 fn missing_reason(cpu: bool, memory: bool) -> Option<String> {
@@ -785,6 +828,52 @@ fn read_stats(group: &Group) -> CgroupStats {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_group_of_a_container_process() {
+        let root = TempDir::new().unwrap();
+        // cgroup v2: the "0::" line names the container's scope.
+        std::fs::write(root.path().join("cgroup.controllers"), "cpu memory pids").unwrap();
+        let scope = root.path().join("system.slice/docker-abc.scope");
+        std::fs::create_dir_all(&scope).unwrap();
+        std::fs::write(scope.join("memory.current"), "1048576\n").unwrap();
+        std::fs::write(scope.join("memory.max"), "67108864\n").unwrap();
+        std::fs::write(
+            scope.join("cpu.stat"),
+            "usage_usec 2500\nnr_periods 10\nnr_throttled 4\n",
+        )
+        .unwrap();
+        std::fs::write(scope.join("cgroup.procs"), "41\n42\n").unwrap();
+        let group = group_of("0::/system.slice/docker-abc.scope\n", root.path()).unwrap();
+        let stats = read_stats(&group);
+        assert_eq!(stats.memory_bytes, 1048576);
+        assert_eq!(stats.memory_limit_bytes, Some(67108864));
+        assert_eq!(stats.cpu_usage_usec, 2500);
+        assert_eq!(stats.nr_throttled, 4);
+        assert_eq!(stats.procs, vec![41, 42]);
+        // A process in the root cgroup is not measured as "the host".
+        assert!(group_of("0::/\n", root.path()).is_none());
+
+        // cgroup v1: per-controller paths.
+        let v1 = TempDir::new().unwrap();
+        for c in ["memory", "cpu"] {
+            std::fs::create_dir_all(v1.path().join(c).join("docker/abc")).unwrap();
+        }
+        let group = group_of(
+            "4:memory:/docker/abc\n3:cpu,cpuacct:/docker/abc\n1:name=systemd:/x\n",
+            v1.path(),
+        )
+        .unwrap();
+        match group {
+            Group::V1(dirs) => {
+                assert_eq!(dirs.memory, Some(v1.path().join("memory/docker/abc")));
+                assert_eq!(dirs.cpu, Some(v1.path().join("cpu/docker/abc")));
+                assert_eq!(dirs.pids, None);
+            }
+            other => panic!("expected v1, got {other:?}"),
+        }
+        assert_eq!(stats_for_pid(0), None);
+    }
 
     fn fake_v2(root: &Path) -> ResourceManager {
         std::fs::write(root.join("cgroup.subtree_control"), "cpu memory pids").unwrap();

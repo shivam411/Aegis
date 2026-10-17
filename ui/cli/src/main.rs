@@ -1104,16 +1104,35 @@ async fn run() -> Result<(), anyhow::Error> {
             let current_dir = std::env::current_dir()?;
             let toml_path = current_dir.join("aegis.toml");
 
-            let toml_status = if toml_path.exists() {
-                "Valid"
-            } else {
-                "Missing (Run 'aegis init')"
+            let project_file = toml_path.exists().then(|| {
+                aegis_config::ProjectFile::load(&toml_path)
+                    .and_then(|f| f.run.validate().map(|_| f))
+            });
+            let (mark, toml_status) = match &project_file {
+                None => ("!", "Missing (Run 'aegis init')".to_string()),
+                Some(Ok(_)) => ("✓", "Valid".to_string()),
+                Some(Err(e)) => ("✗", format!("Invalid: {}", e)),
             };
             println!(
                 "  [{}] Configuration file (aegis.toml): {}",
-                if toml_path.exists() { "✓" } else { "!" },
-                toml_status
+                mark, toml_status
             );
+
+            // Container apps need Docker on the machine running the daemon.
+            let wants_docker = matches!(&project_file, Some(Ok(f)) if f.run.is_docker());
+            let docker = aegis_docker::probe(&aegis_docker::docker_bin()).await;
+            let (mark, detail) = match (&docker.version, wants_docker) {
+                (Some(v), _) => ("✓", format!("available (Docker Engine {})", v)),
+                (None, true) => ("✗", docker.reason.clone().unwrap_or_default()),
+                (None, false) => (
+                    "-",
+                    format!(
+                        "{} (only needed for [run] runtime = \"docker\")",
+                        docker.reason.clone().unwrap_or_default()
+                    ),
+                ),
+            };
+            println!("  [{}] Docker: {}", mark, detail);
 
             let status_res = match daemon.client().await {
                 Ok(c) => c
@@ -1218,7 +1237,7 @@ async fn run() -> Result<(), anyhow::Error> {
             }
         },
         Commands::Upgrade { check, force, yes } => {
-            let current = env!("CARGO_PKG_VERSION");
+            let current = aegis_update::VERSION;
             println!("This CLI:       v{}", current);
             if let Some(status) = daemon.status().await {
                 println!("Daemon:         v{}", status.version);
@@ -1256,10 +1275,13 @@ async fn run() -> Result<(), anyhow::Error> {
                     exe.display()
                 );
                 println!(
-                    "  curl -fsSL {} | sudo bash -s -- --server   (add --domain NAME if you used it)",
-                    upgrade::INSTALL_SCRIPT_URL
+                    "  sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml /usr/local/bin/aegis-daemon self-update --restart-unit aegis.service"
                 );
-                println!("  sudo systemctl restart aegis");
+                println!(
+                    "  (downloads {}, checks it against the release's SHA256SUMS and keeps the old binaries as *.previous;",
+                    latest
+                );
+                println!("   admins can also use \"Upgrade now\" in the dashboard, see docs/upgrading.md)");
                 return Ok(());
             }
             println!(

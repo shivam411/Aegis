@@ -27,6 +27,7 @@ fn spec(project: ProjectId, command: &str) -> ProcessSpec {
         env: HashMap::new(),
         restart_policy: RestartPolicy::Always,
         log_file: None,
+        launcher: None,
     }
 }
 

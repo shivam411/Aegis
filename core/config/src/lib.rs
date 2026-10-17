@@ -48,6 +48,51 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub backup: BackupConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+/// `[update]`: checks for new Aegis releases on GitHub.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// Ask the GitHub releases API for the latest stable release every
+    /// `interval_hours`. When false the daemon makes no update-related
+    /// network requests at all, and upgrades from the dashboard are off.
+    pub check: bool,
+    /// Hours between checks.
+    pub interval_hours: u64,
+    /// The GitHub repository releases come from, as `owner/name` (for forks).
+    pub repo: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            check: true,
+            interval_hours: 12,
+            repo: "shivam411/Aegis".into(),
+        }
+    }
+}
+
+impl UpdateConfig {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if !(1..=24 * 31).contains(&self.interval_hours) {
+            anyhow::bail!("update.interval_hours must be 1-744");
+        }
+        let part_ok = |s: &str| {
+            !s.is_empty()
+                && s != "."
+                && s != ".."
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        match self.repo.split_once('/') {
+            Some((owner, name)) if part_ok(owner) && part_ok(name) => Ok(()),
+            _ => anyhow::bail!("update.repo must be a GitHub repository like \"owner/name\""),
+        }
+    }
 }
 
 /// `[backup]`: scheduled backups of the database, the secrets key,
@@ -541,21 +586,6 @@ pub struct DeploySection {
     pub blue_green_keep_secs: Option<u64>,
 }
 
-/// How the app runs (`[run]`).
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct RunSection {
-    /// Copies of the app to run side by side, each with its own `PORT`,
-    /// behind the built-in proxy. Default 1, at most [`MAX_INSTANCES`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instances: Option<u32>,
-}
-
-impl RunSection {
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
 /// Upper bound for `[run] instances`.
 pub const MAX_INSTANCES: u32 = 16;
 /// Upper bound for `[deploy] blue_green_keep_secs` (one day).
@@ -593,6 +623,279 @@ pub fn validate_instances(instances: u32) -> Result<(), String> {
             MAX_INSTANCES, instances
         ))
     }
+}
+
+/// `[run]`: how a release runs. By default an app is a plain process
+/// (`build.start_command`); `runtime = "docker"` runs it in a container
+/// built from a Dockerfile in the release (or from a prebuilt image).
+///
+/// Only a fixed set of container options is accepted. There is no way to
+/// ask for privileged mode, host networking, extra capabilities or host
+/// bind mounts: `volumes` only takes named Docker volumes, which Aegis
+/// scopes to the app.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RunSection {
+    /// Copies of the app to run side by side, each with its own `PORT`,
+    /// behind the built-in proxy. Default 1, at most [`MAX_INSTANCES`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instances: Option<u32>,
+    /// "process" (default) or "docker".
+    pub runtime: Option<String>,
+    /// Dockerfile to build, relative to the release directory (the build
+    /// context). Defaults to "Dockerfile" when `image` isn't set.
+    pub dockerfile: Option<String>,
+    /// A prebuilt image to run instead of building one, e.g. "nginx:1.27".
+    pub image: Option<String>,
+    /// With `image`: "missing" (default) pulls only if the image isn't on
+    /// this host yet; "always" pulls on every deployment.
+    pub pull: Option<String>,
+    /// The port the app listens on inside the container. Defaults to
+    /// `deploy.port`. The container gets it as `PORT`.
+    pub container_port: Option<u16>,
+    /// Replaces the image's command (arguments, not a shell line).
+    pub command: Option<Vec<String>>,
+    /// Run as this user inside the container: "name", "uid" or "uid:gid".
+    pub user: Option<String>,
+    /// Mount the container's root filesystem read-only.
+    pub read_only: Option<bool>,
+    /// Run a tiny init as PID 1 that forwards signals and reaps zombies
+    /// (`docker run --init`). Default true.
+    pub init: Option<bool>,
+    /// In-memory scratch directories (absolute paths in the container).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tmpfs: Vec<String>,
+    /// Named volumes that keep data across releases: "name:/path" or
+    /// "name:/path:ro". Host paths are not allowed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<String>,
+}
+
+/// A validated `[run] volumes` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeMount {
+    /// The app-level name; the Docker volume is named after the app and this.
+    pub name: String,
+    pub target: String,
+    pub read_only: bool,
+}
+
+pub const RUNTIME_PROCESS: &str = "process";
+pub const RUNTIME_DOCKER: &str = "docker";
+
+fn safe_container_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path.len() <= 4096
+        && !path
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, ':' | ',' | '"' | '\''))
+        && !path.split('/').any(|part| part == "..")
+}
+
+impl RunSection {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The runtime: "process" or "docker" (after validation).
+    pub fn runtime(&self) -> &str {
+        self.runtime.as_deref().unwrap_or(RUNTIME_PROCESS)
+    }
+
+    pub fn is_docker(&self) -> bool {
+        self.runtime() == RUNTIME_DOCKER
+    }
+
+    /// The Dockerfile to build, unless a prebuilt image is used.
+    pub fn dockerfile(&self) -> Option<&str> {
+        match (&self.image, &self.dockerfile) {
+            (Some(_), _) => None,
+            (None, Some(file)) => Some(file),
+            (None, None) => Some("Dockerfile"),
+        }
+    }
+
+    pub fn always_pull(&self) -> bool {
+        self.pull.as_deref() == Some("always")
+    }
+
+    pub fn init(&self) -> bool {
+        self.init.unwrap_or(true)
+    }
+
+    /// Parsed `volumes`. Call [`RunSection::validate`] first.
+    pub fn volume_mounts(&self) -> Vec<VolumeMount> {
+        self.volumes
+            .iter()
+            .filter_map(|v| parse_volume(v).ok())
+            .collect()
+    }
+
+    /// Rejects unknown runtimes, options that only make sense for
+    /// containers on a process app, and unsafe values.
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        match self.runtime() {
+            RUNTIME_PROCESS => {
+                let docker_only = [
+                    ("dockerfile", self.dockerfile.is_some()),
+                    ("image", self.image.is_some()),
+                    ("pull", self.pull.is_some()),
+                    ("container_port", self.container_port.is_some()),
+                    ("command", self.command.is_some()),
+                    ("user", self.user.is_some()),
+                    ("read_only", self.read_only.is_some()),
+                    ("init", self.init.is_some()),
+                    ("tmpfs", !self.tmpfs.is_empty()),
+                    ("volumes", !self.volumes.is_empty()),
+                ];
+                if let Some((key, _)) = docker_only.iter().find(|(_, set)| *set) {
+                    anyhow::bail!(
+                        "run.{} only applies to container apps; set run.runtime = \"docker\"",
+                        key
+                    );
+                }
+                return Ok(());
+            }
+            RUNTIME_DOCKER => {}
+            other => anyhow::bail!(
+                "run.runtime must be \"process\" or \"docker\" (got \"{}\")",
+                other
+            ),
+        }
+        if self.image.is_some() && self.dockerfile.is_some() {
+            anyhow::bail!("Set either run.image (a prebuilt image) or run.dockerfile, not both");
+        }
+        if let Some(file) = &self.dockerfile {
+            let path = Path::new(file);
+            let bad = file.trim().is_empty()
+                || file.len() > 1024
+                || file.chars().any(|c| c.is_control())
+                || path.is_absolute()
+                || file.starts_with('/')
+                || file.starts_with('\\')
+                || path
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)));
+            if bad {
+                anyhow::bail!(
+                    "run.dockerfile must be a path inside the release, such as \"Dockerfile\" or \"docker/app.Dockerfile\" (got \"{}\")",
+                    file
+                );
+            }
+        }
+        if let Some(image) = &self.image {
+            let ok = !image.is_empty()
+                && image.len() <= 255
+                && !image.starts_with(['-', '.', ':', '/', '@'])
+                && image.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@')
+                });
+            if !ok {
+                anyhow::bail!(
+                    "run.image must be an image reference such as \"nginx:1.27\" or \"ghcr.io/org/app@sha256:…\" (got \"{}\")",
+                    image
+                );
+            }
+        }
+        if let Some(pull) = &self.pull {
+            if self.image.is_none() {
+                anyhow::bail!("run.pull only applies with run.image");
+            }
+            if !matches!(pull.as_str(), "missing" | "always") {
+                anyhow::bail!("run.pull must be \"missing\" or \"always\"");
+            }
+        }
+        if self.container_port == Some(0) {
+            anyhow::bail!("run.container_port must be 1-65535");
+        }
+        if let Some(command) = &self.command {
+            if command.is_empty() || command.len() > 256 {
+                anyhow::bail!(
+                    "run.command must list 1-256 arguments, e.g. [\"node\", \"server.js\"]"
+                );
+            }
+            if command.iter().any(|a| a.contains('\0') || a.len() > 8192) {
+                anyhow::bail!(
+                    "run.command arguments must not contain NUL characters or exceed 8 KiB"
+                );
+            }
+        }
+        if let Some(user) = &self.user {
+            let part_ok = |s: &str| {
+                !s.is_empty()
+                    && s.len() <= 64
+                    && !s.starts_with('-')
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+            };
+            let ok = match user.split_once(':') {
+                Some((u, g)) => part_ok(u) && part_ok(g),
+                None => part_ok(user),
+            };
+            if !ok {
+                anyhow::bail!(
+                    "run.user must be a user name or id, optionally with a group: \"app\", \"1000\" or \"1000:1000\" (got \"{}\")",
+                    user
+                );
+            }
+        }
+        if self.tmpfs.len() > 16 {
+            anyhow::bail!("run.tmpfs takes at most 16 paths");
+        }
+        for path in &self.tmpfs {
+            if !safe_container_path(path) {
+                anyhow::bail!(
+                    "run.tmpfs entries must be absolute paths in the container without options, such as \"/tmp\" (got \"{}\")",
+                    path
+                );
+            }
+        }
+        if self.volumes.len() > 16 {
+            anyhow::bail!("run.volumes takes at most 16 volumes");
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for volume in &self.volumes {
+            let mount = parse_volume(volume)?;
+            if !names.insert(mount.name.clone()) {
+                anyhow::bail!("run.volumes names \"{}\" twice", mount.name);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_volume(spec: &str) -> Result<VolumeMount, anyhow::Error> {
+    let bad = || {
+        anyhow::anyhow!(
+            "run.volumes entries must be \"name:/path\" or \"name:/path:ro\" with a volume name of letters, digits, '_', '.' or '-' (host paths are not allowed; got \"{}\")",
+            spec
+        )
+    };
+    let mut parts = spec.split(':');
+    let (name, target) = (parts.next().ok_or_else(bad)?, parts.next().ok_or_else(bad)?);
+    let read_only = match parts.next() {
+        None => false,
+        Some("ro") => true,
+        Some("rw") => false,
+        Some(_) => return Err(bad()),
+    };
+    if parts.next().is_some() {
+        return Err(bad());
+    }
+    let name_ok = !name.is_empty()
+        && name.len() <= 64
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    if !name_ok || !safe_container_path(target) || target == "/" {
+        return Err(bad());
+    }
+    Ok(VolumeMount {
+        name: name.to_string(),
+        target: target.to_string(),
+        read_only,
+    })
 }
 
 /// The per-project part of `aegis.toml`. Every field is optional so partial
@@ -996,6 +1299,156 @@ log_level = "info"
     }
 
     #[test]
+    fn run_section_defaults_to_a_process() {
+        let file = ProjectFile::parse("[build]\nstart_command = \"./app\"\n").unwrap();
+        assert!(file.run.is_empty());
+        assert!(!file.run.is_docker());
+        assert_eq!(file.run.runtime(), "process");
+        assert!(file.run.validate().is_ok());
+        // An empty [run] is not written back.
+        assert!(!toml::to_string_pretty(&file).unwrap().contains("[run]"));
+    }
+
+    #[test]
+    fn run_section_docker_options() {
+        let file = ProjectFile::parse(
+            r#"
+[run]
+runtime = "docker"
+container_port = 8080
+command = ["node", "server.js"]
+user = "1000:1000"
+read_only = true
+init = false
+tmpfs = ["/tmp", "/var/cache/app"]
+volumes = ["data:/var/lib/app", "uploads:/srv/uploads:ro"]
+"#,
+        )
+        .unwrap();
+        let run = &file.run;
+        run.validate().unwrap();
+        assert!(run.is_docker());
+        assert_eq!(run.dockerfile(), Some("Dockerfile"));
+        assert!(!run.init());
+        assert_eq!(
+            run.volume_mounts(),
+            vec![
+                VolumeMount {
+                    name: "data".into(),
+                    target: "/var/lib/app".into(),
+                    read_only: false
+                },
+                VolumeMount {
+                    name: "uploads".into(),
+                    target: "/srv/uploads".into(),
+                    read_only: true
+                },
+            ]
+        );
+        let round_trip = ProjectFile::parse(&toml::to_string_pretty(&file).unwrap()).unwrap();
+        assert_eq!(round_trip, file);
+
+        let image = ProjectFile::parse(
+            "[run]\nruntime = \"docker\"\nimage = \"ghcr.io/org/app:1.2\"\npull = \"always\"\n",
+        )
+        .unwrap();
+        image.run.validate().unwrap();
+        assert_eq!(image.run.dockerfile(), None);
+        assert!(image.run.always_pull());
+        assert!(image.run.init());
+    }
+
+    #[test]
+    fn run_section_rejects_unsafe_or_unknown_values() {
+        let check = |body: &str| -> Result<(), String> {
+            let file =
+                ProjectFile::parse(&format!("[run]\n{body}\n")).map_err(|e| e.to_string())?;
+            file.run.validate().map_err(|e| e.to_string())
+        };
+        // Unknown keys (privileged, network, devices, ...) don't parse at all.
+        for key in [
+            "privileged = true",
+            "network = \"host\"",
+            "cap_add = [\"SYS_ADMIN\"]",
+            "devices = [\"/dev/sda\"]",
+            "extra_args = [\"--privileged\"]",
+            "pid = \"host\"",
+        ] {
+            let err = check(&format!("runtime = \"docker\"\n{key}")).unwrap_err();
+            assert!(err.contains("unknown field"), "{key}: {err}");
+        }
+        for (bad, why) in [
+            ("runtime = \"podman\"", "must be"),
+            ("image = \"nginx\"", "only applies to container apps"),
+            (
+                "runtime = \"docker\"\nimage = \"nginx\"\ndockerfile = \"Dockerfile\"",
+                "not both",
+            ),
+            (
+                "runtime = \"docker\"\ndockerfile = \"../Dockerfile\"",
+                "inside the release",
+            ),
+            (
+                "runtime = \"docker\"\ndockerfile = \"/etc/Dockerfile\"",
+                "inside the release",
+            ),
+            (
+                "runtime = \"docker\"\nimage = \"--privileged\"",
+                "image reference",
+            ),
+            (
+                "runtime = \"docker\"\nimage = \"nginx latest\"",
+                "image reference",
+            ),
+            (
+                "runtime = \"docker\"\npull = \"always\"",
+                "only applies with run.image",
+            ),
+            (
+                "runtime = \"docker\"\nimage = \"a\"\npull = \"never\"",
+                "missing",
+            ),
+            ("runtime = \"docker\"\ncontainer_port = 0", "1-65535"),
+            ("runtime = \"docker\"\ncommand = []", "1-256"),
+            (
+                "runtime = \"docker\"\nuser = \"root --privileged\"",
+                "user name",
+            ),
+            ("runtime = \"docker\"\nuser = \"-1\"", "user name"),
+            ("runtime = \"docker\"\ntmpfs = [\"tmp\"]", "absolute"),
+            ("runtime = \"docker\"\ntmpfs = [\"/tmp:exec\"]", "absolute"),
+            (
+                "runtime = \"docker\"\nvolumes = [\"/etc:/host-etc\"]",
+                "host paths",
+            ),
+            (
+                "runtime = \"docker\"\nvolumes = [\"./data:/data\"]",
+                "host paths",
+            ),
+            (
+                "runtime = \"docker\"\nvolumes = [\"data:/data:z\"]",
+                "host paths",
+            ),
+            (
+                "runtime = \"docker\"\nvolumes = [\"data:relative\"]",
+                "host paths",
+            ),
+            ("runtime = \"docker\"\nvolumes = [\"data:/\"]", "host paths"),
+            (
+                "runtime = \"docker\"\nvolumes = [\"data:/a/../b\"]",
+                "host paths",
+            ),
+            (
+                "runtime = \"docker\"\nvolumes = [\"data:/a\", \"data:/b\"]",
+                "twice",
+            ),
+        ] {
+            let err = check(bad).unwrap_err();
+            assert!(err.contains(why), "{bad}: {err}");
+        }
+    }
+
+    #[test]
     fn backup_section_defaults_and_validation() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.backup, BackupConfig::default());
@@ -1026,5 +1479,31 @@ include_releases = false
             assert!(config.backup.validate().is_err(), "{bad}");
         }
         assert!(toml::from_str::<Config>("[backup]\nkeepp = 3\n").is_err());
+    }
+
+    #[test]
+    fn update_section_defaults_and_validation() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.update, UpdateConfig::default());
+        assert!(config.update.check);
+        assert_eq!(config.update.interval_hours, 12);
+        assert!(config.update.validate().is_ok());
+
+        let config: Config =
+            toml::from_str("[update]\ncheck = false\nrepo = \"me/aegis-fork\"\n").unwrap();
+        assert!(!config.update.check);
+        assert_eq!(config.update.repo, "me/aegis-fork");
+        assert!(config.update.validate().is_ok());
+
+        for bad in [
+            "interval_hours = 0",
+            r#"repo = "aegis""#,
+            r#"repo = "a/b/c""#,
+            r#"repo = "../x""#,
+        ] {
+            let config: Config = toml::from_str(&format!("[update]\n{bad}\n")).unwrap();
+            assert!(config.update.validate().is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<Config>("[update]\nchek = false\n").is_err());
     }
 }

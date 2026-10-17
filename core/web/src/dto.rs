@@ -38,6 +38,13 @@ pub struct ProcessDto {
     pub command: Option<String>,
     pub last_start: Option<String>,
     pub last_exit_code: Option<i32>,
+    /// "process" or "docker". For "docker", `pid` is the container's main
+    /// process (as seen from the host).
+    pub runtime: String,
+    /// The container's name (docker only).
+    pub container: Option<String>,
+    /// The image the container runs (docker only).
+    pub image: Option<String>,
     /// Instance number (1-based) when the app runs several instances.
     #[serde(default)]
     pub instance: Option<u32>,
@@ -246,6 +253,9 @@ impl From<ProcessState> for ProcessDto {
             command: p.command,
             last_start: p.last_start,
             last_exit_code: p.last_exit_code,
+            runtime: p.runtime.unwrap_or_else(|| "process".into()),
+            container: p.container,
+            image: p.image,
             instance: p.instance,
             port: p.port,
         }
@@ -698,9 +708,30 @@ pub struct MetricsDto {
     pub points: Vec<PointDto>,
 }
 
+/// Whether container apps (`[run] runtime = "docker"`) can run here.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DockerStatusDto {
+    pub available: bool,
+    /// The Docker Engine version.
+    pub version: Option<String>,
+    /// Why Docker can't be used (not installed, daemon not running, no permission).
+    pub reason: Option<String>,
+}
+
+impl From<aegis_control::DockerStatus> for DockerStatusDto {
+    fn from(s: aegis_control::DockerStatus) -> Self {
+        Self {
+            available: s.available,
+            version: s.version,
+            reason: s.reason,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ResourceCapabilitiesDto {
-    /// "cgroup2", "cgroup1" or "none".
+    /// "cgroup2", "cgroup1", "docker" (a container app's limits, applied by
+    /// Docker) or "none".
     pub backend: String,
     pub cpu: bool,
     pub memory: bool,
@@ -714,6 +745,8 @@ pub struct ResourceCapabilitiesDto {
     /// Sums of all apps' limits.
     pub committed_memory_bytes: u64,
     pub committed_cpu_cores: f64,
+    /// Docker's status, once checked.
+    pub docker: Option<DockerStatusDto>,
 }
 
 impl From<aegis_control::ResourceOverview> for ResourceCapabilitiesDto {
@@ -730,6 +763,7 @@ impl From<aegis_control::ResourceOverview> for ResourceCapabilitiesDto {
             host_memory_bytes: o.host_memory_bytes,
             committed_memory_bytes: o.committed_memory_bytes,
             committed_cpu_cores: o.committed_cpu_cores,
+            docker: o.docker.map(Into::into),
         }
     }
 }

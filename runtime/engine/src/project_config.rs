@@ -2,7 +2,7 @@
 //! `aegis.toml`, with gaps filled from runtime detection.
 
 use crate::DetectorPipeline;
-use aegis_config::ProjectFile;
+use aegis_config::{ProjectFile, RunSection};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -37,6 +37,8 @@ pub struct ResolvedProjectConfig {
     pub rolling_batch: u32,
     /// How long BlueGreen keeps the previous set running after the switch.
     pub blue_green_keep: Duration,
+    /// `[run]`: process (default) or container.
+    pub run: RunSection,
 }
 
 /// Default for `[deploy] blue_green_keep_secs`.
@@ -53,15 +55,24 @@ impl ResolvedProjectConfig {
         let detected = DetectorPipeline::new().detect_all(dir);
         let defaults = DetectorPipeline::new().to_project_file(&detected, "");
         let file = file.cloned().unwrap_or_default();
+        let docker = file.run.is_docker();
 
+        // Container apps are built by their Dockerfile, so commands detected
+        // from the source (e.g. `npm install`) are not run on the host; only
+        // ones set explicitly in [build] are.
         let pick = |explicit: Option<String>, fallback: Option<String>| match explicit {
             Some(v) => non_empty(Some(v)),
+            None if docker => None,
             None => non_empty(fallback),
         };
 
         let port = file.deploy.port.or(defaults.deploy.port);
         let health_check_url = match file.deploy.health_check_url {
             Some(url) => non_empty(Some(url)),
+            // Through Docker's port publishing a bare TCP connect succeeds
+            // before the app listens, so containers get an HTTP probe; any
+            // non-5xx answer counts.
+            None if docker => port.map(|p| format!("http://127.0.0.1:{}/", p)),
             None => match file.deploy.port {
                 // A custom port without a URL: probe that port, not the detector's.
                 Some(p) => Some(format!(
@@ -82,8 +93,15 @@ impl ResolvedProjectConfig {
                 Some(detected.build_command.clone()),
             ),
             test_command: non_empty(file.build.test_command),
-            start_command: non_empty(file.build.start_command)
-                .unwrap_or(detected.start_command.clone()),
+            start_command: if docker {
+                match (&file.run.image, file.run.dockerfile()) {
+                    (Some(image), _) => format!("container from image {}", image),
+                    (None, Some(dockerfile)) => format!("container built from {}", dockerfile),
+                    (None, None) => "container".to_string(),
+                }
+            } else {
+                non_empty(file.build.start_command).unwrap_or(detected.start_command.clone())
+            },
             build_timeout: Duration::from_secs(
                 file.build
                     .timeout_secs
@@ -113,13 +131,23 @@ impl ResolvedProjectConfig {
                     .blue_green_keep_secs
                     .unwrap_or(DEFAULT_BLUE_GREEN_KEEP_SECS),
             ),
+            run: file.run,
         }
     }
 
-    /// Reads `dir/aegis.toml` (if present) and resolves it.
+    /// Reads `dir/aegis.toml` (if present), checks its `[run]` section and
+    /// resolves it.
     pub fn load(dir: &Path) -> Result<Self, anyhow::Error> {
         let file = ProjectFile::load_from_dir(dir)?;
+        if let Some(file) = &file {
+            file.run.validate()?;
+        }
         Ok(Self::resolve(dir, file.as_ref()))
+    }
+
+    /// The app runs in a container (`[run] runtime = "docker"`).
+    pub fn is_docker(&self) -> bool {
+        self.run.is_docker()
     }
 
     /// Environment for the app process: `[env]` plus `PORT` when known.
@@ -205,5 +233,46 @@ PORT = "5000"
         .unwrap();
         let cfg = ResolvedProjectConfig::load(dir.path()).unwrap();
         assert_eq!(cfg.health_check_url, None);
+    }
+
+    #[test]
+    fn test_docker_apps_skip_detected_host_commands() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("Dockerfile"), "FROM busybox").unwrap();
+        std::fs::write(
+            dir.path().join("aegis.toml"),
+            "[build]
+build_command = \"echo hi > x\"
+[deploy]
+port = 4100
+[run]
+runtime = \"docker\"
+container_port = 80
+",
+        )
+        .unwrap();
+        let cfg = ResolvedProjectConfig::load(dir.path()).unwrap();
+        assert!(cfg.is_docker());
+        // No detected `npm install` on the host; the explicit build command stays.
+        assert_eq!(cfg.install_command, None);
+        assert_eq!(cfg.build_command.as_deref(), Some("echo hi > x"));
+        assert_eq!(cfg.start_command, "container built from Dockerfile");
+        assert_eq!(
+            cfg.health_check_url.as_deref(),
+            Some("http://127.0.0.1:4100/")
+        );
+        assert_eq!(cfg.run.container_port, Some(80));
+
+        std::fs::write(
+            dir.path().join("aegis.toml"),
+            "[run]
+runtime = \"docker\"
+volumes = [\"/etc:/x\"]
+",
+        )
+        .unwrap();
+        let err = ResolvedProjectConfig::load(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("host paths"), "{err}");
     }
 }

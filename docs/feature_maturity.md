@@ -58,6 +58,12 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | **Zero-downtime cutover behind the proxy** | 🟡 Validated | [`core/control/tests/proxy_cutover.rs`](../core/control/tests/proxy_cutover.rs): no failed requests through deploys, a failed deploy, a rollback and a daemon restart |
 | **Several instances per app; Rolling and BlueGreen strategies** ([roadmap](roadmap_web_control_plane.md) Phase 6) | 🧪 Experimental | Rollout planning, requirement checks, round-robin balancing and passive failover have unit tests ([`core/control/src/rollout.rs`](../core/control/src/rollout.rs), [`runtime/ingress`](../runtime/ingress/)); [`core/control/tests/strategies.rs`](../core/control/tests/strategies.rs) runs 3 real instances through Rolling and BlueGreen deployments with a client loop that must see no failed request, a mid-rollout failure, an instant BlueGreen rollback, a rolling restart, an interrupted rollout and daemon restarts. New in this release, with no production use yet; the dashboard's instance list and rollout timeline have no Playwright coverage (the UI tests don't run the proxy). |
 
+### Roadmap Phase 6
+
+| Feature | Status | Evidence |
+| :--- | :---: | :--- |
+| **Docker runtime** (`[run] runtime = "docker"`, [guide](docker_runtime.md)) | 🧪 Experimental | Unit tests for `[run]` validation, `docker` argument building (including that secrets never reach a command line) and limit mapping in [`core/config`](../core/config/src/lib.rs) and [`integrations/docker`](../integrations/docker/src/); supervisor tests with a fake launcher in [`runtime/process`](../runtime/process/src/lib.rs). [`core/control/tests/docker.rs`](../core/control/tests/docker.rs) runs against the real Docker daemon on CI's Ubuntu runner (`AEGIS_REQUIRE_DOCKER=1` makes a missing Docker a failure there). It covers the image build, the health check, a secret reaching the container, a redeploy through the proxy with no failed requests, live `docker update` limits, a killed container being restarted, an unhealthy release rolled back, a rollback that reuses the old image, image pruning, a daemon restart and a stop. [`docker_missing.rs`](../core/control/tests/docker_missing.rs) covers a host without Docker. Not used in production; dashboard display of the runtime is not browser-tested. |
+
 ### CLI and tools
 
 | Feature | Status | Evidence |
@@ -67,10 +73,18 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | **Time travel inspection (`aegis inspect --at`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
 | **Incident report (`aegis incident`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
 | **Outage investigation (`aegis investigate`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
-| **Self-update (`aegis upgrade`)** | 🧪 Experimental | Version comparison unit-tested in [`ui/cli/src/upgrade.rs`](../ui/cli/src/upgrade.rs); the install step is not run in CI |
+| **Self-update (`aegis upgrade`)** | 🧪 Experimental | Version comparison unit-tested in [`core/update`](../core/update/src/version.rs) (shared with the daemon); the install.sh step is not run in CI |
+| **Update checks and "Upgrade now"** (`[update]`, `aegis-daemon self-update`) | 🧪 Experimental | [`core/update/tests/flow.rs`](../core/update/tests/flow.rs) drives check → available → apply against a fake GitHub API on 127.0.0.1 up to the binary swap and restart request (tampered archives rejected, checks off means no requests, unwritable binaries refused, helper hand-over); role tests in [`core/web/tests/update.rs`](../core/web/tests/update.rs); banner in [`ui-tests/tests/update.spec.js`](../ui-tests/tests/update.spec.js). Not tested end to end: the restart under systemd, the root `aegis-update` helper units, and a download from the real GitHub. See [`upgrading.md`](upgrading.md). |
 | **PM2 & systemd migration (`aegis migrate`)** | 🧪 Experimental | Parser unit tests in [`ui/cli/src/migrate.rs`](../ui/cli/src/migrate.rs); not checked against real PM2/systemd setups |
 | **Terminal UI (`aegis-tui`)** | 🧪 Experimental | `ratatui` dashboard over the local gRPC API: apps table, app view (releases, deployments, live logs), live event stream, and confirmed start/stop/restart/deploy/rollback actions ([roadmap](roadmap_web_control_plane.md) Phase 6). The state reducer, filters and screen rendering (`TestBackend`) have unit tests in CI. Two opt-in tests (`cargo test -p aegis-tui -- --ignored` with `AEGIS_TUI_LIVE_ADDR` set) drive its gRPC worker against a real daemon, including a reconnect after a daemon restart; they are not in CI, and no test drives the interactive terminal, so it stays Experimental. |
 
+### Performance and stability evidence
+
+| Feature | Status | Evidence |
+| :--- | :---: | :--- |
+| **Benchmarks in CI** (event store append/replay, projection rebuild, proxy overhead, deploy saga wall time) | 🟡 Validated (warn only) | [`benchmarks/`](../benchmarks/) run on every PR and push to `main` in [`perf.yml`](../.github/workflows/perf.yml), compared with the latest `main` run. A >30% regression is a warning, not a failure, and the numbers come from shared CI runners. See [`benchmarks.md`](benchmarks.md). |
+| **Soak test** (real daemon, load through the proxy, deploys/rollbacks/restarts/limit changes/daemon restarts, leak and error checks) | 🟡 Validated (5 min per push to `main`, 60 min nightly) | [`scripts/soak.sh`](../scripts/soak.sh), [`benchmarks.md`](benchmarks.md). No 24 h+ soak has been run; leak detection over 5 minutes only catches fast leaks. A 15-minute run found an fd leak (one open log file per app process ever started), so the nightly soak fails until it is fixed. |
+
 ### Not implemented yet
 
-`core/ssh`, `core/state`, `deployment/analytics`, `git/action`, `integrations/github` and `integrations/docker` are stubs. Docker and fleet support come later ([roadmap](roadmap_web_control_plane.md) Phase 6).
+`core/ssh`, `core/state`, `deployment/analytics`, `git/action` and `integrations/github` are stubs. Fleet support comes later ([roadmap](roadmap_web_control_plane.md) Phase 6).

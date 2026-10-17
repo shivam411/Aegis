@@ -1,4 +1,4 @@
-use aegis_config::{BuildSection, DeploySection, ProjectFile, ProjectSection};
+use aegis_config::{BuildSection, DeploySection, ProjectFile, ProjectSection, RunSection};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +126,10 @@ impl DetectorPipeline {
 
     /// Builds the project part of `aegis.toml` from detected settings.
     pub fn to_project_file(&self, config: &DetectedConfig, project_id_str: &str) -> ProjectFile {
+        // A Dockerfile-only project runs as a container: the image is built
+        // from the Dockerfile, so there are no host build or start commands.
+        let docker = config.runtime_engine == "Docker";
+        let host_command = |c: &str| (!docker).then(|| c.to_string());
         ProjectFile {
             project: ProjectSection {
                 id: Some(project_id_str.to_string()),
@@ -134,25 +138,36 @@ impl DetectorPipeline {
             },
             build: BuildSection {
                 install_command: config.install_command.clone(),
-                build_command: Some(config.build_command.clone()),
+                build_command: host_command(&config.build_command),
                 test_command: None,
-                start_command: Some(config.start_command.clone()),
+                start_command: host_command(&config.start_command),
                 timeout_secs: None,
             },
             deploy: DeploySection {
                 strategy: Some("GracefulSwitch".to_string()),
                 port: Some(config.default_port),
-                health_check_url: Some(format!(
-                    "http://127.0.0.1:{}{}",
-                    config.default_port, config.health_endpoint
-                )),
+                health_check_url: Some(if docker {
+                    format!("http://127.0.0.1:{}/", config.default_port)
+                } else {
+                    format!(
+                        "http://127.0.0.1:{}{}",
+                        config.default_port, config.health_endpoint
+                    )
+                }),
                 health_check_timeout_secs: Some(30),
                 max_retained_versions: Some(2),
                 drain_timeout_secs: None,
                 restart_policy: None,
                 ..Default::default()
             },
-            run: Default::default(),
+            run: if config.runtime_engine == "Docker" {
+                RunSection {
+                    runtime: Some(aegis_config::RUNTIME_DOCKER.to_string()),
+                    ..Default::default()
+                }
+            } else {
+                RunSection::default()
+            },
             env: Default::default(),
         }
     }
@@ -246,6 +261,11 @@ mod tests {
         std::fs::write(temp_doc.path().join("Dockerfile"), "FROM alpine").unwrap();
         let cfg_doc = pipeline.detect_all(temp_doc.path());
         assert_eq!(cfg_doc.runtime_engine, "Docker");
+        let file = pipeline.to_project_file(&cfg_doc, "id");
+        assert!(file.run.is_docker());
+        assert_eq!(file.build.build_command, None);
+        assert_eq!(file.build.start_command, None);
+        assert!(file.run.validate().is_ok());
 
         // Generic
         let temp_gen = TempDir::new().unwrap();

@@ -111,7 +111,7 @@ Each stage reports `Started`, then `Success`, `Skipped` (no command configured) 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
 | `ProcessStartRequested` / `ProcessStopRequested` / `ProcessRestartRequested` | An operator action (audit record) | `process_id`, `project_id` |
-| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd`, `port` (its `PORT`), `proxied` (port allocated for the proxy), `candidate` (a new release starting next to the live one, or an instance outside the live set such as a BlueGreen standby), `instance` (1-based number, for apps with several instances) |
+| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd`, `port` (its `PORT`), `proxied` (port allocated for the proxy), `candidate` (a new release starting next to the live one, or an instance outside the live set such as a BlueGreen standby), `instance` (1-based number, for apps with several instances), `runtime` (`process` or `docker`), `container` and `image` (container apps; `pid` is then the container's main process and `command` is `docker: <image>`) |
 | `ProcessCrashed` | The process exited without being asked to | `process_id`, `project_id`, `exit_code`, `will_restart`, `restart_delay_ms` |
 | `ProcessFailed` | Crash loop or spawn failure; the supervisor stopped restarting it | `process_id`, `project_id`, `reason` |
 | `ProcessStopped` | The process was stopped | `process_id`, `project_id`, `reason` (`requested`, `replaced`, `restart`, `shutdown`), `exit_code` |
@@ -148,6 +148,17 @@ See [`disaster_recovery.md`](disaster_recovery.md). Payloads name archives only;
 | `BackupDeleted` | An archive was deleted | `name`, `reason` (`manual` or `retention`), `actor` |
 
 Restores are offline (the daemon is stopped), so they are not recorded as events; the restored database's history ends where the backup was taken.
+
+### Aegis updates
+
+See [`upgrading.md`](upgrading.md). Payloads hold versions, URLs and error messages only; no credentials or file contents. A pre-update backup also records its own `BackupCreated` with `trigger: "update"`.
+
+| Event Type | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `UpdateAvailable` | An update check found a newer stable release (recorded once per release) | `current_version`, `latest_version`, `url` (release notes) |
+| `UpdateStarted` | An admin started an upgrade from the dashboard/API | `from_version`, `to_version`, `mode` (`in_place` or `helper`), `actor` |
+| `UpdateApplied` | Recorded by the **new** version when it starts after an update; also when the daemon notices it was upgraded by other means | `from_version`, `to_version`, `method` (`in_place`, `helper` or `external`), `backup` (the pre-update backup's name), `actor` |
+| `UpdateFailed` | The upgrade stopped; unless `stage` is `restart`, nothing was replaced | `from_version`, `to_version`, `stage` (`download`, `verify`, `install`, `backup`, `request`, `helper`, `restart`), `error`, `actor` |
 
 ---
 

@@ -24,6 +24,7 @@ aegis-process = { path = "../../runtime/process" }
 aegis-resources = { path = "../../runtime/resources" }
 aegis-metrics = { path = "../../runtime/metrics" }
 aegis-secrets = { path = "../secrets" }
+aegis-docker = { path = "../../integrations/docker" }
 serde = { workspace = true }
 toml = { workspace = true }
 sqlx = { workspace = true }

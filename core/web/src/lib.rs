@@ -16,6 +16,7 @@ mod guard;
 mod resources;
 pub mod tls;
 mod ui;
+pub mod update;
 mod users;
 
 use aegis_auth::{AuthStore, LoginThrottle};
@@ -74,6 +75,8 @@ pub struct AppState {
     pub shutdown: watch::Receiver<bool>,
     /// Recently seen webhook delivery ids, to ignore redeliveries.
     pub deliveries: Arc<Mutex<VecDeque<String>>>,
+    /// Update checks and self-update (`None`: not offered).
+    pub updates: Option<Arc<aegis_update::UpdateManager>>,
 }
 
 impl AppState {
@@ -92,7 +95,14 @@ impl AppState {
             version,
             shutdown,
             deliveries: Arc::new(Mutex::new(VecDeque::new())),
+            updates: None,
         }
+    }
+
+    /// Offers update status and self-update through the API.
+    pub fn with_updates(mut self, updates: Arc<aegis_update::UpdateManager>) -> Self {
+        self.updates = Some(updates);
+        self
     }
 }
 
@@ -252,7 +262,8 @@ impl Modify for SecuritySchemes {
         appconfig::list_secrets, appconfig::set_secret, appconfig::delete_secret,
         appconfig::preview_settings, appconfig::webhook_status, appconfig::test_webhook,
         backup::list_backups, backup::create_backup, backup::download_backup,
-        backup::delete_backup
+        backup::delete_backup,
+        update::update_status, update::check_update, update::apply_update
     ),
     components(schemas(
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, InstanceDto, StandbyDto, ReleaseDto,
@@ -263,12 +274,14 @@ impl Modify for SecuritySchemes {
         NewTokenDto, users::UserDto, users::CreateUserRequest, users::UpdateUserRequest,
         WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
         DetectedDto, HostDto, BuildLogDto, ResourceLimitsDto, SetResourcesRequest, SampleDto,
-        PointDto, MetricsDto, ResourceCapabilitiesDto, ProjectResourcesDto,
+        PointDto, MetricsDto, ResourceCapabilitiesDto, DockerStatusDto, ProjectResourcesDto,
         domains::DomainDto, domains::CertStatusDto, domains::MapDomainRequest,
         domains::ProxyRouteDto, domains::ProxyStatusDto,
         SecretDto,
         SetSecretRequest, SecretSaved, DiffLineDto, ConfigPreviewDto, WebhookDeliveryDto,
-        WebhookStatusDto, backup::BackupDto, backup::CreateBackupRequest
+        WebhookStatusDto, backup::BackupDto, backup::CreateBackupRequest,
+        update::UpdateStatusDto, update::LatestReleaseDto, update::LastUpdateDto,
+        update::ApplyUpdateRequest
     )),
     tags(
         (name = "auth"), (name = "users"), (name = "system"), (name = "projects"), (name = "deployments"),
@@ -305,6 +318,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/status", get(api::status))
         .route("/host", get(api::host))
+        .route("/system/update", get(update::update_status))
+        .route("/system/update/check", post(update::check_update))
+        .route("/system/update/apply", post(update::apply_update))
         .route("/host/metrics", get(resources::host_metrics))
         .route("/resources", get(resources::capabilities))
         .route("/metrics/stream", get(resources::stream_metrics))
