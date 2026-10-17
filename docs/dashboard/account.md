@@ -1,6 +1,6 @@
 # Account
 
-**Account** in the top bar (or <kbd>g</kbd> <kbd>a</kbd>). Everyone sees **Password** and **Appearance & shortcuts**. Admins also see **Users**, **API tokens** and **Backups**. **Sign out** in the page header ends this browser session.
+**Account** in the top bar (or <kbd>g</kbd> <kbd>a</kbd>). Everyone sees **Password** and **Appearance & shortcuts**. Admins also see **Users**, **API tokens** and **Backups**. **Sign out** in the page header ends this browser session (on a phone, this is where Sign out is; the top bar has no room for it).
 
 ![The Account page as an admin](../images/dashboard/account.png)
 

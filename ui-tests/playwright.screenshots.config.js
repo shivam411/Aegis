@@ -10,7 +10,7 @@ module.exports = defineConfig({
   testMatch: /\.shots\.js$/,
   workers: 1,
   fullyParallel: false,
-  timeout: 600_000,
+  timeout: 1_800_000,
   expect: { timeout: 60_000 },
   retries: 0,
   reporter: 'list',

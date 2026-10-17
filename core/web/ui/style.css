@@ -180,6 +180,8 @@ main {
 .section > h2 { margin-bottom: 12px; }
 
 .grid { display: grid; gap: 16px; }
+/* Wide content (tables, logs) scrolls inside its card instead of widening the page. */
+.grid > * { min-width: 0; }
 .grid.stats { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .grid.apps { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .grid.two { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
@@ -550,6 +552,12 @@ kbd {
   main { padding: 16px 12px 48px; }
   h1 { font-size: 19px; }
   .facts { grid-template-columns: repeat(2, 1fr); }
+  .topbar-actions { gap: 2px; }
+}
+
+/* Phones: Sign out is also on the Account page; leave room for the menu. */
+@media (max-width: 480px) {
+  .topbar-actions #signout { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

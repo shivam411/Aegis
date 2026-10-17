@@ -177,22 +177,29 @@ test('dashboard guide screenshots', async ({ browser }) => {
   await api('PUT', `/projects/${shop.id}/schedule`, { hour: 2, minute: 30 });
   await api('POST', `/projects/${shop.id}/webhook`);
 
-  // --- v2 with a Rolling deployment (two instances behind the proxy) ---------
-  commit(e.repo, e.gitEnv, 'v2', 'Add the version to the status page');
-  await page.goto('/#/apps/shop/deploy');
-  await page.getByLabel('Strategy').selectOption(proxyOk ? 'Rolling' : 'GracefulSwitch');
-  await page.locator('form').getByRole('button', { name: 'Deploy' }).click();
-  await expect(page.locator('[data-deployment] [data-status="Success"], [data-deployment] [data-status="Failed"]').first())
-    .toBeVisible({ timeout: 240_000 });
-
-  // Some traffic for the logs.
-  for (const p of ['/', '/products', '/cart', '/slow', '/', '/health', '/checkout', '/']) {
-    if (proxyOk) await visit(e.proxyHttp, 'shop.demo.test', p);
-  }
-
   // A deployment that fails (a commit that doesn't exist), for the history.
   const failed = await api('POST', '/projects/shop/deploy', { commit: '0badc0de0badc0de0badc0de0badc0de0badc0d' });
   await waitDeployment(api, failed.deployment_id);
+
+  // --- v2 with a Rolling deployment (two instances behind the proxy) ---------
+  commit(e.repo, e.gitEnv, 'v2', 'Add the version to the status page');
+  await page.goto('/#/apps/shop/deploy');
+  await expect(page.locator(`[data-deployment="${failed.deployment_id}"]`)).toBeVisible();
+  await page.getByLabel('Strategy').selectOption(proxyOk ? 'Rolling' : 'GracefulSwitch');
+  await page.locator('form').getByRole('button', { name: 'Deploy' }).click();
+  await expect(page.locator(`[data-deployment="${failed.deployment_id}"]`)).toHaveCount(0);
+  const latest = page.locator('[data-deployment]');
+  await expect(latest.locator('[data-status="Success"], [data-status="Failed"], [data-status="Rolled back"]').first())
+    .toBeVisible({ timeout: 240_000 });
+
+  // Some traffic for the logs.
+  if (proxyOk) {
+    for (let i = 0; i < 4; i += 1) {
+      for (const p of ['/', '/products', '/cart', '/slow', '/checkout', '/products/42']) {
+        await visit(e.proxyHttp, 'shop.demo.test', p);
+      }
+    }
+  }
 
   // Limits, where this server supports them.
   const caps = await api('GET', '/resources');
@@ -327,7 +334,9 @@ test('dashboard guide screenshots', async ({ browser }) => {
   await tourContext.close();
 
   // --- Phone ------------------------------------------------------------------
-  const phone = await browser.newContext({ ...devices['Pixel 7'], colorScheme: 'light', reducedMotion: 'reduce' });
+  const phone = await browser.newContext({
+    ...devices['Pixel 7'], deviceScaleFactor: 2, colorScheme: 'light', reducedMotion: 'reduce', timezoneId: 'UTC', locale: 'en-US',
+  });
   await prepare(phone, { dismissUpdate: true });
   const mp = await phone.newPage();
   await signIn(mp, e.password);

@@ -9,7 +9,7 @@
 | **Status** | **Queued**, **Deploying**, **Success**, **Failed** or **Rolled back** (the new release failed its checks and the previous one was kept or restored). |
 | **App** | The app. |
 | **Release** | The release name (empty if the build never got that far). |
-| **Trigger** | What started it, such as the dashboard or CLI, a webhook, or the daily schedule. |
+| **Trigger** | What started it: `http` for the dashboard, CLI and API, or the webhook or daily schedule. |
 | **Stage** | The last pipeline stage it reached; for a failure, where it stopped. |
 | **Started** | When it was queued. Hover for the exact time. |
 | **Duration** | How long it took, or has taken so far. |

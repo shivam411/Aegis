@@ -101,7 +101,10 @@ https_port = ${proxyHttp + 1}
 
 [update]
 check = true                # against the fake API below, never GitHub
-`);
+${process.env.SHOTS_CGROUP_ROOT ? `
+[resources]
+cgroup_root = "${process.env.SHOTS_CGROUP_ROOT}"
+` : ''}`);
 
   const githubPort = webPort + 2;
   const fake = spawn(process.execPath, [path.join(__dirname, '..', 'fake-github.js'), String(githubPort)], {

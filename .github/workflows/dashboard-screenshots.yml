@@ -49,12 +49,22 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
+      - name: A cgroup for the demo apps
+        # The runner's own service cgroup has no cpu/memory controllers
+        # delegated; give the daemon a cgroup v2 directory of its own so the
+        # Limits card shows real limits.
+        run: |
+          sudo mkdir -p /sys/fs/cgroup/aegis-demo
+          echo "+cpu +memory +pids" | sudo tee /sys/fs/cgroup/aegis-demo/cgroup.subtree_control || true
+          cat /sys/fs/cgroup/aegis-demo/cgroup.subtree_control || true
+
       - name: Capture
         # As root, like the dashboard tests, so resource limits are real.
         working-directory: ui-tests
         env:
           BIN_DIR: target/release
           CI: 'true'
+          SHOTS_CGROUP_ROOT: /sys/fs/cgroup/aegis-demo
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
         run: sudo -E env "PATH=$PATH" npm run screenshots
 
