@@ -39,6 +39,12 @@ test('resource charts, live limits, CPU cap and OOM restart', async ({ page }) =
 
   const caps = await (await page.request.get('/api/v1/resources')).json();
   const limitsAvailable = caps.cpu && caps.memory;
+  // CI sets AEGIS_REQUIRE_CGROUPS=1 so the limit steps below can't be
+  // skipped silently.
+  if (process.env.AEGIS_REQUIRE_CGROUPS === '1') {
+    expect(limitsAvailable, `AEGIS_REQUIRE_CGROUPS=1 but limits are unavailable: ${caps.reason}`).toBe(true);
+  }
+  console.log(`cgroups: ${caps.backend} at ${caps.location} (limits ${limitsAvailable ? 'enforced' : `unavailable: ${caps.reason}`})`);
 
   await test.step('usage is measured and charted', async () => {
     await page.getByRole('link', { name: 'Resources' }).click();

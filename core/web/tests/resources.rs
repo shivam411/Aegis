@@ -1,6 +1,7 @@
 //! Resource limits and metrics over HTTP. Limit enforcement is checked
 //! where the host allows cgroups (Linux as root, or delegated); elsewhere
-//! the tests check that limits are refused with a reason.
+//! the tests check that limits are refused with a reason (or fail, with
+//! `AEGIS_REQUIRE_CGROUPS=1`, as in CI).
 
 mod common;
 
@@ -177,8 +178,14 @@ async fn limits_are_validated_applied_live_and_audited() {
     assert_eq!(status, StatusCode::OK);
 
     if !(caps["cpu"] == true && caps["memory"] == true) {
+        if std::env::var("AEGIS_REQUIRE_CGROUPS").is_ok_and(|v| v == "1") {
+            panic!(
+                "AEGIS_REQUIRE_CGROUPS=1 but cgroup limits are not usable: {}",
+                caps["reason"]
+            );
+        }
         eprintln!(
-            "limits not enforced here ({}); checking refusal only",
+            "SKIPPED: limits not enforced here ({}); checking refusal only. Set AEGIS_REQUIRE_CGROUPS=1 to fail instead",
             caps["reason"]
         );
         let (status, body) = put(json!({"memory_bytes": 268435456})).await;
@@ -192,6 +199,7 @@ async fn limits_are_validated_applied_live_and_audited() {
         return;
     }
     assert_ne!(caps["backend"], "none");
+    eprintln!("cgroups: {} at {}", caps["backend"], caps["location"]);
 
     // Below current use needs confirmation.
     wait_for(&api, "/api/v1/projects/web/resources", |v| {
@@ -225,6 +233,10 @@ async fn limits_are_validated_applied_live_and_audited() {
         after["process"]["pid"], before["process"]["pid"],
         "no restart"
     );
+    eprintln!(
+        "limits applied live (pid {} unchanged); memory.max read back from the cgroup: 96 MiB",
+        after["process"]["pid"]
+    );
     assert_eq!(after["resources"]["pids_max"], 64);
     let (_, caps) = api.get("/api/v1/resources").await;
     assert_eq!(caps["committed_memory_bytes"], 96 * 1024 * 1024);
@@ -253,6 +265,7 @@ async fn limits_are_validated_applied_live_and_audited() {
         .find(|e| e["event_type"] == "ResourcePressureDetected")
         .unwrap();
     assert_eq!(alert["payload"]["kind"], "oom_kill");
+    eprintln!("OOM kill reported: {}", alert["payload"]["message"]);
     assert!(alert["payload"]["message"]
         .as_str()
         .unwrap()

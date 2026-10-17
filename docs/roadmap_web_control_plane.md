@@ -229,7 +229,7 @@ The "done when" scenario is tested end to end in the browser (`ui-tests/tests/re
 2. Dragging the CPU slider to 0.2 cores caps a busy loop at about 0.2 cores.
 3. Allocating past the limit gets the app OOM-killed and restarted, and the alert shows in the UI.
 
-CI runs the kernel tests and the browser suite as root on cgroup v2. Locally they also pass on a cgroup v1 host.
+CI runs the kernel and HTTP tests on cgroup v2 both delegated (a transient systemd service with `Delegate=yes`, unprivileged) and as root, and the browser suite as root, with `AEGIS_REQUIRE_CGROUPS=1` so that none of them can skip. Until then they skipped silently in CI: under `sudo` the tests inherited the runner service's `INVOCATION_ID`, took that service's cgroup for a delegated one, and found no controllers there. Detection now refuses a service cgroup that holds other processes and falls back to `/sys/fs/cgroup/aegis` as root. Locally they also passed on a cgroup v1 host.
 
 Not done, deferred:
 
