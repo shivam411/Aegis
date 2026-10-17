@@ -136,6 +136,17 @@ See [`disaster_recovery.md`](disaster_recovery.md). Payloads name archives only;
 
 Restores are offline (the daemon is stopped), so they are not recorded as events; the restored database's history ends where the backup was taken.
 
+### Aegis updates
+
+See [`upgrading.md`](upgrading.md). Payloads hold versions, URLs and error messages only; no credentials or file contents. A pre-update backup also records its own `BackupCreated` with `trigger: "update"`.
+
+| Event Type | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `UpdateAvailable` | An update check found a newer stable release (recorded once per release) | `current_version`, `latest_version`, `url` (release notes) |
+| `UpdateStarted` | An admin started an upgrade from the dashboard/API | `from_version`, `to_version`, `mode` (`in_place` or `helper`), `actor` |
+| `UpdateApplied` | Recorded by the **new** version when it starts after an update; also when the daemon notices it was upgraded by other means | `from_version`, `to_version`, `method` (`in_place`, `helper` or `external`), `backup` (the pre-update backup's name), `actor` |
+| `UpdateFailed` | The upgrade stopped; unless `stage` is `restart`, nothing was replaced | `from_version`, `to_version`, `stage` (`download`, `verify`, `install`, `backup`, `request`, `helper`, `restart`), `error`, `actor` |
+
 ---
 
 ## 3. Projection Invalidation Rules

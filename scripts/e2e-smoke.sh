@@ -121,6 +121,9 @@ data_dir = "$WORK/data"
 enabled = true
 host = "127.0.0.1"
 port = $WEB_PORT
+
+[update]
+check = false               # no requests to GitHub from tests
 EOF
 
 step "Starting daemon"

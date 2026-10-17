@@ -363,6 +363,7 @@ const EVENT_TYPES = [
   'ResourceLimitsChanged', 'ResourcePressureDetected',
   'DomainMapped', 'DomainUnmapped',
   'BackupCreated', 'BackupFailed', 'BackupDeleted',
+  'UpdateAvailable', 'UpdateStarted', 'UpdateApplied', 'UpdateFailed',
 ];
 
 function connectEvents() {
@@ -430,6 +431,182 @@ function every(ctx, ms, fn) {
   const id = setInterval(fn, ms);
   ctx.cleanup(() => clearInterval(id));
 }
+
+// ----------------------------------------------------------------------
+// Aegis updates: banner, "Upgrade now", reconnecting after the restart
+// ----------------------------------------------------------------------
+
+const update = { status: null, timer: null };
+const UPDATE_PHASES = {
+  downloading: 'Downloading and verifying',
+  backing_up: 'Backing up',
+  installing: 'Installing',
+  waiting_for_helper: 'Waiting for the update helper',
+  restarting: 'Restarting',
+};
+
+function dismissed(key) {
+  try {
+    return localStorage.getItem(`aegis-dismissed-${key}`) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function dismiss(key) {
+  try {
+    localStorage.setItem(`aegis-dismissed-${key}`, '1');
+  } catch {
+    /* storage unavailable: hide until the next reload */
+  }
+  update.hidden = key;
+  renderUpdateBanner();
+}
+
+async function refreshUpdate() {
+  if (!state.session) return;
+  clearTimeout(update.timer);
+  try {
+    update.status = await api('GET', '/system/update');
+  } catch {
+    update.timer = setTimeout(refreshUpdate, 60 * 1000);
+    return;
+  }
+  renderUpdateBanner();
+  if (UPDATE_PHASES[update.status.phase]) waitForNewVersion(update.status.current_version);
+  else update.timer = setTimeout(refreshUpdate, 10 * 60 * 1000);
+}
+
+function renderUpdateBanner() {
+  const el = $('#update-banner');
+  const s = update.status;
+  if (!el || !s) return;
+  const hidden = (key) => update.hidden === key || dismissed(key);
+  const admin = can('admin');
+  const latest = s.latest;
+  const busy = UPDATE_PHASES[s.phase];
+  if (busy) {
+    replace(el, h('div', { class: 'alert info', 'data-update': 'progress' },
+      h('strong', {}, `Updating Aegis to ${latest?.version || 'a new version'}… `),
+      `${busy}. `,
+      s.phase === 'restarting' || s.phase === 'waiting_for_helper'
+        ? 'Aegis restarts in a moment; this page reconnects by itself.'
+        : null));
+    return;
+  }
+  const failedKey = `failed-${s.phase_error}`;
+  if (s.phase === 'failed' && admin && !hidden(failedKey)) {
+    replace(el, h('div', { class: 'alert', role: 'alert', 'data-update': 'failed' },
+      h('strong', {}, 'The update failed. '), s.phase_error || '', ' ',
+      h('button', { class: 'btn small', type: 'button', onclick: () => dismiss(failedKey) }, 'Dismiss')));
+    return;
+  }
+  const updatedKey = `updated-${s.current_version}`;
+  const recent = s.last_update && s.last_update.to_version === s.current_version
+    && Date.now() - parseTime(s.last_update.at) < 24 * 3600 * 1000;
+  if (recent && !hidden(updatedKey)) {
+    replace(el, h('div', { class: 'alert ok', 'data-update': 'updated' },
+      h('strong', {}, `Updated to v${s.current_version}`), ` (from v${s.last_update.from_version.replace(/^v/, '')}). `,
+      h('button', { class: 'btn small', type: 'button', onclick: () => dismiss(updatedKey) }, 'Dismiss')));
+    return;
+  }
+  const availableKey = `available-${latest?.version}`;
+  if (!s.update_available || !latest || hidden(availableKey)) {
+    replace(el);
+    return;
+  }
+  const parts = [
+    h('strong', {}, `Aegis ${latest.version} is available`),
+    ` (you run v${s.current_version}). `,
+    latest.url ? h('a', { href: latest.url, target: '_blank', rel: 'noopener noreferrer' }, 'Release notes') : null,
+    ' ',
+  ];
+  if (admin) {
+    if (s.can_apply) {
+      parts.push(h('button', {
+        class: 'btn small primary',
+        type: 'button',
+        'data-action': 'upgrade',
+        onclick: (e) => upgradeNow(e.currentTarget),
+      }, 'Upgrade now'));
+    } else if (s.blocked_reason) {
+      parts.push(h('div', { class: 'small' }, s.blocked_reason));
+    } else if (s.mode === 'manual' && s.manual_command) {
+      parts.push(
+        h('div', { class: 'small' }, s.mode_detail, ' Back up first (Account → Backups), then run on the server:'),
+        h('pre', { class: 'restore-steps' }, h('code', {}, s.manual_command)),
+        copyButton(s.manual_command));
+    } else if (!s.check_enabled || s.mode === 'unsupported') {
+      parts.push(h('div', { class: 'small' }, s.mode_detail));
+    }
+  }
+  parts.push(' ', h('button', { class: 'btn small ghost', type: 'button', onclick: () => dismiss(availableKey) }, 'Later'));
+  replace(el, h('div', { class: 'alert info', 'data-update': 'available' }, parts));
+}
+
+async function upgradeNow(btn) {
+  const s = update.status;
+  const version = s.latest.version;
+  const how = s.mode === 'helper'
+    ? 'The root-owned aegis-update helper service installs it (Aegis itself can\'t write its binary).'
+    : 'Aegis replaces its own binary.';
+  const answer = await modal(() => h('form', { method: 'dialog' },
+    h('div', { class: 'dialog-body' },
+      h('h2', {}, `Upgrade Aegis to ${version}?`),
+      h('p', { class: 'muted' }, `You run v${s.current_version}. ${how}`),
+      h('ol', { class: 'update-steps' },
+        h('li', {}, 'A backup of the database, secrets key and certificates is taken first (Account → Backups; release directories are not included).'),
+        h('li', {}, `${version} is downloaded from GitHub and checked against the release's SHA-256 checksums. If anything fails before the swap, nothing changes.`),
+        h('li', {}, 'The Aegis binaries are replaced; the old daemon is kept next to the new one as aegis-daemon.previous.'),
+        h('li', {}, 'Aegis restarts. Your apps are stopped during the restart and started again automatically, so expect a short outage (usually a few seconds). Deployments in progress are marked failed. The dashboard reconnects by itself.')),
+      h('p', { class: 'muted small' }, 'Going back later may need the pre-update backup if the new version upgraded the database. See docs/upgrading.md.')),
+    h('div', { class: 'form-actions' },
+      h('button', { class: 'btn', value: 'cancel', type: 'submit' }, 'Cancel'),
+      h('button', { class: 'btn primary', value: 'ok', type: 'submit', autofocus: true, 'data-confirm': '' }, `Upgrade to ${version}`))));
+  if (answer !== 'ok') return;
+  const res = await run(btn, () => api('POST', '/system/update/apply', { version }));
+  if (!res) return;
+  update.status = res;
+  renderUpdateBanner();
+  waitForNewVersion(s.current_version);
+}
+
+/** Polls until a daemon answers with another version (then loads its
+ * dashboard) or the update fails. */
+function waitForNewVersion(before) {
+  clearTimeout(update.timer);
+  const poll = async () => {
+    let s;
+    try {
+      const res = await fetch('/api/v1/system/update', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new Error(String(res.status));
+      s = await res.json();
+    } catch {
+      const el = $('#update-banner');
+      if (el) replace(el, h('div', { class: 'alert info', 'data-update': 'progress' }, h('strong', {}, 'Aegis is restarting… '), 'reconnecting.'));
+      update.timer = setTimeout(poll, 1500);
+      return;
+    }
+    update.status = s;
+    if (s.current_version !== before) {
+      location.reload();
+      return;
+    }
+    renderUpdateBanner();
+    if (s.phase === 'failed') {
+      toast(`Update failed: ${s.phase_error || 'see Events'}`, 'bad');
+      update.timer = setTimeout(refreshUpdate, 10 * 60 * 1000);
+      return;
+    }
+    update.timer = setTimeout(poll, 2000);
+  };
+  update.timer = setTimeout(poll, 1000);
+}
+
+// Update events (a check found a release, another admin started an update...).
+state.eventListeners.add((e) => {
+  if (e.event_type.startsWith('Update')) refreshUpdate();
+});
 
 // ----------------------------------------------------------------------
 // Router
@@ -503,6 +680,7 @@ function shell(section) {
       h('a', { href: '#/events', 'data-nav': 'events' }, 'Events'),
       h('a', { href: '#/account', 'data-nav': 'account' }, 'Account'));
     const main = h('main', { id: 'main' });
+    const banner = h('div', { id: 'update-banner', class: 'update-banner', 'aria-live': 'polite' });
     const bar = h('header', { class: 'topbar' },
       h('a', { class: 'brand', href: '#/' }, h('img', { src: '/assets/favicon.svg', alt: '' }), h('span', {}, 'Aegis')),
       nav,
@@ -510,8 +688,9 @@ function shell(section) {
         h('span', { id: 'conn', class: 'pill warn live' }, 'Connecting'),
         h('button', { class: 'btn ghost icon', type: 'button', title: 'Toggle theme (t)', 'aria-label': 'Toggle theme', onclick: toggleTheme }, '◐'),
         h('button', { class: 'btn ghost', type: 'button', id: 'signout', onclick: signOut }, 'Sign out')));
-    state.shell = { root: h('div', {}, bar, main), main };
+    state.shell = { root: h('div', {}, bar, banner, main), main };
     replace($('#app'), state.shell.root);
+    refreshUpdate();
   }
   for (const a of state.shell.root.querySelectorAll('[data-nav]')) {
     if (a.dataset.nav === section) a.setAttribute('aria-current', 'page');
@@ -2214,6 +2393,16 @@ function describeEvent(e) {
     case 'DomainUnmapped':
       bits.push(p.domain);
       break;
+    case 'UpdateAvailable':
+      bits.push(`${p.latest_version} (running ${p.current_version})`);
+      break;
+    case 'UpdateStarted':
+    case 'UpdateApplied':
+      bits.push(`${p.from_version} → ${p.to_version}${p.mode || p.method ? ` · ${p.mode || p.method}` : ''}`);
+      break;
+    case 'UpdateFailed':
+      bits.push(`${p.from_version} → ${p.to_version} · ${p.stage}: ${p.error || ''}`);
+      break;
     case 'ResourcePressureDetected':
       bits.length = 0;
       bits.push(p.message);
@@ -2244,7 +2433,7 @@ function describeEvent(e) {
 function eventKind(type) {
   if (/Failed|Crashed|ResourcePressure/.test(type)) return 'bad';
   if (/RolledBack|LoginFailed/.test(type)) return 'warn';
-  if (/Completed|Succeeded|Promoted|LoggedIn|BackupCreated/.test(type)) return 'ok';
+  if (/Completed|Succeeded|Promoted|LoggedIn|BackupCreated|UpdateApplied/.test(type)) return 'ok';
   return '';
 }
 
@@ -2267,6 +2456,7 @@ const EVENT_CATEGORIES = [
   ['resources', 'Resources & alerts', (t) => t.startsWith('Resource')],
   ['config', 'App configuration', (t) => /^(Project|Schedule)/.test(t)],
   ['backup', 'Backups', (t) => t.startsWith('Backup')],
+  ['update', 'Aegis updates', (t) => t.startsWith('Update')],
 ];
 
 async function eventsPage(main, ctx) {

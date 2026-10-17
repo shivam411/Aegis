@@ -1,3 +1,4 @@
+mod self_update;
 mod service;
 
 use aegis_api::aegis::aegis_daemon_server::AegisDaemonServer;
@@ -116,6 +117,14 @@ const USAGE: &str = "Usage:
   aegis-daemon admin restore ARCHIVE [--force]
                                          Restore a backup. The daemon must be stopped.
                                          --force restores a backup made by another Aegis version
+  aegis-daemon self-update [--check] [--version TAG] [--force] [--restart-unit UNIT]
+                                         Download the latest (or TAG) release from GitHub, verify
+                                         it against the release's SHA256SUMS and replace this
+                                         binary (and aegis-cli/aegis-tui next to it), keeping
+                                         <binary>.previous. Run it as the binaries' owner (root
+                                         for install.sh --server). --force allows reinstalls,
+                                         downgrades, pre-releases and major-version jumps.
+                                         --restart-unit restarts that systemd unit afterwards
 
 The configuration is read from $AEGIS_CONFIG (default: ./aegis.toml).";
 
@@ -161,6 +170,12 @@ async fn main() {
 async fn run() -> Result<(), anyhow::Error> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Before the configuration: self-update runs a new binary's --version to
+    // check that it works, whatever the configuration holds.
+    if let ["-V" | "--version"] = args.as_slice() {
+        println!("aegis-daemon {}", DAEMON_VERSION);
+        return Ok(());
+    }
     // 1. Load config. The daemon must not create aegis.toml itself: `aegis init`
     // owns that file, and a pre-existing daemon-only file made init skip writing
     // the [project] section, so every deploy got a fresh random project ID.
@@ -169,23 +184,26 @@ async fn run() -> Result<(), anyhow::Error> {
     validate_config(&config)?;
 
     match args.as_slice() {
-        [] | ["run"] => run_daemon(config).await,
+        [] | ["run"] => {
+            if run_daemon(config, &config_path).await? == Exit::Restart {
+                self_update::restart_self();
+            }
+            Ok(())
+        }
         ["check-config"] => {
             println!(
-                "Configuration OK ({}). HTTP API: {}. Proxy: {}",
+                "Configuration OK ({}). HTTP API: {}. Proxy: {}. Update checks: {}",
                 config_path,
                 describe_web(&config),
-                describe_proxy(&config)
+                describe_proxy(&config),
+                if config.update.check { "on" } else { "off" }
             );
             Ok(())
         }
         ["admin", rest @ ..] => admin(&config, rest).await,
+        ["self-update", rest @ ..] => self_update::command(&config, rest).await,
         ["-h" | "--help" | "help"] => {
             println!("{}", USAGE);
-            Ok(())
-        }
-        ["-V" | "--version"] => {
-            println!("aegis-daemon {}", DAEMON_VERSION);
             Ok(())
         }
         _ => anyhow::bail!("Unknown arguments {:?}\n\n{}", args, USAGE),
@@ -212,6 +230,8 @@ fn validate_config(config: &Config) -> Result<(), anyhow::Error> {
     }
     config.proxy.validate(&config.web, &config.daemon)?;
     config.backup.validate()?;
+    config.update.validate()?;
+    aegis_update::api_base_override()?;
     Ok(())
 }
 
@@ -727,7 +747,15 @@ fn name_and_role(
     Ok((name, role))
 }
 
-async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
+/// How `run_daemon` ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Exit {
+    Stopped,
+    /// A new binary was installed; start it.
+    Restart,
+}
+
+async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::Error> {
     // 2. Initialize logs
     aegis_logs::init_logging(&config.daemon.log_level);
     tracing::info!("Aegis Daemon v{} starting up...", DAEMON_VERSION);
@@ -785,6 +813,15 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
         "Resource limits"
     );
     tracing::info!(data_dir = %data_dir.display(), "Control plane ready");
+
+    // Update checks (GitHub releases) and self-update.
+    let updates = aegis_update::UpdateManager::new(
+        self_update::settings(&config, config_path),
+        Arc::new(aegis_web::update::ControlUpdateHooks(control.clone())),
+    );
+    updates.on_boot().await;
+    updates.spawn_periodic();
+    let mut restart_rx = updates.restart_requested();
     if config.backup.enabled {
         let schedule = match config.backup.daily_time() {
             Some((hour, minute)) => backup::BackupSchedule::DailyAt(hour, minute),
@@ -921,7 +958,8 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
             web_settings(&config),
             DAEMON_VERSION.to_string(),
             web_shutdown_rx.clone(),
-        );
+        )
+        .with_updates(updates.clone());
         let mut stop = web_shutdown_rx;
         let shutdown = async move {
             let _ = stop.wait_for(|stopping| *stopping).await;
@@ -956,11 +994,19 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
         plugin_manager,
         web_url,
     };
+    let mut exit = Exit::Stopped;
     Server::builder()
         .add_service(AegisDaemonServer::new(service))
         .serve_with_shutdown(addr, async {
-            shutdown_signal().await;
-            tracing::info!("Received shutdown signal. Gracefully shutting down Aegis Daemon...");
+            tokio::select! {
+                _ = shutdown_signal() => {
+                    tracing::info!("Received shutdown signal. Gracefully shutting down Aegis Daemon...");
+                }
+                _ = restart_rx.wait_for(|restart| *restart) => {
+                    tracing::info!("Update installed. Shutting down to start the new version...");
+                    exit = Exit::Restart;
+                }
+            }
         })
         .await?;
 
@@ -980,7 +1026,7 @@ async fn run_daemon(config: Config) -> Result<(), anyhow::Error> {
     }
     control.shutdown().await;
     tracing::info!("Aegis Daemon stopped");
-    Ok(())
+    Ok(exit)
 }
 
 #[cfg(test)]

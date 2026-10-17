@@ -1,89 +1,19 @@
 //! `aegis upgrade`: compares this build with the latest GitHub release and
 //! re-runs install.sh to update. Uses the system `curl`, like install.sh.
+//! Version handling is shared with the daemon's updater (`aegis-update`).
 
-use std::cmp::Ordering;
 use std::path::Path;
 use std::process::Command;
 
+pub use aegis_update::{plan, tag_from_api, Plan};
+
 /// The repository install.sh downloads releases from.
-pub const REPO: &str = "shivam411/Aegis";
+pub const REPO: &str = aegis_update::DEFAULT_REPO;
 /// Where install.sh is published (see the header of install.sh).
 pub const INSTALL_SCRIPT_URL: &str = "https://shivam411.github.io/Aegis/install.sh";
 
 pub fn latest_release_api() -> String {
     format!("https://api.github.com/repos/{}/releases/latest", REPO)
-}
-
-/// A parsed `MAJOR.MINOR.PATCH[-PRE][+BUILD]`, with an optional leading `v`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Version {
-    pub core: (u64, u64, u64),
-    pub pre: Vec<String>,
-}
-
-pub fn parse_version(s: &str) -> Option<Version> {
-    let s = s.trim();
-    let s = s.strip_prefix('v').unwrap_or(s);
-    let s = s.split('+').next()?;
-    let (core, pre) = match s.split_once('-') {
-        Some((core, pre)) => (core, pre.split('.').map(str::to_string).collect()),
-        None => (s, Vec::new()),
-    };
-    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
-    let version = Version {
-        core: (parts.next()??, parts.next()??, parts.next()??),
-        pre,
-    };
-    parts.next().is_none().then_some(version)
-}
-
-impl Ord for Version {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.core.cmp(&other.core).then_with(|| {
-            // A release sorts after its pre-releases.
-            match (self.pre.is_empty(), other.pre.is_empty()) {
-                (true, true) => Ordering::Equal,
-                (true, false) => Ordering::Greater,
-                (false, true) => Ordering::Less,
-                (false, false) => {
-                    for (a, b) in self.pre.iter().zip(&other.pre) {
-                        let ord = match (a.parse::<u64>(), b.parse::<u64>()) {
-                            (Ok(x), Ok(y)) => x.cmp(&y),
-                            (Ok(_), Err(_)) => Ordering::Less,
-                            (Err(_), Ok(_)) => Ordering::Greater,
-                            (Err(_), Err(_)) => a.cmp(b),
-                        };
-                        if ord != Ordering::Equal {
-                            return ord;
-                        }
-                    }
-                    self.pre.len().cmp(&other.pre.len())
-                }
-            }
-        })
-    }
-}
-
-impl PartialOrd for Version {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Reads `tag_name` from a GitHub "latest release" response.
-pub fn tag_from_api(body: &str) -> anyhow::Result<String> {
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| anyhow::anyhow!("Unexpected response from GitHub: {}", e))?;
-    match value.get("tag_name").and_then(|v| v.as_str()) {
-        Some(tag) if !tag.is_empty() => Ok(tag.to_string()),
-        _ => {
-            let message = value
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("no tag_name in the response");
-            anyhow::bail!("GitHub did not return a release: {}", message)
-        }
-    }
 }
 
 fn curl(args: &[&str]) -> anyhow::Result<Vec<u8>> {
@@ -116,27 +46,6 @@ pub fn fetch_latest_tag() -> anyhow::Result<String> {
     tag_from_api(&String::from_utf8_lossy(&body))
 }
 
-/// What to do, given the latest tag and this build's version.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Plan {
-    UpToDate,
-    Upgrade,
-    /// This build is newer than the latest release (a development build).
-    Ahead,
-}
-
-pub fn plan(latest: &str, current: &str) -> anyhow::Result<Plan> {
-    let l = parse_version(latest)
-        .ok_or_else(|| anyhow::anyhow!("Cannot compare release tag '{}'", latest))?;
-    let c = parse_version(current)
-        .ok_or_else(|| anyhow::anyhow!("Cannot compare version '{}'", current))?;
-    Ok(match l.cmp(&c) {
-        Ordering::Greater => Plan::Upgrade,
-        Ordering::Equal => Plan::UpToDate,
-        Ordering::Less => Plan::Ahead,
-    })
-}
-
 /// True when the running binary sits where `install.sh --server` puts it,
 /// so a per-user install would not replace it.
 pub fn is_server_install(exe: &Path) -> bool {
@@ -160,6 +69,7 @@ pub fn run_installer() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aegis_update::parse_version;
 
     #[test]
     fn compares_versions() {

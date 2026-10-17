@@ -137,6 +137,8 @@ fn user_only(path: &str) -> bool {
         // Backups hold the secrets key and password hashes.
         || path == "/api/v1/backups"
         || path.starts_with("/api/v1/backups/")
+        // Installing a new Aegis binary (and asking GitHub on demand).
+        || path.starts_with("/api/v1/system/update/")
         || matches!(section, Some("webhook" | "secrets"))
 }
 
@@ -165,6 +167,8 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         ["users" | "tokens" | "backups", ..] => Role::Admin,
         ["projects", _, "secrets" | "webhook", ..] => Role::Admin,
         _ if read => Role::Viewer,
+        // Checking now and installing a new Aegis version.
+        ["system", "update", ..] => Role::Admin,
         // Shows the aegis.toml a settings change would produce; saves nothing.
         ["projects", _, "settings", "preview"] => Role::Viewer,
         ["projects", _, "deploy" | "rollback"] => Role::Deployer,
@@ -761,6 +765,7 @@ mod tests {
             "/api/v1/events/stream",
             "/api/v1/processes/web/logs",
             "/api/v1/projects/web/domains",
+            "/api/v1/system/update",
         ] {
             assert_eq!(need(Method::GET, p), Role::Viewer, "{p}");
         }
@@ -805,6 +810,8 @@ mod tests {
             (Method::POST, "/api/v1/users"),
             (Method::POST, "/api/v1/detect"),
             (Method::POST, "/api/v1/processes/web/unknown"),
+            (Method::POST, "/api/v1/system/update/check"),
+            (Method::POST, "/api/v1/system/update/apply"),
         ] {
             assert_eq!(need(m.clone(), p), Role::Admin, "{m} {p}");
         }

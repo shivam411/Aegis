@@ -22,7 +22,7 @@ An operator-focused summary of the Aegis roadmap. The detailed, phased plan is [
 ## 🟢 NOW (Phase 6 — Operations polish)
 - **Multiple users and roles:** viewer, deployer, admin.
 - **Backup and restore** of the database and releases from the UI, with scheduled backups.
-- **Self-update** from the dashboard.
+- **Self-update** from the dashboard *(experimental, first cut done: [`upgrading.md`](upgrading.md))*.
 - **Terminal UI:** a real `ratatui` dashboard on the same API as the web UI.
 - **Docker runtime:** container apps with the same CPU/memory sliders.
 - **Rolling and blue/green deploys:** several instances per app behind the proxy.

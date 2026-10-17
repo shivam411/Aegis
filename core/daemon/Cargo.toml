@@ -24,6 +24,7 @@ aegis-control = { path = "../control" }
 aegis-auth = { path = "../auth" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 aegis-web = { path = "../web" }
+aegis-update = { path = "../update" }
 aegis-ingress = { path = "../../runtime/ingress" }
 aegis-event-bus = { path = "../event_bus" }
 aegis-event-store = { path = "../event_store" }
