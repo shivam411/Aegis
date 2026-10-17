@@ -71,14 +71,20 @@ async fn deploy(api: &Api, name: &str, src: &std::path::Path) {
 }
 
 async fn wait_for(api: &Api, uri: &str, pred: impl Fn(&Value) -> bool) -> Value {
-    for _ in 0..100 {
+    // Generous: under memory.high the kernel throttles an app that is
+    // nearing its limit, so an OOM kill can take several seconds.
+    let mut last = Value::Null;
+    for _ in 0..300 {
         let (_, v) = api.get(uri).await;
         if pred(&v) {
             return v;
         }
+        last = v;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("{uri} never matched");
+    let mut last = last.to_string();
+    last.truncate(4000);
+    panic!("{uri} never matched; last response: {last}");
 }
 
 #[tokio::test]
@@ -252,6 +258,8 @@ async fn limits_are_validated_applied_live_and_audited() {
         }
     })
     .await;
+    let (_, r) = api.get("/api/v1/projects/web/resources").await;
+    eprintln!("after /hog: usage {}", r["usage"]);
     let events = wait_for(&api, "/api/v1/events?project=web&limit=200", |v| {
         v.as_array()
             .unwrap()
