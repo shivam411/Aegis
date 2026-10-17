@@ -95,10 +95,9 @@ fn install_sh_verifies_release_signatures() {
     };
     if !openssl_can_verify(&bash) {
         // Stock Linux has OpenSSL 1.1.1+; CI must really run this.
-        assert!(
-            !cfg!(target_os = "linux"),
-            "OpenSSL can't verify Ed25519/BLAKE2b here"
-        );
+        if cfg!(target_os = "linux") {
+            panic!("OpenSSL can't verify Ed25519/BLAKE2b here");
+        }
         eprintln!("skipped: this OpenSSL can't verify Ed25519 signatures");
         return;
     }
@@ -117,7 +116,9 @@ fn install_sh_verifies_release_signatures() {
     let run = verify(&bash, SUMS, Some(&good), &both, false);
     assert!(run.ok, "{}", run.output);
 
-    let cases: Vec<(&str, String, Option<String>, Vec<String>, &str)> = vec![
+    // (name, SHA256SUMS, signature, trusted keys, expected message)
+    type Case<'a> = (&'a str, String, Option<String>, Vec<String>, &'a str);
+    let cases: Vec<Case<'_>> = vec![
         (
             "tampered SHA256SUMS",
             SUMS.replace("3f0a", "3f0b"),
