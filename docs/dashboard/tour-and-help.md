@@ -24,6 +24,8 @@ Steps for controls your role doesn't have are left out, as are steps that need a
 
 ![The tour highlighting the Deploy button](../images/dashboard/tour-deploy.png)
 
+![The tour on an app page, highlighting the tabs](../images/dashboard/tour-tabs.png)
+
 | Control | Keys |
 | :--- | :--- |
 | **Next** / **Finish** | <kbd>→</kbd> or <kbd>Enter</kbd> |
