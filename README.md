@@ -184,7 +184,9 @@ With `[web] enabled = true`, open `http://127.0.0.1:8420/` (through an SSH tunne
 - **Resources:** watch live and historical CPU and memory for each app, with its limit drawn on the chart. Drag the CPU and memory sliders to change limits on the running app with no restart. See when an app is throttled or killed for running out of memory.
 - **Manage:** edit app settings, set daily schedules, create webhook secrets and API tokens.
 
-The dashboard has light and dark themes, works on a phone, and has keyboard shortcuts (press `?`).
+The dashboard has light and dark themes, works on a phone, and has keyboard shortcuts (press `?`). New users get a short guided tour, and every section has a **?** button that explains it. The [dashboard guide](docs/dashboard/README.md) walks through every page with screenshots.
+
+![The Aegis dashboard overview](docs/images/dashboard/overview.png)
 
 ### HTTP API
 

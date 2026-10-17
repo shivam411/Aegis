@@ -3,7 +3,8 @@
   "private": true,
   "description": "Browser tests for the Aegis dashboard, run against a real daemon",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "screenshots": "playwright test -c playwright.screenshots.config.js"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1"

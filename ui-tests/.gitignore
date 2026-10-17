@@ -2,3 +2,5 @@ node_modules/
 test-results/
 playwright-report/
 .work/
+test-results-shots/
+screenshots/.env.json

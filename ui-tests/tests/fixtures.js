@@ -30,8 +30,22 @@ const test = base.test.extend({
   },
 });
 
-async function login(page, password = env().password) {
+/** Marks the first-run tour as done for `username` in this page's browser
+ * storage, so it doesn't cover the page (tour.spec.js tests the tour). */
+async function skipTour(page, username = 'admin') {
+  await page.addInitScript((name) => {
+    try {
+      localStorage.setItem(`aegis.tour.${name}`, 'done');
+    } catch {
+      /* storage unavailable */
+    }
+  }, username);
+}
+
+async function login(page, password = env().password, { username = 'admin', tour = false } = {}) {
+  if (!tour) await skipTour(page, username);
   await page.goto('/');
+  await page.getByLabel('Username').fill(username);
   await page.getByLabel('Password').fill(password);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await base.expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
@@ -67,4 +81,4 @@ function commit(repo, version) {
   execFileSync('git', ['commit', '-qam', version], { cwd: repo, env: gitEnv });
 }
 
-module.exports = { test, expect: base.expect, env, login, confirm, appBody, commit };
+module.exports = { test, expect: base.expect, env, login, skipTour, confirm, appBody, commit };
