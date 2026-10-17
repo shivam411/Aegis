@@ -201,8 +201,9 @@ enum Commands {
         #[command(subcommand)]
         target: MigrateSubcommand,
     },
-    /// Update the Aegis binaries to the latest GitHub release with install.sh
-    /// (Linux and macOS) [EXPERIMENTAL]
+    /// Update the Aegis binaries next to this CLI to the latest GitHub
+    /// release, verified with the release signing key (Linux and macOS)
+    /// [EXPERIMENTAL]
     Upgrade {
         /// Only report whether a newer release exists
         #[arg(short, long)]
@@ -213,6 +214,10 @@ enum Commands {
         /// Don't ask for confirmation
         #[arg(short, long)]
         yes: bool,
+        /// Install even if the release isn't signed or this build has no
+        /// release key (only SHA-256 is checked). Not recommended
+        #[arg(long)]
+        allow_unsigned: bool,
     },
 }
 
@@ -1236,14 +1241,26 @@ async fn run() -> Result<(), anyhow::Error> {
                 write_migration(migrate::from_systemd(path, &text, &read)?, &output)?;
             }
         },
-        Commands::Upgrade { check, force, yes } => {
+        Commands::Upgrade {
+            check,
+            force,
+            yes,
+            allow_unsigned,
+        } => {
             let current = aegis_update::VERSION;
             println!("This CLI:       v{}", current);
             if let Some(status) = daemon.status().await {
                 println!("Daemon:         v{}", status.version);
             }
-            let latest = upgrade::fetch_latest_tag()?;
+            let source = upgrade::source()?;
+            let latest = source.latest().await?.tag;
             println!("Latest release: {}", latest);
+            let keys = source.keyring().ids();
+            if keys.is_empty() {
+                println!("Release keys:   none in this build; releases can't be verified");
+            } else {
+                println!("Release keys:   {}", keys.join(", "));
+            }
             let plan = upgrade::plan(&latest, current)?;
             match plan {
                 upgrade::Plan::UpToDate => println!("Aegis is up to date."),
@@ -1278,26 +1295,39 @@ async fn run() -> Result<(), anyhow::Error> {
                     "  sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml /usr/local/bin/aegis-daemon self-update --restart-unit aegis.service"
                 );
                 println!(
-                    "  (downloads {}, checks it against the release's SHA256SUMS and keeps the old binaries as *.previous;",
+                    "  (downloads {}, checks its signature and SHA256SUMS and keeps the old binaries as *.previous;",
                     latest
                 );
                 println!("   admins can also use \"Upgrade now\" in the dashboard, see docs/upgrading.md)");
                 return Ok(());
             }
+            let dir = exe.parent().unwrap_or(Path::new("."));
             println!(
-                "This downloads {} and runs it with bash; it installs {} into ~/.local/bin.",
-                upgrade::INSTALL_SCRIPT_URL,
-                latest
+                "This downloads {} from GitHub, checks its signature and SHA-256, and replaces the Aegis binaries in {} (keeping *.previous).",
+                latest,
+                dir.display()
             );
-            println!("  (this binary: {})", exe.display());
+            if allow_unsigned {
+                eprintln!("{}", upgrade::UNSIGNED_WARNING);
+            }
             if !yes && !confirm("Continue?") {
                 println!("Cancelled. Pass --yes to skip this question.");
                 return Ok(());
             }
-            upgrade::run_installer()?;
+            let installed =
+                upgrade::install(&source, &exe, &latest, force, allow_unsigned).await?;
+            match &installed.signed_by {
+                Some(key) => println!("Installed {} (signed by release key {}).", installed.tag, key),
+                None => eprintln!(
+                    "Installed {} WITHOUT a signature check (--allow-unsigned).",
+                    installed.tag
+                ),
+            }
+            for path in &installed.replaced {
+                println!("  replaced {}", path.display());
+            }
             println!(
-                "Installed {}. Restart the daemon (stop it, then run 'aegis-daemon') to use the new version.",
-                latest
+                "Restart the daemon (stop it, then run 'aegis-daemon') to use the new version."
             );
         }
     }

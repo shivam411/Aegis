@@ -3,7 +3,7 @@
 
 use crate::service::DAEMON_VERSION;
 use aegis_config::Config;
-use aegis_update::{helper, parse_version, Source, Target, UpdateSettings};
+use aegis_update::{helper, parse_version, SignaturePolicy, Source, Target, UpdateSettings};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -117,12 +117,21 @@ fn restart_unit(unit: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/// Printed (to stderr) whenever `--allow-unsigned` is used.
+const UNSIGNED_WARNING: &str = "\
+WARNING: --allow-unsigned: the release's signature is NOT required.
+         Only its SHA-256 checksums are checked, and they come from the same
+         GitHub release: anyone able to publish a release could have replaced
+         both. Use this only for a release you have verified another way.
+         The install is recorded in the event log (UpdateApplied, allow_unsigned).";
+
 /// `aegis-daemon self-update [--check] [--version TAG] [--force]
-/// [--restart-unit UNIT] [--from-request]`.
+/// [--restart-unit UNIT] [--from-request] [--allow-unsigned]`.
 pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Error> {
     let mut check = false;
     let mut force = false;
     let mut from_request = false;
+    let mut allow_unsigned = false;
     let mut wanted = None;
     let mut unit = None;
     let mut it = flags.iter();
@@ -131,6 +140,7 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
             "--check" => check = true,
             "--force" => force = true,
             "--from-request" => from_request = true,
+            "--allow-unsigned" => allow_unsigned = true,
             "--version" => {
                 let tag = it
                     .next()
@@ -168,6 +178,12 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
         let latest = source.latest().await?;
         println!("Running:        {}", DAEMON_VERSION);
         println!("Latest release: {} ({})", latest.tag, latest.html_url);
+        let keys = source.keyring().ids();
+        if keys.is_empty() {
+            println!("Release keys:   none in this build; releases can't be verified (see docs/upgrading.md)");
+        } else {
+            println!("Release keys:   {}", keys.join(", "));
+        }
         match aegis_update::plan(&latest.tag, DAEMON_VERSION)? {
             aegis_update::Plan::Upgrade => println!("A newer release is available."),
             aegis_update::Plan::UpToDate => println!("Aegis is up to date."),
@@ -180,9 +196,10 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
     // asks for an update. Only the version is taken from the request.
     let request_dir = config.daemon.resolved_data_dir().join("update");
     if from_request {
-        if force || wanted.is_some() {
+        // The dashboard can never install an unsigned release.
+        if force || wanted.is_some() || allow_unsigned {
             anyhow::bail!(
-                "--from-request takes the version from the request; no --force/--version"
+                "--from-request takes the version from the request; no --force/--version/--allow-unsigned"
             );
         }
         match helper::take_request(&request_dir) {
@@ -207,6 +224,9 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
             )
         })?;
     let exe = exe_path();
+    if allow_unsigned {
+        eprintln!("{}", UNSIGNED_WARNING);
+    }
     let result = helper::self_update(helper::SelfUpdate {
         source: &source,
         exe: &exe,
@@ -215,21 +235,49 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
         wanted: wanted.as_deref(),
         force,
         verify_runs: true,
+        signatures: if allow_unsigned {
+            SignaturePolicy::AllowUnsigned
+        } else {
+            SignaturePolicy::Required
+        },
     })
     .await;
     let installed = match result {
         Ok(installed) => installed,
         Err(e) => {
             if from_request {
-                let _ = helper::write_result(&request_dir, false, &format!("{:#}", e));
+                let _ = helper::write_failure(&request_dir, &e);
             }
             return Err(e);
         }
     };
-    println!(
-        "Installed Aegis {} (was {}); archive SHA-256 {} matched the release's SHA256SUMS.",
-        installed.tag, installed.from, installed.archive_sha256
-    );
+    match &installed.signed_by {
+        Some(key) => println!(
+            "Installed Aegis {} (was {}): SHA256SUMS is signed by release key {}, and the archive's SHA-256 {} matches it.",
+            installed.tag, installed.from, key, installed.archive_sha256
+        ),
+        None => eprintln!(
+            "Installed Aegis {} (was {}) WITHOUT a signature check (--allow-unsigned); the archive's SHA-256 {} matched the release's SHA256SUMS.",
+            installed.tag, installed.from, installed.archive_sha256
+        ),
+    }
+    // For the daemon to record when it starts (UpdateApplied). The update
+    // directory is the daemon's; never create it here (as root).
+    let record = helper::InstalledRecord {
+        version: installed.tag.clone(),
+        signed_by: installed.signed_by.clone(),
+        allow_unsigned: installed.signed_by.is_none(),
+        method: if from_request { "helper" } else { "self-update" }.into(),
+        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    };
+    if let Err(e) = helper::write_installed(&request_dir, &record) {
+        if allow_unsigned {
+            eprintln!(
+                "Could not record the unsigned install for the event log ({}).",
+                e
+            );
+        }
+    }
     for path in &installed.replaced {
         println!(
             "  replaced {} (previous: {})",

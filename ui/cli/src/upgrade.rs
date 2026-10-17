@@ -1,75 +1,88 @@
 //! `aegis upgrade`: compares this build with the latest GitHub release and
-//! re-runs install.sh to update. Uses the system `curl`, like install.sh.
-//! Version handling is shared with the daemon's updater (`aegis-update`).
+//! installs it with the same code as the daemon's self-update
+//! (`aegis-update`): the release's SHA256SUMS must be signed by a release key
+//! compiled into this binary, and the archive must match it.
 
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
-pub use aegis_update::{plan, tag_from_api, Plan};
+pub use aegis_update::{plan, Plan};
+use aegis_update::{helper, parse_version, SignaturePolicy, Source, Target};
 
-/// The repository install.sh downloads releases from.
+/// The repository releases are downloaded from.
 pub const REPO: &str = aegis_update::DEFAULT_REPO;
-/// Where install.sh is published (see the header of install.sh).
-pub const INSTALL_SCRIPT_URL: &str = "https://shivam411.github.io/Aegis/install.sh";
 
-pub fn latest_release_api() -> String {
-    format!("https://api.github.com/repos/{}/releases/latest", REPO)
-}
+/// Printed (to stderr) whenever `--allow-unsigned` is used.
+pub const UNSIGNED_WARNING: &str = "\
+WARNING: --allow-unsigned: the release's signature is NOT required. Only its
+         SHA-256 checksums are checked, and they come from the same GitHub
+         release: anyone able to publish a release could have replaced both.";
 
-fn curl(args: &[&str]) -> anyhow::Result<Vec<u8>> {
-    let output = Command::new("curl").args(args).output().map_err(|e| {
-        anyhow::anyhow!(
-            "Could not run curl ({}). Install curl, or download a release from https://github.com/{}/releases",
-            e,
-            REPO
-        )
-    })?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "curl failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(output.stdout)
-}
-
-/// The tag of the latest published release, e.g. "v0.1.7".
-pub fn fetch_latest_tag() -> anyhow::Result<String> {
-    let body = curl(&[
-        "-fsSL",
-        "--max-time",
-        "20",
-        "-H",
-        "Accept: application/vnd.github+json",
-        &latest_release_api(),
-    ])?;
-    tag_from_api(&String::from_utf8_lossy(&body))
+/// GitHub (or the loopback test API in `AEGIS_UPDATE_API_URL`).
+pub fn source() -> anyhow::Result<Source> {
+    Ok(Source::new(
+        aegis_update::api_base_override()?,
+        REPO,
+        &format!("aegis-cli/{}", aegis_update::VERSION),
+    ))
 }
 
 /// True when the running binary sits where `install.sh --server` puts it,
-/// so a per-user install would not replace it.
+/// so a per-user upgrade would not replace it.
 pub fn is_server_install(exe: &Path) -> bool {
     exe.parent() == Some(Path::new("/usr/local/bin"))
 }
 
-/// Downloads install.sh and runs it with bash (it uses bash features).
-pub fn run_installer() -> anyhow::Result<()> {
-    let script = std::env::temp_dir().join(format!("aegis-install-{}.sh", std::process::id()));
-    let path = script.to_string_lossy().to_string();
-    curl(&["-fsSL", "--max-time", "60", "-o", &path, INSTALL_SCRIPT_URL])?;
-    let status = Command::new("bash").arg(&script).status();
-    let _ = std::fs::remove_file(&script);
-    let status = status.map_err(|e| anyhow::anyhow!("Could not run bash: {}", e))?;
-    if !status.success() {
-        anyhow::bail!("install.sh failed ({})", status);
-    }
-    Ok(())
+/// The daemon binary next to this CLI: `self_update` replaces it, and the
+/// CLI/TUI next to it.
+pub fn daemon_next_to(exe: &Path) -> PathBuf {
+    exe.with_file_name(aegis_update::install::DAEMON_BINARY)
+}
+
+/// Downloads, verifies and installs `tag` into the directory of `exe`.
+pub async fn install(
+    source: &Source,
+    exe: &Path,
+    tag: &str,
+    force: bool,
+    allow_unsigned: bool,
+) -> anyhow::Result<helper::Installed> {
+    let target = Target::current()
+        .filter(|t| t.self_update_supported())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Self-update isn't supported on this platform; download {} from https://github.com/{}/releases",
+                tag,
+                REPO
+            )
+        })?;
+    let current = parse_version(aegis_update::VERSION).ok_or_else(|| {
+        anyhow::anyhow!(
+            "This build's version '{}' is not comparable",
+            aegis_update::VERSION
+        )
+    })?;
+    let daemon = daemon_next_to(exe);
+    helper::self_update(helper::SelfUpdate {
+        source,
+        exe: &daemon,
+        target,
+        current,
+        wanted: Some(tag),
+        force,
+        verify_runs: true,
+        signatures: if allow_unsigned {
+            SignaturePolicy::AllowUnsigned
+        } else {
+            SignaturePolicy::Required
+        },
+    })
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_update::parse_version;
+    use aegis_update::{parse_version, tag_from_api};
 
     #[test]
     fn compares_versions() {
@@ -114,5 +127,13 @@ mod tests {
         assert!(!is_server_install(Path::new(
             "/home/me/.local/bin/aegis-cli"
         )));
+    }
+
+    #[test]
+    fn replaces_the_daemon_next_to_the_cli() {
+        assert_eq!(
+            daemon_next_to(Path::new("/home/me/.local/bin/aegis-cli")),
+            Path::new("/home/me/.local/bin/aegis-daemon")
+        );
     }
 }

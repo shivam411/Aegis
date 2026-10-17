@@ -7,14 +7,17 @@
 //! notices the file and starts `aegis-update.service`, which runs
 //! `aegis-daemon self-update --from-request`: it deletes the request, then
 //! downloads and verifies that release itself (it trusts nothing the daemon
-//! wrote except the version string, and only installs a version newer than
-//! its own), swaps the binaries and restarts the daemon. On failure it
-//! writes `result.json` for the daemon to report.
+//! wrote except the version string, requires a valid release signature, and
+//! only installs a version newer than its own), swaps the binaries and
+//! restarts the daemon. On failure it writes `result.json` for the daemon to
+//! report; on success `installed.json`, so the new daemon can record which
+//! key signed the release.
 //!
 //! The same [`self_update`] runs for `sudo aegis-daemon self-update`.
 
 use crate::install;
 use crate::release::{Release, Target};
+use crate::signature::{self, SignaturePolicy};
 use crate::source::Source;
 use crate::version::{is_major_jump, parse_version, Version};
 use serde::{Deserialize, Serialize};
@@ -23,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 pub const REQUEST_FILE: &str = "request.json";
 pub const RESULT_FILE: &str = "result.json";
+pub const INSTALLED_FILE: &str = "installed.json";
 const MAX_REQUEST_BYTES: u64 = 4096;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,20 +80,76 @@ pub fn take_request(dir: &Path) -> anyhow::Result<Option<String>> {
 pub struct HelperResult {
     pub ok: bool,
     pub message: String,
+    /// The `UpdateFailed` stage when it isn't `helper` (e.g. `signature`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 /// Helper side: reports the outcome. The file is created fresh (never
 /// through an existing file or symlink in the daemon-writable directory)
 /// and renamed into place.
 pub fn write_result(dir: &Path, ok: bool, message: &str) -> anyhow::Result<()> {
+    write_result_at_stage(dir, ok, message, None)
+}
+
+fn write_result_at_stage(
+    dir: &Path,
+    ok: bool,
+    message: &str,
+    stage: Option<&str>,
+) -> anyhow::Result<()> {
     crate::state::write_json_atomic(
         dir,
         RESULT_FILE,
         &HelperResult {
             ok,
             message: message.to_string(),
+            stage: stage.map(str::to_string),
         },
     )
+}
+
+/// Helper side: reports a failed update, with stage `signature` for
+/// signature failures.
+pub fn write_failure(dir: &Path, error: &anyhow::Error) -> anyhow::Result<()> {
+    let stage = signature::is_signature_error(error).then_some("signature");
+    write_result_at_stage(dir, false, &format!("{:#}", error), stage)
+}
+
+/// What `self-update` installed, for the daemon to record when it starts
+/// (`UpdateApplied` with the signing key, or the `--allow-unsigned` override).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstalledRecord {
+    pub version: String,
+    /// The release key that signed it; `None` when installed with
+    /// `--allow-unsigned`.
+    pub signed_by: Option<String>,
+    #[serde(default)]
+    pub allow_unsigned: bool,
+    /// `helper` (from the dashboard) or `self-update` (run by an admin).
+    pub method: String,
+    /// RFC 3339.
+    pub at: String,
+}
+
+/// Root side: written into the daemon's (existing) update directory just
+/// before the restart, created fresh like the result file.
+pub fn write_installed(dir: &Path, record: &InstalledRecord) -> anyhow::Result<()> {
+    if !dir.is_dir() {
+        anyhow::bail!("{} does not exist", dir.display());
+    }
+    crate::state::write_json_atomic(dir, INSTALLED_FILE, record)
+}
+
+/// Daemon side: the record, if any (removed once read).
+pub fn take_installed(dir: &Path) -> Option<InstalledRecord> {
+    let path = dir.join(INSTALLED_FILE);
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    let bytes = (meta.file_type().is_file() && meta.len() <= MAX_REQUEST_BYTES)
+        .then(|| std::fs::read(&path).ok())
+        .flatten();
+    let _ = std::fs::remove_file(&path);
+    serde_json::from_slice(&bytes?).ok()
 }
 
 /// Daemon side: the helper's report, if any (removed once read).
@@ -107,6 +167,8 @@ pub struct Installed {
     pub to: Version,
     pub tag: String,
     pub archive_sha256: String,
+    /// The release key that signed SHA256SUMS (`None`: `--allow-unsigned`).
+    pub signed_by: Option<String>,
     pub replaced: Vec<PathBuf>,
 }
 
@@ -123,6 +185,8 @@ pub struct SelfUpdate<'a> {
     pub force: bool,
     /// Run the new binary's `--version` before swapping it in.
     pub verify_runs: bool,
+    /// [`SignaturePolicy::Required`] except for `--allow-unsigned`.
+    pub signatures: SignaturePolicy,
 }
 
 /// Why `release` must not be installed over `current` without `force`.
@@ -167,7 +231,10 @@ pub async fn self_update(opts: SelfUpdate<'_>) -> anyhow::Result<Installed> {
     if let Some(reason) = refusal(&release, &opts.current, opts.force) {
         anyhow::bail!(reason);
     }
-    let bundle = opts.source.fetch_bundle(&release, &opts.target).await?;
+    let bundle = opts
+        .source
+        .fetch_bundle(&release, &opts.target, opts.signatures)
+        .await?;
     let staged = bundle.stage(opts.exe)?;
     if opts.verify_runs {
         install::check_runs(staged.daemon(), &bundle.version).await?;
@@ -178,6 +245,7 @@ pub async fn self_update(opts: SelfUpdate<'_>) -> anyhow::Result<Installed> {
         to: bundle.version,
         tag: bundle.tag,
         archive_sha256: bundle.archive_sha256,
+        signed_by: bundle.signed_by,
         replaced,
     })
 }
@@ -214,7 +282,37 @@ mod tests {
         let r = take_result(dir.path()).unwrap();
         assert!(!r.ok);
         assert_eq!(r.message, "checksum mismatch");
+        assert_eq!(r.stage, None);
         assert_eq!(take_result(dir.path()), None);
+        // Signature failures say so.
+        let e = anyhow::Error::from(crate::signature::SignatureError::NoTrustedKey);
+        write_failure(dir.path(), &e).unwrap();
+        assert_eq!(
+            take_result(dir.path()).unwrap().stage.as_deref(),
+            Some("signature")
+        );
+        write_failure(dir.path(), &anyhow::anyhow!("timeout")).unwrap();
+        assert_eq!(take_result(dir.path()).unwrap().stage, None);
+    }
+
+    #[test]
+    fn installed_records_round_trip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(take_installed(dir.path()), None);
+        let record = InstalledRecord {
+            version: "v1.2.0".into(),
+            signed_by: Some("0123456789ABCDEF".into()),
+            allow_unsigned: false,
+            method: "helper".into(),
+            at: "2026-10-17T00:00:00Z".into(),
+        };
+        write_installed(dir.path(), &record).unwrap();
+        assert_eq!(take_installed(dir.path()), Some(record.clone()));
+        assert_eq!(take_installed(dir.path()), None);
+        assert!(write_installed(&dir.path().join("missing"), &record).is_err());
+        std::fs::write(dir.path().join(INSTALLED_FILE), "garbage").unwrap();
+        assert_eq!(take_installed(dir.path()), None);
+        assert!(!dir.path().join(INSTALLED_FILE).exists());
     }
 
     #[test]

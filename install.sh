@@ -20,7 +20,14 @@
 #   --no-self-update    (with --server) Don't install the root-owned aegis-update
 #                       helper; "Upgrade now" in the dashboard then only shows the
 #                       command to run (see docs/upgrading.md)
+#   --allow-unsigned    Install a release even if it isn't signed, or if this
+#                       installer has no release signing key yet. Only the
+#                       SHA-256 checksum is checked then. Not recommended.
 #   --print-unit        Print the systemd unit and exit
+#
+# Downloads are verified: the release's SHA256SUMS must be signed by one of
+# the release keys below (minisign/Ed25519; checked with OpenSSL 1.1.1+, or
+# minisign if OpenSSL can't), and the archive must match its SHA-256 there.
 #
 
 set -euo pipefail
@@ -39,6 +46,14 @@ UNIT_PATH="/etc/systemd/system/aegis.service"
 UPDATE_PATH_UNIT="/etc/systemd/system/aegis-update.path"
 UPDATE_SERVICE_UNIT="/etc/systemd/system/aegis-update.service"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases/latest"
+ALLOW_UNSIGNED="${AEGIS_ALLOW_UNSIGNED:-0}"
+
+# The minisign public keys a release's SHA256SUMS may be signed with, one
+# quoted base64 key per line. The same list as core/update/keys/release.pub
+# (compiled into Aegis; a test checks that they match). Empty until the
+# maintainers generate the release key: see docs/releasing.md.
+RELEASE_KEYS=(
+)
 
 # ──────────────────────────────────────────────
 # Colors
@@ -109,6 +124,152 @@ verify_checksum() {
     fi
     [ "${expected}" = "${actual}" ] \
         || err "Checksum mismatch for ${name} (expected ${expected}, got ${actual}). Not installing."
+}
+
+# ──────────────────────────────────────────────
+# Check the release's signature (SHA256SUMS.minisig)
+# ──────────────────────────────────────────────
+# A minisign signature file has four lines: an untrusted comment; base64 of
+# "ED" + key ID (8 bytes) + Ed25519 signature of the BLAKE2b-512 hash of the
+# file; "trusted comment: ..."; base64 of the Ed25519 signature of the first
+# signature followed by the trusted comment. A public key is base64 of
+# "Ed" + key ID + the 32-byte Ed25519 key. The release workflow puts
+# "aegis-release:<tag>" in the trusted comment.
+
+b64decode() {
+    if printf 'QQ==' | base64 -d >/dev/null 2>&1; then
+        printf '%s' "$1" | base64 -d > "$2" 2>/dev/null
+    else
+        printf '%s' "$1" | openssl base64 -d -A > "$2" 2>/dev/null
+    fi
+}
+
+byte_count() { wc -c < "$1" | tr -d ' '; }
+
+hex_of() { od -An -v -tx1 | tr -d ' \n'; }
+
+# minisign prints key IDs as a little-endian number in upper-case hex.
+key_id_display() {
+    local hex="$1" out="" i
+    for ((i = ${#hex} - 2; i >= 0; i -= 2)); do out="${out}${hex:i:2}"; done
+    echo "${out}" | tr 'a-f' 'A-F'
+}
+
+# The trusted comment must name the release being installed.
+comment_names_release() {
+    local comment="$1" tag="$2" word words
+    read -ra words <<< "${comment}"
+    for word in "${words[@]}"; do
+        [ "${word}" = "aegis-release:${tag}" ] && return 0
+    done
+    return 1
+}
+
+# OpenSSL 1.1.1+ can check Ed25519 signatures over a BLAKE2b-512 hash.
+# (LibreSSL, e.g. macOS's openssl, can't; minisign is used there.)
+openssl_can_verify() {
+    command -v openssl &>/dev/null || return 1
+    openssl dgst -blake2b512 -binary </dev/null >/dev/null 2>&1 || return 1
+    openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'
+}
+
+# verify_with_openssl DIR TAG: prints the signing key's ID, or explains on
+# stderr and fails.
+verify_with_openssl() {
+    local dir="$1" tag="$2" work="$1/.signature" line2 comment line4 sig_id key
+    mkdir -p "${work}"
+    line2="$(sed -n 2p "${dir}/SHA256SUMS.minisig" | tr -d '\r')"
+    comment="$(sed -n 3p "${dir}/SHA256SUMS.minisig" | tr -d '\r')"
+    line4="$(sed -n 4p "${dir}/SHA256SUMS.minisig" | tr -d '\r')"
+    case "${comment}" in
+        "trusted comment: "*) comment="${comment#trusted comment: }" ;;
+        *) echo "SHA256SUMS.minisig is not a minisign signature." >&2; return 1 ;;
+    esac
+    if ! b64decode "${line2}" "${work}/sig.bin" || [ "$(byte_count "${work}/sig.bin")" != 74 ] \
+        || ! b64decode "${line4}" "${work}/global.bin" || [ "$(byte_count "${work}/global.bin")" != 64 ]; then
+        echo "SHA256SUMS.minisig is not a minisign signature." >&2
+        return 1
+    fi
+    if [ "$(head -c 2 "${work}/sig.bin")" != "ED" ]; then
+        echo "SHA256SUMS.minisig is not a pre-hashed (ED) minisign signature." >&2
+        return 1
+    fi
+    sig_id="$(head -c 10 "${work}/sig.bin" | tail -c 8 | hex_of)"
+    tail -c 64 "${work}/sig.bin" > "${work}/sig64.bin"
+    openssl dgst -blake2b512 -binary "${dir}/SHA256SUMS" > "${work}/hash.bin"
+    { cat "${work}/sig64.bin"; printf '%s' "${comment}"; } > "${work}/global-message.bin"
+    for key in "${RELEASE_KEYS[@]}"; do
+        b64decode "${key}" "${work}/key.bin" || continue
+        [ "$(byte_count "${work}/key.bin")" = 42 ] || continue
+        [ "$(head -c 10 "${work}/key.bin" | tail -c 8 | hex_of)" = "${sig_id}" ] || continue
+        # DER SubjectPublicKeyInfo for an Ed25519 key, then the key.
+        { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; tail -c 32 "${work}/key.bin"; } > "${work}/key.der"
+        if openssl pkeyutl -verify -pubin -keyform DER -inkey "${work}/key.der" -rawin \
+                -in "${work}/hash.bin" -sigfile "${work}/sig64.bin" >/dev/null 2>&1 \
+            && openssl pkeyutl -verify -pubin -keyform DER -inkey "${work}/key.der" -rawin \
+                -in "${work}/global-message.bin" -sigfile "${work}/global.bin" >/dev/null 2>&1; then
+            if ! comment_names_release "${comment}" "${tag}"; then
+                echo "The signature was made for another release ('${comment}', expected aegis-release:${tag})." >&2
+                return 1
+            fi
+            key_id_display "${sig_id}"
+            return 0
+        fi
+        echo "The signature on SHA256SUMS (key $(key_id_display "${sig_id}")) is not valid: the file was modified or corrupted." >&2
+        return 1
+    done
+    echo "SHA256SUMS is signed by key $(key_id_display "${sig_id}"), which this installer does not trust." >&2
+    return 1
+}
+
+# verify_with_minisign DIR TAG: the same check with the minisign tool.
+verify_with_minisign() {
+    local dir="$1" tag="$2" key comment
+    for key in "${RELEASE_KEYS[@]}"; do
+        if comment="$(minisign -V -Q -P "${key}" -m "${dir}/SHA256SUMS" -x "${dir}/SHA256SUMS.minisig" 2>/dev/null)"; then
+            if ! comment_names_release "${comment}" "${tag}"; then
+                echo "The signature was made for another release ('${comment}', expected aegis-release:${tag})." >&2
+                return 1
+            fi
+            if b64decode "${key}" "${dir}/.key.bin"; then
+                key_id_display "$(head -c 10 "${dir}/.key.bin" | tail -c 8 | hex_of)"
+            else
+                echo "${key}"
+            fi
+            return 0
+        fi
+    done
+    echo "The signature on SHA256SUMS is not valid, or not made by a key this installer trusts." >&2
+    return 1
+}
+
+# verify_release_signature DIR TAG: checks DIR/SHA256SUMS against
+# DIR/SHA256SUMS.minisig (absent if the release has none). Exits on failure.
+verify_release_signature() {
+    local dir="$1" tag="$2" why="" key_id
+    if [ "${#RELEASE_KEYS[@]}" -eq 0 ]; then
+        why="This installer has no release signing key yet (see docs/releasing.md)"
+    elif [ ! -s "${dir}/SHA256SUMS.minisig" ]; then
+        why="Release ${tag} is not signed (it has no SHA256SUMS.minisig)"
+    fi
+    if [ -n "${why}" ]; then
+        if [ "${ALLOW_UNSIGNED}" = 1 ]; then
+            warn "${why}."
+            warn "Continuing because of --allow-unsigned: only the SHA-256 checksum is checked, and anyone able to publish a release could have replaced both."
+            return 0
+        fi
+        err "${why}, so the download can't be verified. Re-run with --allow-unsigned to install it anyway (SHA-256 only), or build Aegis from source."
+    fi
+    if openssl_can_verify; then
+        key_id="$(verify_with_openssl "${dir}" "${tag}")" \
+            || err "The release signature check failed (see above); not installing."
+    elif command -v minisign &>/dev/null; then
+        key_id="$(verify_with_minisign "${dir}" "${tag}")" \
+            || err "The release signature check failed (see above); not installing."
+    else
+        err "Can't check the release signature: this needs OpenSSL 1.1.1 or newer, or minisign (e.g. 'brew install minisign'). Install one, or re-run with --allow-unsigned (SHA-256 only)."
+    fi
+    ok "SHA256SUMS is signed by release key ${key_id}"
 }
 
 # ──────────────────────────────────────────────
@@ -197,7 +358,7 @@ UNIT
 # binaries in /usr/local/bin. When an admin clicks "Upgrade now" it writes
 # ${STATE_DIR}/update/request.json naming only a version; this path unit then
 # starts a root one-shot service that downloads that release itself, checks
-# it against the release's SHA256SUMS, refuses anything not newer than the
+# its signature and SHA256SUMS, refuses anything not newer than the
 # installed version, swaps the binaries (keeping *.previous) and restarts aegis.
 print_update_path_unit() {
     cat <<UNIT
@@ -302,6 +463,11 @@ install_binaries() {
         curl -fsSL -o "${TMP_DIR}/SHA256SUMS" \
             "https://github.com/${REPO}/releases/download/${version}/SHA256SUMS" \
             || err "Release ${version} has no SHA256SUMS; refusing to install unverified binaries."
+        # Absent for unsigned releases; verify_release_signature decides.
+        curl -fsSL -o "${TMP_DIR}/SHA256SUMS.minisig" \
+            "https://github.com/${REPO}/releases/download/${version}/SHA256SUMS.minisig" 2>/dev/null \
+            || rm -f "${TMP_DIR}/SHA256SUMS.minisig"
+        verify_release_signature "${TMP_DIR}" "${version}"
         verify_checksum "${TMP_DIR}" "${archive_name}"
         ok "Downloaded ${archive_name} (SHA-256 verified)"
 
@@ -438,8 +604,9 @@ parse_args() {
             --bin-dir) shift; BIN_DIR="${1:-}"; [ -d "${BIN_DIR}" ] || err "--bin-dir needs a directory" ;;
             --no-start) NO_START=1 ;;
             --no-self-update) SELF_UPDATE=0 ;;
+            --allow-unsigned) ALLOW_UNSIGNED=1 ;;
             --print-unit) print_unit; exit 0 ;;
-            -h|--help) sed -n '2,24p' "$0" 2>/dev/null || true; exit 0 ;;
+            -h|--help) sed -n '2,31p' "$0" 2>/dev/null || true; exit 0 ;;
             *) err "Unknown option: $1" ;;
         esac
         shift
@@ -502,4 +669,7 @@ main() {
     echo ""
 }
 
-main "$@"
+# AEGIS_INSTALL_SH_LIB=1: only define the functions (tests source this file).
+if [ "${AEGIS_INSTALL_SH_LIB:-0}" != 1 ]; then
+    main "$@"
+fi

@@ -35,11 +35,14 @@ upgrade (`POST /api/v1/system/update/apply`); API tokens can't do either.
 
 ## What "Upgrade now" does
 
-1. **Download and verify.** The archive for this machine
-   (`aegis-<os>-<arch>.tar.gz`) and the release's `SHA256SUMS` are downloaded
-   over HTTPS; the archive must match its SHA-256 or nothing happens. The new
-   `aegis-daemon` (and `aegis-cli`/`aegis-tui` if they are installed next to it)
-   are written next to the old ones, and the new daemon must answer
+1. **Download and verify.** The release's `SHA256SUMS` and its signature
+   `SHA256SUMS.minisig` are downloaded over HTTPS. The signature must be
+   valid, made by one of the release keys built into your Aegis, and made for
+   this release; then the archive for this machine
+   (`aegis-<os>-<arch>.tar.gz`) must match its SHA-256 there. Otherwise
+   nothing happens (`UpdateFailed` with stage `signature` or `download`). The
+   new `aegis-daemon` (and `aegis-cli`/`aegis-tui` if they are installed next
+   to it) are written next to the old ones, and the new daemon must answer
    `--version` with the expected version.
 2. **Back up.** A backup of the database, secrets key and certificates (no
    release directories) is written to `<data_dir>/backups` like any other
@@ -58,7 +61,43 @@ app, typically a few seconds; requests during that window fail (the built-in
 proxy restarts too). Deployments still running at that moment are marked
 failed ("Interrupted") and must be started again. Sessions survive; the
 dashboard shows "Aegis is restarting…", reconnects, reloads, and shows
-"Updated to vX" (an `UpdateApplied` event is recorded by the new version).
+"Updated to vX. Signed by release key …" (an `UpdateApplied` event with
+`signed_by` is recorded by the new version).
+
+## Signed releases
+
+Every release's `SHA256SUMS` is signed with the maintainers' minisign key
+(see [`releasing.md`](releasing.md) and
+[`security.md`](security.md#self-update)). The keys your build accepts are
+shown by `aegis-daemon self-update --check` and `aegis upgrade --check`
+("Release keys") and in `release_keys` of `GET /api/v1/system/update`.
+
+**A build without a release key.** Until the maintainers generate the key,
+builds contain a placeholder and can't verify any release. Then:
+
+- the dashboard shows the update but no "Upgrade now"; the banner explains
+  that this build has no release signing key and gives the command below;
+- the update helper refuses (it never installs an unsigned release);
+- `aegis-daemon self-update`, `aegis upgrade` and `install.sh` refuse unless
+  you add `--allow-unsigned`. With it, only the SHA-256 checksums are checked
+  (they come from the same release, so they don't prove who published it);
+  a signature that is present but invalid is still refused. It prints a
+  warning, and the daemon records the install in the event log
+  (`UpdateApplied` with `allow_unsigned: true`) when it next starts.
+
+```sh
+# Check the release yourself first, e.g. with minisign and the published key:
+#   minisign -Vm SHA256SUMS -x SHA256SUMS.minisig -P RWQ...
+sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml aegis-daemon self-update --allow-unsigned --restart-unit aegis.service
+```
+
+The same flag also installs an older, unsigned release on a build that has a
+key (e.g. `self-update --version v0.7.0 --force --allow-unsigned`).
+
+**A release signed with a key your build doesn't know** (after a key
+rotation you skipped) fails with "signed by key X, which this build does not
+trust". Re-run install.sh, which carries the current keys, or verify the
+release by hand and use `--allow-unsigned` once.
 
 ## How it is installed depends on who owns the binary
 
@@ -86,13 +125,14 @@ sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml aegis-daemon self-update --restart-u
 # pre-releases and major-version jumps:
 sudo aegis-daemon self-update --version v0.8.0 --force
 
-# Per-user install (re-runs install.sh):
+# Per-user install (replaces the binaries next to aegis-cli):
 aegis upgrade
 ```
 
-`self-update` uses the same download, verification and swap code as the
-dashboard; `aegis upgrade` re-runs install.sh, which now also checks the
-archive against `SHA256SUMS`.
+`self-update` and `aegis upgrade` use the same download, signature and
+checksum verification and swap code as the dashboard. install.sh checks the
+same signature (with OpenSSL 1.1.1+, or minisign) and checksum before it
+installs anything.
 
 ## Never downgrades, and major versions need a decision
 
@@ -126,10 +166,12 @@ reversible, and backup restores refuse a newer schema without `--force`).
   ```
   The old version then records `UpdateFailed` (`stage: "restart"`) because it
   is not the version that was installed.
-- **Download, verification, backup or helper failure:** nothing was swapped;
-  the banner and an `UpdateFailed` event say why (`stage`: `download`,
-  `verify`, `install`, `backup`, `request`, `helper`, `restart`). Fix the
-  cause and click "Upgrade now" again.
+- **Download, signature, verification, backup or helper failure:** nothing
+  was swapped; the banner and an `UpdateFailed` event say why (`stage`:
+  `download`, `signature`, `verify`, `install`, `backup`, `request`,
+  `helper`, `restart`). Fix the cause and click "Upgrade now" again. A
+  `signature` failure means the release is unsigned, signed by an unknown
+  key, or was modified: don't work around it without finding out why.
 - **The machine dies mid-swap:** each binary is replaced by one rename, so
   each is either old or new. With the CLI and TUI, a crash between renames can
   leave them on different versions; rerun `self-update --force`.

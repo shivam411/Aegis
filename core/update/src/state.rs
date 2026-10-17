@@ -31,6 +31,12 @@ pub struct AppliedUpdate {
     /// `in_place`, `helper` or `external` (install.sh, `aegis-daemon
     /// self-update`, a package manager...).
     pub method: String,
+    /// The release key that signed the installed release, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_by: Option<String>,
+    /// Installed with `aegis-daemon self-update --allow-unsigned`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_unsigned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +47,9 @@ pub(crate) struct Pending {
     pub backup: Option<String>,
     pub actor: String,
     pub started_at: String,
+    /// In-place updates: the key that signed the release being installed.
+    #[serde(default)]
+    pub signed_by: Option<String>,
 }
 
 pub(crate) fn path(dir: &Path) -> PathBuf {
