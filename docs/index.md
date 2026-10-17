@@ -22,6 +22,7 @@ Aegis is pre-1.0 and early. What is tested in CI, and what isn't measured yet, i
 
 - [Installation Guide](install.md) · [Upgrading](upgrading.md)
 - [Quickstart Tutorial](quickstart.md)
+- [Dashboard Guide](dashboard/README.md) — every page of the web dashboard, with screenshots
 - [Architecture Deep Dive](architecture.md)
 - [Feature Maturity](feature_maturity.md) · [Scorecard](scorecard.md) · [Benchmarks & Soak Tests](benchmarks.md) · [Roadmap](public_roadmap.md)
 - [GitHub Repository](https://github.com/shivam411/Aegis)

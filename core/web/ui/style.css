@@ -24,6 +24,7 @@
   --log-err: #ff9a8f;
   --log-sys: #8fb4ff;
   --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
+  --scrim: rgb(10 14 20 / 55%);
   --radius: 10px;
   --radius-sm: 6px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -53,6 +54,7 @@
     --idle-soft: #232831;
     --log-bg: #0a0c10;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+    --scrim: rgb(0 0 0 / 65%);
     color-scheme: dark;
   }
 }
@@ -78,6 +80,7 @@
   --idle-soft: #232831;
   --log-bg: #0a0c10;
   --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+  --scrim: rgb(0 0 0 / 65%);
   color-scheme: dark;
 }
 
@@ -604,3 +607,81 @@ ol.update-steps { margin: 8px 0; padding-left: 20px; display: grid; gap: 6px; }
 @media (max-width: 720px) {
   .update-banner { padding: 0 12px; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Section help: "?" buttons and their popover                         */
+/* ------------------------------------------------------------------ */
+
+.section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.section > .section-head h2 { margin: 0; }
+
+.help-btn {
+  position: relative; flex: none;
+  display: inline-grid; place-items: center;
+  width: 20px; height: 20px; min-height: 0; padding: 0;
+  border: 1px solid var(--border-strong); border-radius: 50%;
+  background: transparent; color: var(--text-muted);
+  font: 650 12px/1 var(--font); cursor: pointer;
+  vertical-align: middle;
+}
+/* A bigger touch target than the visible circle. */
+.help-btn::after { content: ""; position: absolute; inset: -8px; }
+.help-btn:hover, .help-btn[aria-expanded="true"] {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+.help-btn.static { cursor: default; }
+.help-btn.static::after { display: none; }
+.alert .help-btn { color: inherit; border-color: currentColor; }
+
+.help-pop {
+  position: absolute; z-index: 60; top: 0; left: 0;
+  width: min(380px, calc(100vw - 24px)); max-height: 70vh; overflow: auto;
+  padding: 14px 16px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 22%);
+  font-size: 13.5px;
+  animation: toast-in .14s ease-out;
+}
+.help-pop:focus { outline: none; }
+.help-pop:focus-visible { outline: 2px solid var(--accent); }
+.help-pop.sheet {
+  position: fixed; top: auto; left: 8px; right: 8px; bottom: 8px;
+  width: auto; max-height: 65vh;
+}
+.help-pop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.help-pop-head h2 { flex: 1; font-size: 15px; }
+.help-pop p { margin: 0 0 10px; }
+.help-controls { display: grid; gap: 8px; margin: 0 0 10px; }
+.help-controls dt { font-weight: 600; }
+.help-controls dd { margin: 0; color: var(--text-muted); }
+.help-roles { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.dialog-sub { margin: 14px 0 8px; }
+
+/* ------------------------------------------------------------------ */
+/* First-run tour                                                      */
+/* ------------------------------------------------------------------ */
+
+.tour { position: fixed; inset: 0; z-index: 100; }
+.tour.no-target { background: var(--scrim); }
+.tour-spot {
+  position: fixed; pointer-events: none;
+  border-radius: var(--radius);
+  box-shadow: 0 0 0 9999px var(--scrim);
+  outline: 2px solid var(--accent); outline-offset: 2px;
+  transition: top .2s ease, left .2s ease, width .2s ease, height .2s ease;
+}
+.tour-card {
+  position: fixed; top: 0; left: 0;
+  width: min(360px, calc(100vw - 24px));
+  padding: 14px 18px 12px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 20px 50px rgb(0 0 0 / 30%);
+}
+.tour-card:focus { outline: none; }
+.tour-card h2 { margin: 2px 0 6px; }
+.tour-card p { margin: 0 0 14px; }
+.tour-actions { display: flex; align-items: center; gap: 8px; }
+.tour-actions .spacer { flex: 1; }
+.tour-actions .btn.ghost { padding: 0 6px; color: var(--text-muted); }

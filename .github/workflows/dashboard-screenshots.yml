@@ -1,0 +1,78 @@
+name: Dashboard screenshots
+
+# Regenerates the screenshots in docs/images/dashboard/ on Linux (with
+# Docker, cgroups and the built-in proxy available) and uploads them as an
+# artifact. Review them, then commit the ones that changed:
+#   gh run download <run id> -n dashboard-screenshots -D docs/images/dashboard
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "core/web/ui/**"
+      - "ui-tests/screenshots/**"
+      - "ui-tests/playwright.screenshots.config.js"
+      - ".github/workflows/dashboard-screenshots.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    name: Capture dashboard screenshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain (rust-toolchain.toml)
+        shell: bash
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build the daemon
+        run: cargo build --release -p aegis-daemon
+
+      - name: Install Playwright
+        working-directory: ui-tests
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Capture
+        # As root, like the dashboard tests, so resource limits are real.
+        working-directory: ui-tests
+        env:
+          BIN_DIR: target/release
+          CI: 'true'
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
+        run: sudo -E env "PATH=$PATH" npm run screenshots
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-screenshots
+          path: docs/images/dashboard/*.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-screenshots-logs
+          path: |
+            ui-tests/test-results-shots
+            /tmp/aegis-demo/daemon.log
+          retention-days: 7

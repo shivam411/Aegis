@@ -6,6 +6,8 @@
 
 'use strict';
 
+import { HELP, TOUR, DOCS_BASE } from './help.js';
+
 // ----------------------------------------------------------------------
 // DOM helpers
 // ----------------------------------------------------------------------
@@ -540,7 +542,7 @@ function renderUpdateBanner() {
       parts.push(h('div', { class: 'small' }, s.mode_detail));
     }
   }
-  parts.push(' ', h('button', { class: 'btn small ghost', type: 'button', onclick: () => dismiss(availableKey) }, 'Later'));
+  parts.push(' ', h('button', { class: 'btn small ghost', type: 'button', onclick: () => dismiss(availableKey) }, 'Later'), ' ', helpButton('update'));
   replace(el, h('div', { class: 'alert info', 'data-update': 'available' }, parts));
 }
 
@@ -633,6 +635,7 @@ function go(path) {
 
 function teardownPage() {
   state.routeToken += 1;
+  closeHelp(false);
   for (const fn of state.cleanups.splice(0)) {
     try {
       fn();
@@ -687,7 +690,11 @@ function shell(section) {
       nav,
       h('div', { class: 'topbar-actions' },
         h('span', { id: 'conn', class: 'pill warn live' }, 'Connecting'),
-        h('button', { class: 'btn ghost icon', type: 'button', title: 'Toggle theme (t)', 'aria-label': 'Toggle theme', onclick: toggleTheme }, '◐'),
+        h('button', {
+          class: 'btn ghost icon', type: 'button', title: 'Help and shortcuts (?)', 'aria-label': 'Help and keyboard shortcuts',
+          'data-tour': 'help', onclick: showHelpDialog,
+        }, '?'),
+        h('button', { class: 'btn ghost icon', type: 'button', title: 'Toggle theme (t)', 'aria-label': 'Toggle theme', 'data-tour': 'theme', onclick: toggleTheme }, '◐'),
         h('button', { class: 'btn ghost', type: 'button', id: 'signout', onclick: signOut }, 'Sign out')));
     state.shell = { root: h('div', {}, bar, banner, main), main };
     replace($('#app'), state.shell.root);
@@ -702,8 +709,365 @@ function shell(section) {
   return state.shell.main;
 }
 
-function pageHeader(title, ...right) {
-  return h('div', { class: 'page-header' }, h('h1', {}, title), h('div', { class: 'spacer' }), right);
+/** A page title with its help button (`help` is a key of HELP). */
+function pageHeader(title, help, ...right) {
+  return h('div', { class: 'page-header' }, h('h1', {}, title), helpButton(help), h('div', { class: 'spacer' }), right);
+}
+
+/** A card header: its title, the help button, then anything else. */
+function cardHeader(title, help, ...rest) {
+  return h('div', { class: 'card-header' }, h('h2', {}, title), helpButton(help), rest);
+}
+
+// ----------------------------------------------------------------------
+// Section help: a "?" button next to a heading opens a popover explaining
+// the section (text in help.js, mirrored by docs/dashboard/).
+// ----------------------------------------------------------------------
+
+const helpPop = { el: null, btn: null };
+
+function helpButton(key) {
+  const entry = HELP[key];
+  if (!entry) return null;
+  return h('button', {
+    class: 'help-btn',
+    type: 'button',
+    'aria-label': 'Help',
+    title: `Help: ${entry.title}`,
+    'aria-expanded': 'false',
+    'aria-haspopup': 'dialog',
+    'data-help': key,
+    onclick: (e) => {
+      const btn = e.currentTarget;
+      if (helpPop.btn === btn) closeHelp();
+      else openHelp(btn, key);
+    },
+  }, '?');
+}
+
+function closeHelp(restoreFocus = true) {
+  const { el, btn } = helpPop;
+  helpPop.el = null;
+  helpPop.btn = null;
+  if (el) el.remove();
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'false');
+    btn.removeAttribute('aria-controls');
+    if (restoreFocus && btn.isConnected) btn.focus();
+  }
+}
+
+function placeHelp() {
+  const { el, btn } = helpPop;
+  if (!el || !btn) return;
+  if (!btn.isConnected) {
+    closeHelp(false);
+    return;
+  }
+  const narrow = window.innerWidth < 600;
+  el.classList.toggle('sheet', narrow);
+  if (narrow) {
+    el.style.removeProperty('top');
+    el.style.removeProperty('left');
+    return;
+  }
+  const r = btn.getBoundingClientRect();
+  const width = el.offsetWidth;
+  const height = el.offsetHeight;
+  const docWidth = document.documentElement.clientWidth;
+  const left = Math.max(8, Math.min(r.left - 12, docWidth - width - 8));
+  const below = r.bottom + 8;
+  const top = below + height > window.innerHeight && r.top - height - 8 > 0 ? r.top - height - 8 : below;
+  el.style.setProperty('left', `${left + window.scrollX}px`);
+  el.style.setProperty('top', `${top + window.scrollY}px`);
+}
+
+function openHelp(btn, key) {
+  closeHelp(false);
+  const entry = HELP[key];
+  const el = h('div', {
+    class: 'help-pop',
+    id: 'help-pop',
+    role: 'dialog',
+    'aria-labelledby': 'help-pop-title',
+    tabindex: '-1',
+    'data-help-pop': key,
+  },
+  h('div', { class: 'help-pop-head' },
+    h('h2', { id: 'help-pop-title' }, entry.title),
+    h('button', { class: 'btn ghost icon small', type: 'button', 'aria-label': 'Close help', onclick: () => closeHelp() }, '✕')),
+  h('p', {}, entry.summary),
+  entry.controls.length
+    ? h('dl', { class: 'help-controls' }, entry.controls.map(([control, what]) => h('div', {}, h('dt', {}, control), h('dd', {}, what))))
+    : null,
+  h('p', { class: 'help-roles small' }, h('strong', {}, 'Who can use it: '), entry.roles),
+  h('a', { class: 'small', href: `${DOCS_BASE}${entry.docs}`, target: '_blank', rel: 'noopener noreferrer', 'data-help-docs': '' }, 'Read more in the dashboard guide ↗'));
+  document.body.append(el);
+  helpPop.el = el;
+  helpPop.btn = btn;
+  btn.setAttribute('aria-expanded', 'true');
+  btn.setAttribute('aria-controls', 'help-pop');
+  placeHelp();
+  el.focus();
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (!helpPop.el) return;
+  if (helpPop.el.contains(e.target) || helpPop.btn.contains(e.target)) return;
+  closeHelp(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && helpPop.el && !document.querySelector('dialog[open]')) {
+    e.preventDefault();
+    closeHelp();
+  }
+});
+window.addEventListener('resize', placeHelp);
+
+/** The "?" overlay: shortcuts, the guide and the tour. */
+async function showHelpDialog() {
+  const answer = await modal(() => h('form', { method: 'dialog' },
+    h('div', { class: 'dialog-body' },
+      h('h2', {}, 'Help and keyboard shortcuts'),
+      h('p', { class: 'muted small' },
+        'Every page and card has a ', h('span', { class: 'help-btn static', 'aria-hidden': 'true' }, '?'),
+        ' button that explains what it shows and who can use it. The ',
+        h('a', { href: `${DOCS_BASE}README.md`, target: '_blank', rel: 'noopener noreferrer' }, 'dashboard guide'),
+        ' covers everything step by step.'),
+      h('h3', { class: 'dialog-sub' }, 'Keyboard shortcuts'),
+      shortcutList()),
+    h('div', { class: 'form-actions' },
+      h('button', { class: 'btn', value: 'tour', 'data-action': 'start-tour' }, 'Take the tour'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn primary', value: 'ok', autofocus: true }, 'Close'))));
+  if (answer === 'tour') startTour();
+}
+
+// ----------------------------------------------------------------------
+// First-run tour (steps in help.js). Shown once per user; completion is
+// remembered in this browser, keyed by username.
+// ----------------------------------------------------------------------
+
+const tour = { active: null, doneHere: new Set() };
+
+function tourKey() {
+  return `aegis.tour.${state.session?.name || ''}`;
+}
+
+function tourDone() {
+  if (tour.doneHere.has(tourKey())) return true;
+  try {
+    return localStorage.getItem(tourKey()) === 'done';
+  } catch {
+    return false;
+  }
+}
+
+function markTourDone() {
+  tour.doneHere.add(tourKey());
+  try {
+    localStorage.setItem(tourKey(), 'done');
+  } catch {
+    /* storage unavailable: done for this page only */
+  }
+}
+
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function visibleEl(selector) {
+  for (const el of document.querySelectorAll(selector)) {
+    if (el.getClientRects().length) return el;
+  }
+  return null;
+}
+
+async function waitForEl(selector, ms) {
+  const until = Date.now() + ms;
+  for (;;) {
+    const el = visibleEl(selector);
+    if (el || Date.now() >= until) return el;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+async function startTour() {
+  if (tour.active || !state.session) return;
+  closeHelp(false);
+  let apps = state.projects;
+  try {
+    apps = await api('GET', '/projects');
+  } catch {
+    /* use what we have */
+  }
+  if (tour.active || !state.session) return;
+  const steps = TOUR.filter((s) => (!s.role || can(s.role)) && (!s.needsApp || apps.length > 0));
+  const counter = h('div', { class: 'tour-count small muted', 'aria-live': 'polite' });
+  const title = h('h2', { id: 'tour-title' });
+  const text = h('p', { id: 'tour-text' });
+  const back = h('button', { class: 'btn', type: 'button', 'data-tour-action': 'back' }, 'Back');
+  const next = h('button', { class: 'btn primary', type: 'button', 'data-tour-action': 'next' }, 'Next');
+  const skip = h('button', { class: 'btn ghost', type: 'button', 'data-tour-action': 'skip' }, 'Skip tour');
+  const card = h('div', {
+    class: 'tour-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tour-title', 'aria-describedby': 'tour-text', tabindex: '-1',
+  }, counter, title, text, h('div', { class: 'tour-actions' }, skip, h('span', { class: 'spacer' }), back, next));
+  const spot = h('div', { class: 'tour-spot', 'aria-hidden': 'true' });
+  const overlay = h('div', { class: 'tour', 'data-tour-overlay': '' }, spot, card);
+  const t = {
+    steps, index: 0, overlay, spot, card, counter, title, text, back, next,
+    target: null, token: 0, appPath: apps[0] ? `/apps/${enc(apps[0].name)}` : null,
+    returnTo: location.hash || '#/', opener: document.activeElement,
+  };
+  tour.active = t;
+  back.addEventListener('click', () => showStep(t.index - 1, -1));
+  next.addEventListener('click', () => showStep(t.index + 1, 1));
+  skip.addEventListener('click', () => endTour(true));
+  t.onKey = (e) => {
+    if (tour.active !== t) return;
+    if (document.querySelector('dialog[open]')) return;
+    const onButton = e.target instanceof HTMLButtonElement && card.contains(e.target);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      endTour(true);
+    } else if (e.key === 'ArrowRight' || (e.key === 'Enter' && !onButton)) {
+      e.preventDefault();
+      showStep(t.index + 1, 1);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (t.index > 0) showStep(t.index - 1, -1);
+    } else if (e.key === 'Tab') {
+      // Keep focus in the step card.
+      const focusable = [...card.querySelectorAll('button')].filter((b) => !b.disabled && b.getClientRects().length);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!card.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  };
+  t.onMove = () => placeTour();
+  document.addEventListener('keydown', t.onKey, true);
+  window.addEventListener('resize', t.onMove);
+  window.addEventListener('scroll', t.onMove, true);
+  // Live pages redraw; keep the highlight on the current element.
+  t.timer = setInterval(placeTour, 300);
+  document.body.append(overlay);
+  showStep(0, 1);
+}
+
+function stepRoute(t, step) {
+  if (step.route === 'app') {
+    if (/^\/apps\/(?!new$)[^/]+/.test(currentPath())) return undefined;
+    return t.appPath;
+  }
+  return step.route;
+}
+
+async function showStep(i, dir) {
+  const t = tour.active;
+  if (!t) return;
+  t.token += 1;
+  const token = t.token;
+  if (i < 0) return;
+  if (i >= t.steps.length) {
+    endTour(true);
+    return;
+  }
+  const step = t.steps[i];
+  let target = null;
+  if (step.target) {
+    const path = stepRoute(t, step);
+    if (path === null) {
+      showStep(i + dir, dir);
+      return;
+    }
+    if (path !== undefined && currentPath() !== path) go(path);
+    target = await waitForEl(step.target, path !== undefined ? 5000 : 1000);
+    if (tour.active !== t || token !== t.token) return;
+    if (!target) {
+      // Not on this page (or hidden for this role): skip it.
+      if (i + dir < 0) return;
+      showStep(i + dir, dir);
+      return;
+    }
+    target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }
+  t.index = i;
+  t.step = step;
+  t.target = target;
+  t.overlay.classList.toggle('no-target', !target);
+  t.overlay.dataset.step = step.id;
+  t.counter.textContent = `Step ${i + 1} of ${t.steps.length}`;
+  t.title.textContent = step.title;
+  t.text.textContent = step.text;
+  t.back.disabled = i === 0;
+  t.next.textContent = i === t.steps.length - 1 ? 'Finish' : 'Next';
+  placeTour();
+  t.next.focus({ preventScroll: true });
+}
+
+function placeTour() {
+  const t = tour.active;
+  if (!t) return;
+  let target = t.target;
+  if (target && !target.isConnected && t.step?.target) {
+    target = visibleEl(t.step.target);
+    t.target = target;
+  }
+  const vw = document.documentElement.clientWidth;
+  const vh = window.innerHeight;
+  const card = t.card;
+  const cw = card.offsetWidth;
+  const ch = card.offsetHeight;
+  const set = (el, props) => {
+    for (const [k, v] of Object.entries(props)) {
+      if (v === null) el.style.removeProperty(k);
+      else el.style.setProperty(k, `${Math.round(v)}px`);
+    }
+  };
+  if (!target) {
+    t.spot.hidden = true;
+    set(card, { left: (vw - cw) / 2, top: Math.max(12, (vh - ch) / 2) });
+    return;
+  }
+  t.spot.hidden = false;
+  const r = target.getBoundingClientRect();
+  const pad = 6;
+  set(t.spot, { left: r.left - pad, top: r.top - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+  if (vw < 600) {
+    // Phones: dock the card away from the highlighted element.
+    const top = r.top + r.height / 2 > vh / 2 ? 12 : vh - ch - 12;
+    set(card, { left: (vw - cw) / 2, top });
+    return;
+  }
+  let top = r.bottom + pad + 12;
+  if (top + ch > vh - 12) top = r.top - pad - 12 - ch;
+  if (top < 12) top = Math.min(vh - ch - 12, Math.max(12, r.bottom + pad + 12));
+  const left = Math.max(12, Math.min(r.left + r.width / 2 - cw / 2, vw - cw - 12));
+  set(card, { left, top });
+}
+
+/** Ends the tour; `done` remembers it so it is not shown again. */
+function endTour(done) {
+  const t = tour.active;
+  if (!t) return;
+  tour.active = null;
+  if (done) markTourDone();
+  clearInterval(t.timer);
+  document.removeEventListener('keydown', t.onKey, true);
+  window.removeEventListener('resize', t.onMove);
+  window.removeEventListener('scroll', t.onMove, true);
+  t.overlay.remove();
+  if (!state.session) return;
+  if ((location.hash || '#/') !== t.returnTo) location.hash = t.returnTo;
+  const back = t.opener instanceof HTMLElement && t.opener.isConnected && t.opener !== document.body ? t.opener : null;
+  if (back) back.focus();
 }
 
 function notFoundPage(main) {
@@ -740,10 +1104,14 @@ function startSession(session) {
   state.csrf = session.csrf_token;
   state.shell = null;
   connectEvents();
-  render();
+  render().then(() => {
+    // First visit for this user: show the tour once.
+    if (state.session === session && session.kind !== 'token' && !tourDone()) startTour();
+  });
 }
 
 function loginPage() {
+  endTour(false);
   state.shell = null;
   const error = h('div');
   const username = h('input', { id: 'username', name: 'username', autocomplete: 'username', required: true, value: 'admin' });
@@ -786,9 +1154,10 @@ async function overviewPage(main, ctx) {
   const hostEl = h('div', { class: 'grid stats', id: 'host' });
   const appsEl = h('div', { id: 'apps' });
   append(main,
-    pageHeader('Overview', h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin' }, '+ New app')),
+    pageHeader('Overview', 'overview', h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
+    h('div', { class: 'section-head' }, h('h2', {}, 'Server'), helpButton('overview.host')),
     hostEl,
-    h('div', { class: 'section' }, h('h2', {}, 'Apps'), appsEl));
+    h('div', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', {}, 'Apps'), helpButton('overview.apps')), appsEl));
 
   const loadHost = async () => {
     try {
@@ -945,6 +1314,7 @@ async function appPage(main, ctx, name, tab = 'deploy') {
     const p = project.process;
     replace(header, h('div', { class: 'page-header' },
       h('h1', {}, project.name),
+      helpButton('app'),
       processPill(project),
       p && p.runtime === 'docker'
         ? h('span', { 'data-runtime': 'docker', title: p.image || '' }, pill('Docker', 'info'))
@@ -1022,7 +1392,7 @@ async function deployTab(body, ctx) {
       if (res) showDeployment(res.deployment_id);
     },
   },
-  h('div', { class: 'card-header' }, h('h2', {}, 'New deployment')),
+  cardHeader('New deployment', 'app.deploy'),
   h('div', { class: 'card-body' },
     h('div', { class: 'row' },
       gitSource ? h('div', { class: 'field' }, h('label', { for: 'deploy-branch' }, 'Branch'), branch) : null,
@@ -1092,7 +1462,7 @@ function instancesCard(ctx) {
       h('td', { class: 'actions' }, h('a', { class: 'btn small ghost', href: `#/apps/${enc(project.name)}/logs?process=${enc(p.id)}` }, 'Logs')));
   });
   return h('section', { class: 'card', 'data-instances': '' },
-    h('div', { class: 'card-header' }, h('h2', {}, `Instances (${instances.length})`)),
+    cardHeader(`Instances (${instances.length})`, 'app.instances'),
     h('div', { class: 'card-body' },
       h('p', { class: 'muted small' }, 'The built-in proxy spreads requests over the running instances. Resource limits apply to each instance.'),
       h('div', { class: 'table-wrap' },
@@ -1201,6 +1571,7 @@ function pipelineCard(ctx, id, { link = false } = {}) {
     replace(card,
       h('div', { class: 'card-header' },
         h('h2', {}, deployment.version ? `Release ${deployment.version}` : 'Deployment'),
+        helpButton('app.pipeline'),
         deploymentPill(deployment.status),
         h('span', { class: 'spacer' }),
         h('span', { class: 'muted small' },
@@ -1266,7 +1637,7 @@ async function releasesTab(body, ctx) {
       replace(body, h('div', { class: 'card empty' }, h('h2', {}, 'No releases yet'), h('p', {}, 'Each successful build becomes a release you can roll back to.')));
       return;
     }
-    replace(body, h('div', { class: 'card table-wrap' },
+    replace(body, h('div', { class: 'card' }, cardHeader('Releases', 'app.releases'), h('div', { class: 'table-wrap' },
       h('table', { class: 'stack' },
         h('thead', {}, h('tr', {}, ['Version', 'Status', 'Commit', 'Built', ''].map((t) => h('th', {}, t)))),
         h('tbody', {}, releases.map((r) => h('tr', { 'data-release': r.version },
@@ -1292,7 +1663,7 @@ async function releasesTab(body, ctx) {
                   load().catch(() => {});
                 },
               }, 'Roll back')
-              : null)))))));
+              : null))))))));
   };
   await load();
   const reload = debounce(() => load().catch(() => {}), 250);
@@ -1507,7 +1878,8 @@ function logViewer(ctx, target) {
       h('span', { class: 'spacer' }),
       counter,
       h('button', { class: 'btn small', type: 'button', onclick: () => { lines.length = 0; pending = []; redraw(); } }, 'Clear'),
-      h('button', { class: 'btn small', type: 'button', 'data-action': 'download', onclick: download }, 'Download')),
+      h('button', { class: 'btn small', type: 'button', 'data-action': 'download', onclick: download }, 'Download'),
+      helpButton('app.logs')),
     view);
 }
 
@@ -1678,7 +2050,7 @@ function secretsCard(ctx) {
     h('div', { class: 'field' }, h('label', { for: 'secret-value' }, 'Value'), valueIn)),
   h('div', { class: 'form-actions' }, saveBtn));
   const card = h('section', { class: 'card' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'Secrets')),
+    cardHeader('Secrets', 'app.secrets'),
     h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Environment variables stored encrypted on the server and passed to the app when it starts. Values can be replaced but never read back.')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
       h('thead', {}, h('tr', {}, ['Name', 'Updated', ''].map((t) => h('th', {}, t)))),
@@ -1694,7 +2066,7 @@ function webhookCard(ctx) {
   const project = ctx.project();
   if (!project.repository_url) {
     return h('section', { class: 'card' },
-      h('div', { class: 'card-header' }, h('h2', {}, 'GitHub webhook')),
+      cardHeader('GitHub webhook', 'app.webhook'),
       h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Webhooks need a git repository as the source.')));
   }
   const status = h('div', {}, h('p', { class: 'muted small' }, 'Loading…'));
@@ -1741,7 +2113,7 @@ function webhookCard(ctx) {
   });
   load().catch((err) => replace(status, errorBox(err)));
   return h('section', { class: 'card' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'GitHub webhook')),
+    cardHeader('GitHub webhook', 'app.webhook'),
     h('div', { class: 'card-body' }, status, hookOut));
 }
 
@@ -1751,7 +2123,7 @@ async function settingsTab(body, ctx) {
     const viewBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'show-config' }, 'View aegis.toml');
     viewBtn.addEventListener('click', () => showConfigFile(ctx.project(), viewBtn));
     append(body, h('section', { class: 'card' },
-      h('div', { class: 'card-header' }, h('h2', {}, 'Settings')),
+      cardHeader('Settings', 'app.settings'),
       h('div', { class: 'card-body' },
         h('p', { class: 'muted small' }, "Only admins can change an app's build and run settings, variables, secrets, domains, schedule and webhook."),
         viewBtn)));
@@ -1818,7 +2190,7 @@ async function settingsTab(body, ctx) {
       ctx.refreshProject();
     },
   },
-  h('div', { class: 'card-header' }, h('h2', {}, 'Build & run'), h('span', { class: 'spacer' }), fileBtn, detectBtn),
+  cardHeader('Build & run', 'app.settings', h('span', { class: 'spacer' }), fileBtn, detectBtn),
   h('div', { class: 'card-body' },
     h('p', { class: 'muted small' }, 'Leave a field blank to use the value from aegis.toml or auto-detection. Changes take effect on the next deployment; older releases keep the settings they were built with.'),
     layout,
@@ -1854,7 +2226,7 @@ async function settingsTab(body, ctx) {
       ctx.refreshProject();
     },
   },
-  h('div', { class: 'card-header' }, h('h2', {}, 'Daily deploy')),
+  cardHeader('Daily deploy', 'app.schedule'),
   h('div', { class: 'card-body' },
     h('p', { class: 'muted small' }, sched ? `Deploys every day at ${time.value} UTC.` : 'Not scheduled.'),
     h('div', { class: 'row' },
@@ -1863,7 +2235,7 @@ async function settingsTab(body, ctx) {
     h('div', { class: 'form-actions' }, schedBtn)));
 
   const info = h('section', { class: 'card' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'About')),
+    cardHeader('About', 'app.about'),
     h('div', { class: 'card-body' },
       h('dl', { class: 'facts' },
         h('div', {}, h('dt', {}, 'Project id'), h('dd', { class: 'mono small truncate', title: project.id }, project.id)),
@@ -2004,7 +2376,7 @@ function domainsCard(ctx) {
   load();
 
   return h('section', { class: 'card', id: 'domains' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'Domains')),
+    cardHeader('Domains', 'app.domains'),
     h('div', { class: 'card-body' }, hint, list, form));
 }
 
@@ -2406,7 +2778,7 @@ async function resourcesTab(body, ctx) {
     h('div', { class: 'limit-head' }, h('h3', {}, title), hint),
     control);
   const limitsCard = h('section', { class: 'card', 'data-limits': '' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'Limits'), h('span', { class: 'spacer' }), applied),
+    cardHeader('Limits', 'app.limits', h('span', { class: 'spacer' }), applied),
     h('div', { class: 'card-body' },
       canLimit
         ? h('p', { class: 'muted small' }, 'Changes apply to the running app immediately, without a restart, and again on every start and deploy. ',
@@ -2430,8 +2802,9 @@ async function resourcesTab(body, ctx) {
     h('div', { class: 'card-body' }, chart.el));
 
   append(body,
+    h('div', { class: 'section-head' }, h('h2', {}, 'Live usage'), helpButton('app.resources')),
     h('div', { class: 'grid stats compact' }, stats.map((x) => x.el)),
-    h('div', { class: 'section page-header' }, h('h2', {}, 'Usage'), h('div', { class: 'spacer' }), rangeButtons),
+    h('div', { class: 'section page-header' }, h('h2', {}, 'Usage'), helpButton('app.usage'), h('div', { class: 'spacer' }), rangeButtons),
     h('div', { class: 'grid two' }, chartCard('CPU', cpuChart), chartCard('Memory', memChart)),
     h('div', { class: 'section' }, limitsCard));
   await loadHistory();
@@ -2446,7 +2819,7 @@ async function resourcesTab(body, ctx) {
 async function activityTab(body, ctx) {
   const project = ctx.project();
   const list = h('ul', { class: 'events', 'data-events': '' });
-  append(body, h('div', { class: 'card' }, list));
+  append(body, h('div', { class: 'card' }, cardHeader('Activity', 'app.activity'), list));
   const load = async () => {
     const events = await api('GET', `/events?project=${enc(project.id)}&limit=200`);
     if (!ctx.alive()) return;
@@ -2645,7 +3018,7 @@ async function eventsPage(main, ctx) {
   search.addEventListener('input', debounce(draw, 120));
 
   append(main,
-    pageHeader('Events', count),
+    pageHeader('Events', 'events', count),
     h('div', { class: 'card' },
       h('div', { class: 'card-header filters' }, projectSel, categorySel, limitSel, search,
         h('label', { class: 'small', for: 'events-live' }, live, ' Live')),
@@ -2681,7 +3054,7 @@ async function deploymentsPage(main, ctx) {
     h('table', { class: 'stack' },
       h('thead', {}, h('tr', {}, ['Status', 'App', 'Release', 'Trigger', 'Stage', 'Started', 'Duration'].map((t) => h('th', {}, t)))),
       tableBody));
-  append(main, pageHeader('Deployments'), wrap);
+  append(main, pageHeader('Deployments', 'deployments'), wrap);
   let deployments = [];
 
   const draw = () => {
@@ -2736,7 +3109,7 @@ async function deploymentPage(main, ctx, id) {
   const eventsList = h('ul', { class: 'events', 'data-events': '' });
   append(main,
     h('a', { class: 'small', href: '#/deployments' }, '← All deployments'),
-    pageHeader(`Deployment ${shortId(d.id)}`, h('a', { class: 'btn', href: `#/apps/${enc(name)}` }, `Open ${name}`)),
+    pageHeader(`Deployment ${shortId(d.id)}`, 'deployment', h('a', { class: 'btn', href: `#/apps/${enc(name)}` }, `Open ${name}`)),
     h('div', { class: 'grid' },
       pipelineCard(ctx, d.id),
       h('section', { class: 'card' }, h('div', { class: 'card-header' }, h('h2', {}, 'Events')), eventsList)));
@@ -2758,7 +3131,7 @@ async function deploymentPage(main, ctx, id) {
 
 async function wizardPage(main, ctx) {
   const body = h('div');
-  append(main, h('a', { class: 'small', href: '#/' }, '← All apps'), pageHeader('New app'), body);
+  append(main, h('a', { class: 'small', href: '#/' }, '← All apps'), pageHeader('New app', 'wizard'), body);
 
   // Step 1: where the code comes from.
   const kindGit = h('input', { type: 'radio', name: 'kind', value: 'git', checked: true });
@@ -2908,7 +3281,7 @@ async function accountPage(main, ctx) {
       }
     },
   },
-  h('div', { class: 'card-header' }, h('h2', {}, 'Password')),
+  cardHeader('Password', 'account.password'),
   h('div', { class: 'card-body' },
     h('p', { class: 'muted small' }, `Signed in as ${session.name} (${session.role || 'viewer'}). Changing the password signs out every session.`),
     h('div', { class: 'field' }, h('label', { for: 'pw-current' }, 'Current password'), current),
@@ -2969,7 +3342,7 @@ async function accountPage(main, ctx) {
   h('div', { class: 'form-actions' }, tokenBtn),
   newToken);
   const tokenCard = h('section', { class: 'card' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'API tokens')),
+    cardHeader('API tokens', 'account.tokens'),
     h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'For the CLI and CI: send as ', h('code', {}, 'Authorization: Bearer <token>'), '.')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
       h('thead', {}, h('tr', {}, ['Name', 'Scope', 'Created', 'Last used', ''].map((t) => h('th', {}, t)))),
@@ -3032,7 +3405,7 @@ async function accountPage(main, ctx) {
       h('div', { class: 'form-actions' }, copyButton(steps)));
   };
   const backupCard = h('section', { class: 'card', id: 'backups' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'Backups')),
+    cardHeader('Backups', 'account.backups'),
     h('div', { class: 'card-body' },
       h('p', { class: 'muted small' }, 'A backup holds the database, the secrets key (without it, app secrets cannot be read), certificates and, optionally, the release directories. Keep downloads somewhere safe: they contain password hashes and the key. Scheduled backups are set with ',
         h('code', {}, '[backup]'), ' in the daemon configuration.'),
@@ -3049,13 +3422,15 @@ async function accountPage(main, ctx) {
     [['system', 'Match the system'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => h('option', { value: v, selected: storedTheme() === v }, l)));
   themeSel.addEventListener('change', () => applyTheme(themeSel.value));
   const prefs = h('section', { class: 'card' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'Appearance & shortcuts')),
+    cardHeader('Appearance & shortcuts', 'account.appearance'),
     h('div', { class: 'card-body' },
       h('div', { class: 'field' }, h('label', { for: 'theme' }, 'Theme'), themeSel),
-      shortcutList()));
+      shortcutList(),
+      h('div', { class: 'form-actions' },
+        h('button', { class: 'btn', type: 'button', 'data-action': 'restart-tour', onclick: () => startTour() }, 'Take the tour again'))));
 
   const admin = can('admin');
-  append(main, pageHeader('Account', h('button', { class: 'btn', type: 'button', onclick: signOut }, 'Sign out')),
+  append(main, pageHeader('Account', 'account', h('button', { class: 'btn', type: 'button', onclick: signOut }, 'Sign out')),
     h('div', { class: 'grid' },
       admin ? usersCard(ctx, session.name) : null,
       admin ? tokenCard : null,
@@ -3157,7 +3532,7 @@ function usersCard(ctx, me) {
 
   load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 4 }, errorBox(err)))));
   return h('section', { class: 'card', id: 'users' },
-    h('div', { class: 'card-header' }, h('h2', {}, 'Users')),
+    cardHeader('Users', 'account.users'),
     h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Everyone signs in with their own account, so the audit log shows who did what. New users get a random password to pass on.')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
       h('thead', {}, h('tr', {}, ['User', 'Role', 'Created', ''].map((t) => h('th', {}, t)))),
@@ -3178,7 +3553,7 @@ const SHORTCUTS = [
   ['1 – 6', 'Switch tabs on an app page'],
   ['/', 'Search (logs and events)'],
   ['t', 'Toggle light/dark theme'],
-  ['?', 'Show shortcuts'],
+  ['?', 'Help, shortcuts and the tour'],
 ];
 
 function shortcutList() {
@@ -3191,7 +3566,7 @@ document.addEventListener('keydown', (e) => {
   if (!state.session || e.ctrlKey || e.metaKey || e.altKey) return;
   const t = e.target;
   if (t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return;
-  if (document.querySelector('dialog[open]')) return;
+  if (document.querySelector('dialog[open]') || tour.active) return;
   if (pendingG) {
     clearTimeout(pendingG);
     pendingG = null;
@@ -3223,9 +3598,7 @@ document.addEventListener('keydown', (e) => {
       break;
     }
     case '?':
-      modal(() => h('form', { method: 'dialog' },
-        h('div', { class: 'dialog-body' }, h('h2', {}, 'Keyboard shortcuts'), shortcutList()),
-        h('div', { class: 'form-actions' }, h('button', { class: 'btn primary', value: 'ok', autofocus: true }, 'Close'))));
+      showHelpDialog();
       break;
     default: {
       const m = currentPath().match(/^\/apps\/([^/]+)/);

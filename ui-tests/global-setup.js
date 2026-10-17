@@ -40,7 +40,7 @@ module.exports = async (config) => {
   const webPort = new URL(baseURL).port;
   const grpcPort = Number(webPort) + 1;
   const binDir = path.resolve(ROOT, process.env.BIN_DIR || 'target/debug');
-  const daemon = path.join(binDir, 'aegis-daemon');
+  const daemon = path.join(binDir, process.platform === 'win32' ? 'aegis-daemon.exe' : 'aegis-daemon');
   if (!fs.existsSync(daemon)) {
     throw new Error(`${daemon} not found; run cargo build -p aegis-daemon (or set BIN_DIR)`);
   }
@@ -87,8 +87,8 @@ http.server.ThreadingHTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve
   fs.writeFileSync(configPath, `[daemon]
 host = "127.0.0.1"
 port = ${grpcPort}
-database_path = "${WORK}/aegis.db"
-data_dir = "${WORK}/data"
+database_path = '${WORK}/aegis.db'
+data_dir = '${WORK}/data'
 log_level = "info"
 
 [web]
@@ -124,7 +124,7 @@ check = true                # against the fake API below, never GitHub
   fs.writeFileSync(path.join(WORK, 'daemon.pid'), String(child.pid));
   child.unref();
 
-  await waitFor(`${baseURL}/healthz`, 30_000);
+  await waitFor(`${baseURL}/healthz`, 120_000);
   const password = fs.readFileSync(path.join(WORK, 'data', 'initial-admin-password'), 'utf8').trim();
   fs.writeFileSync(path.join(WORK, 'env.json'), JSON.stringify({ repo, hog, password, baseURL }));
 };

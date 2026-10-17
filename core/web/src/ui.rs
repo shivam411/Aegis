@@ -18,6 +18,11 @@ const ASSETS: &[Asset] = &[
         body: include_str!("../ui/app.js"),
     },
     Asset {
+        name: "help.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: include_str!("../ui/help.js"),
+    },
+    Asset {
         name: "style.css",
         content_type: "text/css; charset=utf-8",
         body: include_str!("../ui/style.css"),
