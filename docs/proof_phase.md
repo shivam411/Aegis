@@ -42,10 +42,10 @@ This document defines the gates Aegis must pass to show it is reliable, easy to 
 - [ ] Unassisted quickstart success rate `> 95%`. Not measured.
 
 ### Proof 4 — Performance Compliance
-- [ ] Daemon startup `< 500 ms`. Not measured.
+- [ ] Daemon startup `< 500 ms`. Timed by the CI soak (launch until `/healthz` answers, see [`benchmarks.md`](benchmarks.md)); not enforced.
 - [ ] CLI command latency `< 100 ms`. Not measured.
 - [ ] Event propagation latency `< 10 ms`. Not measured.
-- [ ] All published SLOs met ([`slo_targets.md`](slo_targets.md)). Benchmarks compile in CI but aren't run. Template: [`performance-report.md`](../validation/_templates/performance/performance-report.md).
+- [ ] All published SLOs met ([`slo_targets.md`](slo_targets.md)). Some benchmarks run in CI ([`benchmarks.md`](benchmarks.md)), but most SLOs have none and none is enforced. Template: [`performance-report.md`](../validation/_templates/performance/performance-report.md).
 
 ### Proof 5 — Real-World Adoption
 - [ ] 10–20 external production beta deployments. None yet ([`beta_program.md`](beta_program.md)).

@@ -1,0 +1,238 @@
+name: Performance
+
+# Benchmarks and soak tests. See docs/benchmarks.md.
+#
+# - Benchmarks: every PR to main and every push to main. On a PR the job runs
+#   the benchmarks of the PR's base commit and then of the PR on the same
+#   runner, and flags benchmarks more than BENCH_REGRESSION_THRESHOLD (default
+#   0.30 = 30%) slower in the job summary and as warnings. They don't fail the
+#   build unless the repository variable BENCH_FAIL_ON_REGRESSION is "true".
+#   Pushes to main record a baseline (Actions cache) for trend comparisons;
+#   comparisons across runners are informational only (shared runners differ
+#   by up to 2x).
+# - Short soak (5 min): every push to main, and PRs labelled `soak`.
+# - Long soak (60 min): nightly, or on demand with any duration.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: Soak duration in minutes (0 = no soak; at most 300)
+        default: '60'
+        type: string
+      benchmarks:
+        description: Run the benchmarks too
+        default: false
+        type: boolean
+      baseline_run_id:
+        description: Compare the benchmarks with this run's results instead of the latest main run
+        default: ''
+        type: string
+      compare_ref:
+        description: Benchmark this branch, tag or commit first on the same runner and compare with it
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+
+# One run per ref and kind of trigger; newer pushes to a PR cancel older runs.
+# Adding a label gets its own group so it doesn't cancel the PR's benchmarks.
+concurrency:
+  group: perf-${{ github.event_name }}-${{ github.event.action == 'labeled' && 'label' || 'code' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  benchmarks:
+    name: Benchmarks
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action != 'labeled') ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.benchmarks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read  # only for downloading another run's results (baseline_run_id)
+    env:
+      AEGIS_BENCH_DEPLOYS: '15'
+      # What to benchmark first on the same runner: a PR's base commit, or
+      # compare_ref when started by hand.
+      BASE_REF: ${{ github.event.pull_request.base.sha || inputs.compare_ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # the PR's base commit is benchmarked too
+
+      - name: Set up Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: perf-bench
+
+      - name: Restore the latest main results
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bench-baseline
+          key: bench-baseline-main-${{ github.run_id }}
+          restore-keys: bench-baseline-main-
+
+      - name: Use another run's results as the baseline
+        if: github.event_name == 'workflow_dispatch' && inputs.baseline_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.baseline_run_id }}
+        run: |
+          case "$RUN_ID" in *[!0-9]*) echo "baseline_run_id must be a run id"; exit 1 ;; esac
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n "bench-results-$RUN_ID" -D "$RUNNER_TEMP/baseline"
+          mkdir -p bench-baseline
+          cp "$RUNNER_TEMP/baseline/bench-out/bench-results.json" bench-baseline/bench-results.json
+
+      - name: Benchmarks of the base commit (same runner)
+        if: env.BASE_REF != ''
+        # A broken base shouldn't hide this commit's own numbers.
+        continue-on-error: true
+        run: |
+          base=$(git rev-parse --verify --quiet "origin/$BASE_REF^{commit}" \
+            || git rev-parse --verify "$BASE_REF^{commit}")
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+            scripts/run-benchmarks.sh bench-runs/base "$RUNNER_TEMP/base"
+
+      - name: Benchmarks of this commit
+        run: scripts/run-benchmarks.sh bench-runs/head
+
+      - name: Report and compare
+        env:
+          THRESHOLD: ${{ vars.BENCH_REGRESSION_THRESHOLD || '0.30' }}
+          FAIL_ON_REGRESSION: ${{ vars.BENCH_FAIL_ON_REGRESSION || 'false' }}
+        run: |
+          mkdir -p bench-out
+          args=(--criterion-dir bench-runs/head/criterion --extra bench-runs/head/deploy_saga.json
+                --out-json bench-out/bench-results.json --out-md bench-out/bench-report.md)
+          if [ -n "$BASE_SHA" ] && [ -d bench-runs/base/criterion ]; then
+            args+=(--baseline-criterion-dir bench-runs/base/criterion
+                   --baseline-extra bench-runs/base/deploy_saga.json
+                   --baseline-label "the base commit \`${BASE_SHA:0:10}\`, run just before on the same runner"
+                   --threshold "$THRESHOLD" --github-annotations)
+            [ "$FAIL_ON_REGRESSION" = true ] && args+=(--fail-on-regression)
+            if ! git diff --quiet "$BASE_SHA" HEAD -- benchmarks/; then
+              args+=(--note "This PR changes \`benchmarks/\`: benchmarks whose code changed aren't compared like for like.")
+            fi
+          elif [ -f bench-baseline/bench-results.json ]; then
+            # Another runner: only differences beyond 2x are flagged, never as warnings.
+            args+=(--baseline bench-baseline/bench-results.json --threshold 1.0
+                   --note "Different runners: GitHub's shared runners differ by up to 2x for the same code, so this comparison is informational. PRs compare against their base commit on one runner.")
+          elif [ -n "$BASE_REF" ]; then
+            args+=(--note "The base commit's benchmarks didn't run (see the previous step), so there is nothing to compare with.")
+          fi
+          set +e
+          python3 scripts/bench_report.py "${args[@]}"
+          status=$?
+          set -e
+          cat bench-out/bench-report.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-results-${{ github.run_id }}
+          path: |
+            bench-out/
+            bench-runs/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Keep as the new main baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p bench-baseline
+          cp bench-out/bench-results.json bench-baseline/bench-results.json
+
+      - name: Save the main baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bench-baseline
+          key: bench-baseline-main-${{ github.run_id }}
+
+  soak:
+    name: Soak
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.soak_minutes != '0') ||
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'soak') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'soak'))
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || (github.event_name == 'schedule' && 110 || 45) }}
+    env:
+      DURATION_MIN: ${{ github.event_name == 'schedule' && '60' || (github.event_name == 'workflow_dispatch' && inputs.soak_minutes || '5') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the duration
+        run: |
+          case "$DURATION_MIN" in ''|*[!0-9]*) echo "soak_minutes must be a whole number"; exit 1 ;; esac
+          [ "$DURATION_MIN" -le 300 ] || { echo "soak_minutes is at most 300"; exit 1; }
+
+      - name: Lint the soak scripts
+        run: |
+          shellcheck scripts/soak.sh
+          python3 -m py_compile scripts/soak_load.py scripts/soak_report.py scripts/bench_report.py
+
+      - name: Set up Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: perf-soak
+
+      - name: Build the daemon (release)
+        run: cargo build --release -p aegis-daemon
+
+      - name: Soak
+        # As root, so the daemon can enforce cgroup limits (the limit-change
+        # operations are skipped otherwise). The report lands in soak-report/.
+        run: |
+          sudo -E env "PATH=$PATH" BIN_DIR=target/release OUT_DIR=soak-report \
+            DURATION_MIN="$DURATION_MIN" scripts/soak.sh
+
+      - name: Soak report
+        if: always()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" soak-report 2>/dev/null || true
+          if [ -f soak-report/report.md ]; then
+            cat soak-report/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Soak test: no report (the script stopped early; see the log)" >> "$GITHUB_STEP_SUMMARY"
+            tail -n 50 soak-report/daemon.log 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      - name: Upload soak report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: soak-report-${{ env.DURATION_MIN }}min-${{ github.run_id }}
+          path: soak-report/
+          retention-days: 30
+          if-no-files-found: warn

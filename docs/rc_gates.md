@@ -37,7 +37,7 @@ Verifies the 10 fault-injection scenarios in [`chaos_testing.md`](chaos_testing.
 ### RC3 — Performance Validation
 Enforces CI regression gates for the targets in [`slo_targets.md`](slo_targets.md).
 
-*Status: not started.* Benchmarks compile in CI but aren't run, and there are no thresholds.
+*Status: partly covered.* Benchmarks run in CI on every PR and are compared with `main`; a >30% regression warns but doesn't fail ([`benchmarks.md`](benchmarks.md)). Most SLO targets have no benchmark yet, and none is enforced.
 
 ### RC4 — Migration Experience
 Verifies `aegis migrate pm2` and `aegis migrate systemd` ([`migration_guide.md`](migration_guide.md)) against real config files.

@@ -2,7 +2,7 @@
 
 This document sets the performance targets for Aegis, grouped into **Product**, **Runtime** and **Developer** SLOs.
 
-> **Status: these are targets, not measurements.** None of them is measured or enforced in CI yet. CI compiles the benchmarks but doesn't run them. The "Planned gate" column says how each target should be enforced once measured. Results go in a report based on [`performance-report.md`](../validation/_templates/performance/performance-report.md), and the [scorecard](scorecard.md) is updated when they exist.
+> **Status: these are targets, not measurements.** None of them is enforced in CI. CI runs benchmarks for the event store, projection rebuild, proxy overhead and deploy wall time, and the soak test times daemon start ([`benchmarks.md`](benchmarks.md)); the other targets aren't measured. The "Planned gate" column says how each target should be enforced once measured. Results go in a report based on [`performance-report.md`](../validation/_templates/performance/performance-report.md), and the [scorecard](scorecard.md) is updated when they exist.
 
 ---
 
@@ -39,4 +39,4 @@ This document sets the performance targets for Aegis, grouped into **Product**, 
 ---
 
 ## 4. Benchmarks
-Criterion benchmarks live in `benchmarks/benches/event_throughput.rs` (event bus publish and projection folding). CI only checks that they compile (`cargo check --benches`). Running them in CI and failing on regressions is still to do.
+The benchmarks live in [`benchmarks/`](../benchmarks/) and run in [`perf.yml`](../.github/workflows/perf.yml) on every PR and push to `main`. Results are compared with the latest `main` run and regressions beyond 30% are flagged as warnings; making them fail the build is a repository setting. What each one measures, how to run them and recent numbers: [`benchmarks.md`](benchmarks.md).

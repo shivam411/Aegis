@@ -26,7 +26,7 @@ An operator-focused summary of the Aegis roadmap. The detailed, phased plan is [
 - **Terminal UI:** a real `ratatui` dashboard on the same API as the web UI.
 - **Docker runtime:** container apps with the same CPU/memory sliders.
 - **Rolling and blue/green deploys:** several instances per app behind the proxy.
-- **Proof work:** run benchmarks in CI with regression thresholds, a published soak test, Aegis deploying itself, tested PM2/systemd migration, and tests on macOS and Windows ([`proof_phase.md`](proof_phase.md)).
+- **Proof work:** blocking benchmark thresholds (benchmarks and 5/60-minute soaks already run in CI, see [`benchmarks.md`](benchmarks.md)), a published 24 h+ soak test, Aegis deploying itself, tested PM2/systemd migration, and tests on macOS and Windows ([`proof_phase.md`](proof_phase.md)).
 
 ---
 

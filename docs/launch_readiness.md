@@ -24,10 +24,10 @@ This guide lists what must be in place before a public launch. A box is checked 
 - [x] End-to-end deploy scenarios run in CI against the real binaries ([`scripts/e2e-smoke.sh`](../scripts/e2e-smoke.sh)).
 - [x] Dashboard browser tests run in CI ([`ui-tests/`](../ui-tests/)).
 - [x] Benchmarks compile in CI (`benchmarks/`).
-- [ ] Benchmarks run in CI with regression thresholds.
+- [x] Benchmarks run in CI and are compared with `main` ([`benchmarks.md`](benchmarks.md)). Regressions beyond 30% only warn; they don't block merges yet.
 - [ ] Tests run on macOS and Windows (they are only built today).
 - [ ] Production certification scenarios all covered by tests ([`production_certification.md`](production_certification.md); most are).
-- [ ] Soak test completed and published ([`soak_testing.md`](soak_testing.md)).
+- [ ] Soak test completed and published ([`soak_testing.md`](soak_testing.md)). 5- and 60-minute soaks run in CI ([`benchmarks.md`](benchmarks.md)); the 24 h+ runs haven't been done.
 - [ ] Aegis deploys itself ([`dogfooding.md`](dogfooding.md) is a design, not yet running).
 - [ ] Experimental CLI commands (`replay`, `inspect --at`, `incident`, `investigate`, `upgrade`, `migrate`) either tested or clearly marked experimental in `--help` ([`feature_maturity.md`](feature_maturity.md)).
 

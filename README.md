@@ -8,7 +8,7 @@
 **Aegis** deploys and supervises apps on your own server. A single Rust daemon with embedded SQLite gives you health-checked deploys with automatic rollback, process supervision, a web dashboard and an HTTP API.
 
 > [!NOTE]
-> Aegis is pre-1.0 and early. Deploys, rollbacks, the HTTP API, the dashboard and resource limits are tested in CI on Linux; there are no production, soak or benchmark results yet. See the [scorecard](docs/scorecard.md) and [feature maturity](docs/feature_maturity.md).
+> Aegis is pre-1.0 and early. Deploys, rollbacks, the HTTP API, the dashboard and resource limits are tested in CI on Linux; there are no production results yet. Benchmarks and a soak test run in CI on shared GitHub runners; see [benchmarks and soak tests](docs/benchmarks.md) for what they do and don't show. See the [scorecard](docs/scorecard.md) and [feature maturity](docs/feature_maturity.md).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
@@ -229,7 +229,7 @@ max_retained_versions = 2
 | **6** | Users and roles, backup/restore, self-update, terminal UI, Docker runtime | 📅 Next |
 | **Later** | Multi-node fleet | 📅 Planned |
 
-Not yet measured: production use, soak tests, benchmarks and migration accuracy. See the [scorecard](docs/scorecard.md).
+Not yet measured: production use, soaks longer than a few hours, performance on real hardware, and migration accuracy. Benchmarks and 5/60-minute soaks run in CI ([benchmarks.md](docs/benchmarks.md)). See the [scorecard](docs/scorecard.md).
 
 
 ---
