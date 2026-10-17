@@ -2,7 +2,7 @@
 
 **Goal:** Aegis runs on a VPS and serves a web dashboard on a configurable port. From that page, an operator can manage everything they can manage today from the CLI, plus live resource control: deploy, roll back, start/stop/restart apps, read logs, watch CPU/memory, and change each app's CPU and memory limits with sliders.
 
-**Status:** Phases 0–5 complete · Phase 6 next · **Releases:** `v0.5.0` (web MVP), `v0.6.0` (resource control), `v0.7.0` (self-serve ops)
+**Status:** Phases 0–6 complete (several Phase 6 parts are experimental; the multi-node fleet is later) · **Releases:** `v0.5.0` (web MVP), `v0.6.0` (resource control), `v0.7.0` (self-serve ops)
 
 ---
 
@@ -269,7 +269,7 @@ This is the "drag CPU and memory" feature.
 - ✅ **Webhook setup:** the Settings tab shows the payload URL, whether a secret exists, the last 10 signed deliveries (`WebhookReceived`), and a "Send test delivery" button that pushes a signed ping through the real endpoint. Secrets are shown once, on rotation.
 - ✅ **Configuration as code:** saving settings first shows the line diff of the `aegis.toml` the next release will get (`POST /projects/{p}/settings/preview`); "View aegis.toml" shows and copies the whole file so it can be committed back to the repository. Aegis never writes to the repository itself.
 
-### Phase 6 — Operations polish *(ongoing)*
+### Phase 6 — Operations polish *(done; experimental parts marked)*
 
 - ✅ **Multiple users with roles:** `viewer` (read), `deployer` (also deploy, roll back, start/stop/restart) and `admin` (everything). Enforced per request by the server (`required_role` in `core/web/src/auth.rs`); role changes apply to open sessions at once; there is always at least one admin. Users are managed under Account → Users, through `/api/v1/users`, or with `aegis-daemon admin create-user|set-role|list-users`. Events: `UserCreated`, `UserRoleChanged`, `UserDeleted`.
 - ✅ Backup and restore of `aegis.db` and releases from the UI; scheduled backups. *Done:* one `.tar.gz` per backup (a `VACUUM INTO` snapshot of the database, `secrets.key`, certificates and, optionally, releases, with a SHA-256 manifest), created from the dashboard (Account → Backups), the API (`/api/v1/backups`, signed-in users only), `aegis-daemon admin backup` or on a `[backup]` schedule, with retention. Restores are offline by design (`aegis-daemon admin restore`, refused while the daemon holds `<data_dir>/aegis.lock`); the dashboard shows the command. See [`disaster_recovery.md`](disaster_recovery.md).
