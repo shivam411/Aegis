@@ -164,7 +164,7 @@ retention_days = 7          # per-minute metric rollups kept in the database
 
 With `cgroups = "auto"`, the daemon picks the first of these that works:
 
-- **cgroup v2 under systemd** with `Delegate=yes`, as `install.sh --server` sets up: app cgroups go under `<service cgroup>/apps`.
+- **cgroup v2 under systemd** with `Delegate=yes`, as `install.sh --server` sets up: the daemon moves itself into `<service cgroup>/daemon` and app cgroups go under `<service cgroup>/apps`. A service cgroup that also holds other processes (the daemon was started by hand, e.g. with `sudo`, from inside some other service) is left alone.
 - **cgroup v2 as root:** `/sys/fs/cgroup/aegis`.
 - **cgroup v1 as root:** `aegis/` under the daemon's cgroup in each controller.
 

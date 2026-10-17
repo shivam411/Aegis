@@ -1,6 +1,7 @@
 //! Resource limits and metrics over HTTP. Limit enforcement is checked
 //! where the host allows cgroups (Linux as root, or delegated); elsewhere
-//! the tests check that limits are refused with a reason.
+//! the tests check that limits are refused with a reason (or fail, with
+//! `AEGIS_REQUIRE_CGROUPS=1`, as in CI).
 
 mod common;
 
@@ -70,14 +71,20 @@ async fn deploy(api: &Api, name: &str, src: &std::path::Path) {
 }
 
 async fn wait_for(api: &Api, uri: &str, pred: impl Fn(&Value) -> bool) -> Value {
-    for _ in 0..100 {
+    // Generous: under memory.high the kernel throttles an app that is
+    // nearing its limit, so an OOM kill can take several seconds.
+    let mut last = Value::Null;
+    for _ in 0..300 {
         let (_, v) = api.get(uri).await;
         if pred(&v) {
             return v;
         }
+        last = v;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("{uri} never matched");
+    let mut last = last.to_string();
+    last.truncate(4000);
+    panic!("{uri} never matched; last response: {last}");
 }
 
 #[tokio::test]
@@ -177,8 +184,14 @@ async fn limits_are_validated_applied_live_and_audited() {
     assert_eq!(status, StatusCode::OK);
 
     if !(caps["cpu"] == true && caps["memory"] == true) {
+        if std::env::var("AEGIS_REQUIRE_CGROUPS").is_ok_and(|v| v == "1") {
+            panic!(
+                "AEGIS_REQUIRE_CGROUPS=1 but cgroup limits are not usable: {}",
+                caps["reason"]
+            );
+        }
         eprintln!(
-            "limits not enforced here ({}); checking refusal only",
+            "SKIPPED: limits not enforced here ({}); checking refusal only. Set AEGIS_REQUIRE_CGROUPS=1 to fail instead",
             caps["reason"]
         );
         let (status, body) = put(json!({"memory_bytes": 268435456})).await;
@@ -192,6 +205,7 @@ async fn limits_are_validated_applied_live_and_audited() {
         return;
     }
     assert_ne!(caps["backend"], "none");
+    eprintln!("cgroups: {} at {}", caps["backend"], caps["location"]);
 
     // Below current use needs confirmation.
     wait_for(&api, "/api/v1/projects/web/resources", |v| {
@@ -225,6 +239,10 @@ async fn limits_are_validated_applied_live_and_audited() {
         after["process"]["pid"], before["process"]["pid"],
         "no restart"
     );
+    eprintln!(
+        "limits applied live (pid {} unchanged); memory.max read back from the cgroup: 96 MiB",
+        after["process"]["pid"]
+    );
     assert_eq!(after["resources"]["pids_max"], 64);
     let (_, caps) = api.get("/api/v1/resources").await;
     assert_eq!(caps["committed_memory_bytes"], 96 * 1024 * 1024);
@@ -240,6 +258,8 @@ async fn limits_are_validated_applied_live_and_audited() {
         }
     })
     .await;
+    let (_, r) = api.get("/api/v1/projects/web/resources").await;
+    eprintln!("after /hog: usage {}", r["usage"]);
     let events = wait_for(&api, "/api/v1/events?project=web&limit=200", |v| {
         v.as_array()
             .unwrap()
@@ -253,6 +273,7 @@ async fn limits_are_validated_applied_live_and_audited() {
         .find(|e| e["event_type"] == "ResourcePressureDetected")
         .unwrap();
     assert_eq!(alert["payload"]["kind"], "oom_kill");
+    eprintln!("OOM kill reported: {}", alert["payload"]["message"]);
     assert!(alert["payload"]["message"]
         .as_str()
         .unwrap()

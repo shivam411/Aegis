@@ -11,7 +11,10 @@
 //! - **cgroup v2** (current distributions). Under the systemd unit that
 //!   `install.sh --server` writes (`Delegate=yes`), the daemon moves itself
 //!   into `<its cgroup>/daemon` and creates apps under `<its cgroup>/apps`.
-//!   Run as root outside such a unit, it uses `/sys/fs/cgroup/aegis`.
+//!   A service cgroup that holds other processes is not treated as
+//!   delegated (e.g. a daemon started with `sudo` from a CI job, whose
+//!   runner is a systemd service). Run as root outside such a unit, it uses
+//!   `/sys/fs/cgroup/aegis`.
 //! - **cgroup v1** (older distributions and some container hosts), as root:
 //!   `<controller mount>/<the daemon's cgroup>/aegis/<process>`.
 //! - **none**: no limits. Metrics still work from `/proc`; the reason is
@@ -522,13 +525,24 @@ fn detect_v2(root: &Path, own: &str) -> Backend {
         .trim()
         .to_string();
     // Under systemd with Delegate=yes the service's cgroup is ours to manage.
-    let delegated = std::env::var_os("INVOCATION_ID").is_some() && own_path.ends_with(".service");
-    if delegated {
-        let service = root.join(own_path.trim_start_matches('/'));
-        match delegate(&service) {
-            Ok(apps) => return v2_at(&apps),
-            Err(e) => tracing::warn!(error = %e, "Could not use the delegated cgroup"),
+    let mut delegation_problem = None;
+    if std::env::var_os("INVOCATION_ID").is_some() {
+        if let Some(service) = service_cgroup(&own_path) {
+            let service = root.join(service.trim_start_matches('/'));
+            match delegate(&service, std::process::id()) {
+                Ok(apps) => match v2_at(&apps) {
+                    backend @ Backend::V2 { .. } => return backend,
+                    Backend::None(reason) => delegation_problem = Some(reason),
+                    Backend::V1(_) => unreachable!("v2_at never returns v1"),
+                },
+                Err(e) => delegation_problem = Some(e.to_string()),
+            }
         }
+    }
+    if let Some(problem) = &delegation_problem {
+        // Expected when a root process merely runs somewhere under a systemd
+        // service (`sudo` from a CI job, say): use /sys/fs/cgroup/aegis.
+        tracing::info!(%problem, "The service cgroup is not delegated to Aegis");
     }
     if is_root() {
         // Enable the controllers for children of the root, then for ours.
@@ -542,22 +556,59 @@ fn detect_v2(root: &Path, own: &str) -> Backend {
         enable_controllers(&base);
         return v2_at(&base);
     }
-    Backend::None(
-        "Resource limits need the daemon to run as root, or as a systemd service with Delegate=yes (install.sh --server sets this up)"
-            .into(),
-    )
+    let base = "Resource limits need the daemon to run as root, or as a systemd service with Delegate=yes (install.sh --server sets this up)";
+    Backend::None(match delegation_problem {
+        Some(problem) => format!("{base}. The service cgroup could not be used: {problem}"),
+        None => base.into(),
+    })
+}
+
+/// The systemd service cgroup the daemon runs in: its own cgroup when that
+/// is a `.service`, or the parent of `<service>/daemon` once the daemon has
+/// moved itself there (another `ResourceManager` in the same process).
+fn service_cgroup(own_path: &str) -> Option<&str> {
+    if own_path.ends_with(".service") {
+        return Some(own_path);
+    }
+    own_path
+        .strip_suffix("/daemon")
+        .filter(|parent| parent.ends_with(".service"))
 }
 
 /// Moves the daemon into `<service>/daemon` (a cgroup that has processes
 /// can't have controllers enabled for its children) and prepares
 /// `<service>/apps`.
-fn delegate(service: &Path) -> Result<PathBuf, anyhow::Error> {
+///
+/// Refuses a service cgroup that holds other processes: the daemon is then
+/// not the service itself but something started under it (e.g. by `sudo`
+/// in a CI job, whose runner is a systemd service), so the cgroup isn't
+/// ours, and controllers could not be enabled for its children anyway.
+fn delegate(service: &Path, pid: u32) -> Result<PathBuf, anyhow::Error> {
+    let others: Vec<u32> = read_procs(service)
+        .into_iter()
+        .filter(|p| *p != pid)
+        .collect();
+    if !others.is_empty() {
+        anyhow::bail!(
+            "{} also holds other processes ({}), so it is not delegated to Aegis alone",
+            service.display(),
+            others
+                .iter()
+                .take(5)
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     let daemon = service.join("daemon");
-    std::fs::create_dir_all(&daemon)?;
-    std::fs::write(daemon.join("cgroup.procs"), std::process::id().to_string())?;
+    std::fs::create_dir_all(&daemon)
+        .map_err(|e| anyhow::anyhow!("creating {}: {}", daemon.display(), e))?;
+    std::fs::write(daemon.join("cgroup.procs"), pid.to_string())
+        .map_err(|e| anyhow::anyhow!("moving into {}: {}", daemon.display(), e))?;
     enable_controllers(service);
     let apps = service.join("apps");
-    std::fs::create_dir_all(&apps)?;
+    std::fs::create_dir_all(&apps)
+        .map_err(|e| anyhow::anyhow!("creating {}: {}", apps.display(), e))?;
     enable_controllers(&apps);
     Ok(apps)
 }
@@ -1092,6 +1143,39 @@ mod tests {
         let caps = ResourceManager::new(&Mode::V2At(root.path().to_path_buf())).capabilities();
         assert_eq!(caps.backend, BackendKind::None);
         assert!(caps.reason.unwrap().contains("not enabled"));
+    }
+
+    #[test]
+    fn test_delegation_needs_a_service_cgroup_of_our_own() {
+        assert_eq!(
+            service_cgroup("/system.slice/aegis.service"),
+            Some("/system.slice/aegis.service")
+        );
+        assert_eq!(
+            service_cgroup("/system.slice/aegis.service/daemon"),
+            Some("/system.slice/aegis.service")
+        );
+        assert_eq!(service_cgroup("/user.slice/session-3.scope"), None);
+        assert_eq!(service_cgroup("/system.slice/x.service/apps"), None);
+        assert_eq!(service_cgroup("/"), None);
+
+        // A root process started under someone else's service (`sudo` in a
+        // CI job): the cgroup is left alone.
+        let service = TempDir::new().unwrap();
+        std::fs::write(service.path().join("cgroup.procs"), "700\n42\n701\n").unwrap();
+        let err = delegate(service.path(), 42).unwrap_err().to_string();
+        assert!(err.contains("other processes (700, 701)"), "{err}");
+        assert!(!service.path().join("daemon").exists());
+
+        // The service's only process: it moves into <service>/daemon.
+        std::fs::write(service.path().join("cgroup.procs"), "42\n").unwrap();
+        std::fs::write(service.path().join("cgroup.controllers"), "cpu memory pids").unwrap();
+        let apps = delegate(service.path(), 42).unwrap();
+        assert_eq!(apps, service.path().join("apps"));
+        assert_eq!(
+            std::fs::read_to_string(service.path().join("daemon/cgroup.procs")).unwrap(),
+            "42"
+        );
     }
 
     #[test]

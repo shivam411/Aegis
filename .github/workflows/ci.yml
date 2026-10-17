@@ -46,18 +46,48 @@ jobs:
           AEGIS_REQUIRE_DOCKER: '1'
         run: cargo test --workspace --all-targets
 
-      - name: Resource limits against the real kernel (cgroup v2, as root)
-        # Tests that need cgroups skip themselves when run unprivileged, so
-        # run them again as root: CPU caps, live limit changes, OOM kills
-        # and restarts, enforced by the runner's kernel.
+      - name: Resource limits against the real kernel (cgroup v2)
+        # The cgroup tests skip themselves where limits are unusable (as in
+        # the unprivileged run above); AEGIS_REQUIRE_CGROUPS=1 makes that a
+        # failure here. CPU caps read back from cpu.max, live limit changes,
+        # OOM kills and restarts, enforced by the runner's kernel. Each test
+        # binary runs twice, once per way the daemon finds its cgroups:
+        #  1. delegated: as the unprivileged runner user in a transient
+        #     systemd service with Delegate=yes, as install.sh --server sets
+        #     up (apps under <service cgroup>/apps);
+        #  2. as root via sudo from this job, whose cgroup belongs to the
+        #     runner's own systemd service (/sys/fs/cgroup/aegis).
+        # Each run must also report the expected cgroup location.
+        shell: bash
+        env:
+          AEGIS_REQUIRE_CGROUPS: '1'
         run: |
+          echo "cgroup of this job: $(cat /proc/self/cgroup)"
+          echo "root controllers: $(cat /sys/fs/cgroup/cgroup.subtree_control)"
           for spec in "aegis-resources kernel" "aegis-web resources"; do
             set -- $spec
             cargo test -p "$1" --test "$2" --no-run --message-format=json \
-              | jq -r 'select(.profile.test == true and .executable != null) | .executable'
+              | jq -r 'select(.profile.test == true and .executable != null)
+                       | [.executable, (.manifest_path | sub("/Cargo.toml$"; ""))] | @tsv'
           done > "$RUNNER_TEMP/cgroup-tests"
           cat "$RUNNER_TEMP/cgroup-tests"
-          while read -r bin; do sudo -E "$bin" --nocapture; done < "$RUNNER_TEMP/cgroup-tests"
+          out="$RUNNER_TEMP/cgroup-test-output"
+          while IFS=$'\t' read -r bin dir; do
+            echo "::group::$(basename "$bin"): delegated systemd service, user $(id -un)"
+            sudo systemd-run --quiet --wait --pipe --collect \
+              --uid="$(id -u)" --gid="$(id -g)" -p Delegate=yes \
+              --working-directory="$dir" \
+              -E AEGIS_REQUIRE_CGROUPS=1 -E PATH="$PATH" -E HOME="$HOME" \
+              "$bin" --nocapture --test-threads=1 2>&1 | tee "$out"
+            grep -Eq 'cgroups: "?cgroup2"? at "?/sys/fs/cgroup/.*\.service/apps' "$out" \
+              || { echo "::error::$(basename "$bin") did not use the delegated service cgroup"; exit 1; }
+            echo "::endgroup::"
+            echo "::group::$(basename "$bin"): root (sudo)"
+            (cd "$dir" && sudo -E "$bin" --nocapture --test-threads=1) 2>&1 | tee "$out"
+            grep -Eq 'cgroups: "?cgroup2"? at "?/sys/fs/cgroup/aegis' "$out" \
+              || { echo "::error::$(basename "$bin") did not use /sys/fs/cgroup/aegis"; exit 1; }
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/cgroup-tests"
 
       - name: Check performance benchmark compilation
         run: cargo check --benches
@@ -138,11 +168,14 @@ jobs:
         # process control, rollback, timeline, audit log, API tokens, CPU
         # and memory sliders (a busy loop capped, an OOM kill restarted),
         # and a phone-sized viewport. Any CSP violation or script error
-        # fails it. Run as root so the daemon can manage cgroups.
+        # fails it. Run as root so the daemon can manage cgroups
+        # (/sys/fs/cgroup/aegis); AEGIS_REQUIRE_CGROUPS makes the resource
+        # test fail rather than skip its limit steps if it can't.
         working-directory: ui-tests
         env:
           BIN_DIR: target/release
           CI: 'true'
+          AEGIS_REQUIRE_CGROUPS: '1'
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
         run: sudo -E env "PATH=$PATH" npx playwright test
 
