@@ -79,8 +79,10 @@ pub struct ProxyRouteDto {
     pub target: String,
     pub project_id: Option<String>,
     pub project_name: Option<String>,
-    /// Local port requests go to right now.
+    /// Local port requests go to right now (the first instance's).
     pub upstream_port: Option<u16>,
+    /// Every instance's port; requests are spread over them.
+    pub upstream_ports: Vec<u16>,
     pub cert: CertStatusDto,
 }
 
@@ -192,6 +194,7 @@ pub(crate) async fn proxy_status(State(st): State<AppState>) -> Json<ProxyStatus
                 target: r.target,
                 project_id: r.project_id,
                 upstream_port: r.upstream_port,
+                upstream_ports: r.upstream_ports,
                 cert: r.cert.into(),
             })
             .collect(),

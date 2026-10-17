@@ -53,7 +53,8 @@ enum Commands {
         /// Branch to deploy when cloning from a repository
         #[arg(short, long)]
         branch: Option<String>,
-        /// Deployment strategy (GracefulSwitch, Immediate)
+        /// Deployment strategy (GracefulSwitch, Immediate, Rolling, BlueGreen;
+        /// Rolling and BlueGreen need a domain on the built-in proxy)
         #[arg(short, long)]
         strategy: Option<String>,
         /// Release name (defaults to a timestamp)
@@ -786,8 +787,8 @@ async fn run() -> Result<(), anyhow::Error> {
                     "{:<20} {:<9} {:<10} {:<22} {:>8} {:>8}",
                     "NAME", "ID", "STATUS", "RELEASE", "PID", "RESTARTS"
                 );
-                for p in projects {
-                    let (status, pid, restarts) = match &p.process {
+                for p in &projects {
+                    let (mut status, pid, restarts) = match &p.process {
                         Some(proc) => (
                             proc.status.clone(),
                             proc.pid.map_or("-".to_string(), |pid| pid.to_string()),
@@ -795,6 +796,10 @@ async fn run() -> Result<(), anyhow::Error> {
                         ),
                         None => ("NotDeployed".to_string(), "-".to_string(), "-".to_string()),
                     };
+                    if p.instances.len() > 1 {
+                        let up = p.instances.iter().filter(|i| i.status == "Running").count();
+                        status = format!("{}/{} up", up, p.instances.len());
+                    }
                     println!(
                         "{:<20} {:<9} {:<10} {:<22} {:>8} {:>8}",
                         p.name,
@@ -808,6 +813,27 @@ async fn run() -> Result<(), anyhow::Error> {
                         pid,
                         restarts
                     );
+                }
+                for p in projects.iter().filter(|p| p.instances.len() > 1) {
+                    println!("\n{} instances:", p.name);
+                    for (i, instance) in p.instances.iter().enumerate() {
+                        println!(
+                            "  #{:<3} {:<10} pid {:<8} port {:<6} release {:<20} restarts {}  {}",
+                            instance.instance.unwrap_or(i as u32 + 1),
+                            instance.status,
+                            instance.pid.map_or("-".to_string(), |pid| pid.to_string()),
+                            instance.port.map_or("-".to_string(), |p| p.to_string()),
+                            instance.release_version,
+                            instance.restart_count,
+                            short(&instance.id),
+                        );
+                    }
+                    if !p.standby_version.is_empty() {
+                        println!(
+                            "  standby: {} kept running until {} (instant rollback)",
+                            p.standby_version, p.standby_until
+                        );
+                    }
                 }
             }
         }
@@ -936,6 +962,7 @@ async fn run() -> Result<(), anyhow::Error> {
             println!("  Test:         {}", show(&cfg.test_command));
             println!("  Start:        {}", cfg.start_command);
             println!("  Strategy:     {}", cfg.strategy);
+            println!("  Instances:    {}", cfg.instances);
             println!(
                 "  Port:         {}",
                 cfg.port.map_or("(none)".to_string(), |p| p.to_string())
@@ -952,13 +979,18 @@ async fn run() -> Result<(), anyhow::Error> {
             if cfg.project_id.is_none() {
                 problems.push("no [project] id; run 'aegis init'".to_string());
             }
-            if let Some(strategy) = &file.deploy.strategy {
-                if !["GracefulSwitch", "Immediate"].contains(&strategy.as_str()) {
-                    problems.push(format!(
-                        "strategy '{}' is not supported (use GracefulSwitch or Immediate)",
-                        strategy
-                    ));
-                }
+            if let Err(problem) = file.validate() {
+                problems.push(problem);
+            }
+            if aegis_config::strategy_needs_proxy(&cfg.strategy) || cfg.instances > 1 {
+                println!(
+                    "  Note: {} needs the app to be served by the built-in proxy ([proxy] enabled and a domain mapped).",
+                    if cfg.instances > 1 {
+                        format!("running {} instances", cfg.instances)
+                    } else {
+                        format!("the {} strategy", cfg.strategy)
+                    }
+                );
             }
             if let Some(policy) = &file.deploy.restart_policy {
                 if !["always", "on-failure", "never"].contains(&policy.as_str()) {

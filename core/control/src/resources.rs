@@ -79,6 +79,8 @@ impl Pressure {
 struct Measured {
     sample: Sample,
     new_oom_kills: u64,
+    /// CPU (cores) and memory (bytes) of each process.
+    per_process: Vec<(ProcessId, f64, u64)>,
 }
 
 impl ControlPlane {
@@ -340,6 +342,7 @@ impl ControlPlane {
         }
         let live: Vec<ProcessId> = by_project.values().flatten().map(|p| p.id).collect();
         previous.retain(|id, _| live.contains(id));
+        let mut per_process = Vec::new();
 
         for (project_id, processes) in by_project {
             let resources = self.inner.resources.clone();
@@ -353,12 +356,14 @@ impl ControlPlane {
                 tokio::task::spawn_blocking(move || measure(&resources, &procs, prev, at, &limits))
                     .await;
             let Ok((m, prev)) = measured else { continue };
+            per_process.extend(m.per_process.iter().copied());
             previous.extend(prev);
             let key = project_id.to_string();
             let p = pressure.entry(key.clone()).or_default();
             self.check_pressure(&project_id, &m, p).await;
             self.publish(&key, m.sample).await;
         }
+        self.note_process_usage(per_process);
     }
 
     async fn publish(&self, series: &str, sample: Sample) {
@@ -485,7 +490,8 @@ impl ControlPlane {
 }
 
 /// Measures a project's processes. Runs on a blocking thread (it reads
-/// many small files).
+/// many small files). Limits apply to each process (instance) on its own,
+/// so the app's limit in the sample is the sum over its processes.
 fn measure(
     resources: &aegis_resources::ResourceManager,
     processes: &[aegis_process::ProcessInfo],
@@ -504,6 +510,11 @@ fn measure(
     let mut new_oom_kills = 0;
     let now = Instant::now();
     let mut out = Vec::new();
+    let mut per_process = Vec::new();
+    let mut cgroup_memory_limits: Option<u64> = None;
+    let count = processes.len().max(1);
+    sample.cpu_limit_cores = limits.cpu_cores.map(|c| c * count as f64);
+    sample.memory_limit_bytes = limits.memory_bytes.map(|m| m * count as u64);
     for p in processes {
         // A container's counters come from its own cgroup, found through
         // its main process.
@@ -528,11 +539,14 @@ fn measure(
             _ => (totals.cpu_usec, totals.rss_bytes),
         };
         let prev = previous.remove(&p.id).unwrap_or_default();
+        let mut cpu_cores = 0.0;
         if let Some(t) = prev.at {
             let elapsed = now.duration_since(t).as_micros().max(1) as f64;
             // A restart outside a cgroup resets the counter.
-            sample.cpu_cores += cpu_usec.saturating_sub(prev.cpu_usec) as f64 / elapsed;
+            cpu_cores = cpu_usec.saturating_sub(prev.cpu_usec) as f64 / elapsed;
+            sample.cpu_cores += cpu_cores;
         }
+        per_process.push((p.id, cpu_cores, memory));
         sample.memory_bytes += memory;
         sample.threads += totals.threads;
         sample.fds += totals.fds;
@@ -548,7 +562,7 @@ fn measure(
         }
         sample.oom_kills += ooms;
         if let Some(limit) = cg.as_ref().and_then(|c| c.memory_limit_bytes) {
-            sample.memory_limit_bytes = Some(limit);
+            *cgroup_memory_limits.get_or_insert(0) += limit;
         }
         out.push((
             p.id,
@@ -564,10 +578,14 @@ fn measure(
     if throttled.0 > 0 {
         sample.throttled_ratio = throttled.1 as f64 / throttled.0 as f64;
     }
+    if cgroup_memory_limits.is_some() {
+        sample.memory_limit_bytes = cgroup_memory_limits;
+    }
     (
         Measured {
             sample,
             new_oom_kills,
+            per_process,
         },
         out,
     )

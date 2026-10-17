@@ -291,6 +291,68 @@ async fn streams_bodies_and_counts_in_flight_requests() {
 }
 
 #[tokio::test]
+async fn balances_over_instances_and_fails_over() {
+    let p = proxy().await;
+    let a = echo_upstream("a").await;
+    let b = echo_upstream("b").await;
+    let c = echo_upstream("c").await;
+    p.ingress
+        .set_domain("a.example.com", DomainRoute::project("pa", TlsMode::Off));
+    p.ingress.set_upstreams("pa", vec![a, b, c]);
+    assert_eq!(p.ingress.upstreams("pa"), vec![a, b, c]);
+
+    // Round robin: every instance gets its share.
+    let mut counts = std::collections::HashMap::new();
+    for _ in 0..9 {
+        let r = get(p.http_port, "a.example.com", "/").await;
+        assert_eq!(r.status, 200);
+        let app = r.body.lines().next().unwrap().to_string();
+        *counts.entry(app).or_insert(0) += 1;
+    }
+    assert_eq!(counts.len(), 3, "{counts:?}");
+    assert!(counts.values().all(|n| *n == 3), "{counts:?}");
+
+    // An instance that refuses connections: requests without a body are
+    // retried on another instance, and the dead one is skipped from then on.
+    let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_port = dead.local_addr().unwrap().port();
+    drop(dead);
+    p.ingress.set_upstreams("pa", vec![a, dead_port, b]);
+    for _ in 0..12 {
+        let r = get(p.http_port, "a.example.com", "/").await;
+        assert_eq!(r.status, 200, "{}", r.head);
+        assert!(!r.body.contains("app=c"));
+    }
+    assert!(p.ingress.routes().is_down(dead_port));
+    // Requests with a body are not replayed, but avoid the dead instance.
+    for _ in 0..6 {
+        let stream = TcpStream::connect(("127.0.0.1", p.http_port))
+            .await
+            .unwrap();
+        let r = exchange(
+            stream,
+            b"POST /x HTTP/1.1\r\nHost: a.example.com\r\nConnection: close\r\nContent-Length: 2\r\n\r\nhi",
+        )
+        .await;
+        assert_eq!(r.status, 200, "{}", r.head);
+        assert!(r.body.ends_with("body=hi"), "{}", r.body);
+    }
+    // Only dead instances left: a clear 502.
+    p.ingress.set_upstreams("pa", vec![dead_port]);
+    assert_eq!(get(p.http_port, "a.example.com", "/").await.status, 502);
+    // The status API lists every instance's port.
+    p.ingress.set_upstreams("pa", vec![a, b]);
+    let status = p.ingress.status();
+    let route = status
+        .routes
+        .iter()
+        .find(|r| r.domain == "a.example.com")
+        .unwrap();
+    assert_eq!(route.upstream_ports, vec![a, b]);
+    assert_eq!(route.upstream_port, Some(a));
+}
+
+#[tokio::test]
 async fn upgrades_are_spliced_through() {
     let p = proxy().await;
     let up = upgrade_upstream().await;

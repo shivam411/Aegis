@@ -623,7 +623,8 @@ const ROUTES = [
 ];
 
 function currentPath() {
-  return decodeURI(location.hash.replace(/^#/, '')) || '/';
+  // A query (e.g. ?process=<id> on the logs tab) is read by the page itself.
+  return decodeURI(location.hash.replace(/^#/, '').split('?')[0]) || '/';
 }
 
 function go(path) {
@@ -867,7 +868,9 @@ function processButtons(project, after, { small = true } = {}) {
         title: `${action === 'stop' ? 'Stop' : 'Restart'} ${project.name}?`,
         message: action === 'stop'
           ? 'The app goes offline until you start it again.'
-          : 'The app is briefly unavailable while its process restarts.',
+          : (project.instances || []).length > 1
+            ? 'Its instances restart one at a time; the others keep serving.'
+            : 'The app is briefly unavailable while its process restarts.',
         confirmLabel: action === 'stop' ? 'Stop' : 'Restart',
         danger: action === 'stop',
       });
@@ -951,6 +954,7 @@ async function appPage(main, ctx, name, tab = 'deploy') {
       h('div', { class: 'subtitle muted small' },
         [
           project.current_release ? `Version ${project.current_release}` : 'Not deployed yet',
+          (project.instances || []).length > 1 ? `${project.instances.length} instances` : null,
           p && p.status === 'Running' ? `up ${uptime(p)}` : null,
           p ? `${p.restart_count} restart${p.restart_count === 1 ? '' : 's'}` : null,
           p && p.pid ? `${p.runtime === 'docker' ? 'container pid' : 'pid'} ${p.pid}` : null,
@@ -995,8 +999,15 @@ async function deployTab(body, ctx) {
   const branch = h('input', { id: 'deploy-branch', placeholder: project.branch, class: 'mono' });
   const commit = h('input', { id: 'deploy-commit', placeholder: 'latest', class: 'mono' });
   const strategy = h('select', { id: 'deploy-strategy' },
-    h('option', { value: 'GracefulSwitch' }, 'Graceful switch (zero downtime)'),
-    h('option', { value: 'Immediate' }, 'Immediate'));
+    STRATEGIES.map(([value, label]) => h('option', { value }, label)));
+  const preferred = project.settings?.strategy;
+  if (preferred && STRATEGIES.some(([value]) => value === preferred)) strategy.value = preferred;
+  const strategyHint = h('span', { class: 'hint', 'data-strategy-hint': '' });
+  const syncStrategyHint = () => {
+    strategyHint.textContent = STRATEGY_HINTS[strategy.value] || '';
+  };
+  strategy.addEventListener('change', syncStrategyHint);
+  syncStrategyHint();
   const submit = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'deploy' }, 'Deploy');
   const gitSource = Boolean(project.repository_url);
 
@@ -1016,11 +1027,11 @@ async function deployTab(body, ctx) {
     h('div', { class: 'row' },
       gitSource ? h('div', { class: 'field' }, h('label', { for: 'deploy-branch' }, 'Branch'), branch) : null,
       gitSource ? h('div', { class: 'field' }, h('label', { for: 'deploy-commit' }, 'Commit'), commit, h('span', { class: 'hint' }, 'A commit SHA on that branch; blank for its latest commit')) : null,
-      h('div', { class: 'field' }, h('label', { for: 'deploy-strategy' }, 'Strategy'), strategy)),
+      h('div', { class: 'field' }, h('label', { for: 'deploy-strategy' }, 'Strategy'), strategy, strategyHint)),
     gitSource ? null : h('p', { class: 'muted small' }, `Copies the code in ${project.source_dir || 'the source directory'}.`),
     h('div', { class: 'form-actions' }, submit)));
 
-  append(body, h('div', { class: 'grid' }, form, pipelineEl));
+  append(body, h('div', { class: 'grid' }, form, instancesCard(ctx), pipelineEl));
 
   let current = null;
   const showDeployment = (id) => {
@@ -1045,9 +1056,90 @@ async function deployTab(body, ctx) {
   });
 }
 
+const STRATEGIES = [
+  ['GracefulSwitch', 'Graceful switch (zero downtime)'],
+  ['Immediate', 'Immediate'],
+  ['Rolling', 'Rolling (one instance at a time)'],
+  ['BlueGreen', 'Blue-green (keep the old set warm)'],
+];
+
+const STRATEGY_HINTS = {
+  GracefulSwitch: 'Starts the new release next to the live one and switches once it is healthy.',
+  Immediate: 'Stops the live release first; requests fail until the new one is up.',
+  Rolling: 'Replaces instances one batch at a time. Needs a domain on the built-in proxy.',
+  BlueGreen: 'Switches all instances at once and keeps the old ones running for an instant rollback. Needs a domain on the built-in proxy.',
+};
+
+// --- Instances (deploy tab) ---------------------------------------------
+
+/** The app's instances: status, pid, port, release, usage, logs. */
+function instancesCard(ctx) {
+  const project = ctx.project();
+  const instances = project.instances || [];
+  if (instances.length < 2 && !project.standby) return null;
+  const rows = instances.map((inst, i) => {
+    const p = inst.process;
+    const n = p.instance ?? i + 1;
+    return h('tr', { 'data-instance': String(n) },
+      h('td', { 'data-label': 'Instance' }, `#${n}`),
+      h('td', { 'data-label': 'Status' }, processPill({ process: p, current_release: project.current_release })),
+      h('td', { class: 'mono', 'data-label': 'PID' }, p.pid ?? '–'),
+      h('td', { class: 'mono', 'data-label': 'Port' }, p.port ?? '–'),
+      h('td', { class: 'mono', 'data-label': 'Release' }, p.release_version || '–'),
+      h('td', { class: 'num', 'data-label': 'Restarts' }, p.restart_count),
+      h('td', { 'data-label': 'CPU' }, inst.cpu_cores != null ? fmtCores(inst.cpu_cores) : '–'),
+      h('td', { 'data-label': 'Memory' }, inst.memory_bytes != null ? fmtBytes(inst.memory_bytes) : '–'),
+      h('td', { class: 'actions' }, h('a', { class: 'btn small ghost', href: `#/apps/${enc(project.name)}/logs?process=${enc(p.id)}` }, 'Logs')));
+  });
+  return h('section', { class: 'card', 'data-instances': '' },
+    h('div', { class: 'card-header' }, h('h2', {}, `Instances (${instances.length})`)),
+    h('div', { class: 'card-body' },
+      h('p', { class: 'muted small' }, 'The built-in proxy spreads requests over the running instances. Resource limits apply to each instance.'),
+      h('div', { class: 'table-wrap' },
+        h('table', { class: 'stack' },
+          h('thead', {}, h('tr', {}, ['Instance', 'Status', 'PID', 'Port', 'Release', 'Restarts', 'CPU', 'Memory', ''].map((t) => h('th', {}, t)))),
+          h('tbody', {}, rows))),
+      project.standby
+        ? h('div', { class: 'alert info', 'data-standby': '' },
+          `Release ${project.standby.version} is still running on ${project.standby.process_ids.length} instance(s) until ${fmtTime(project.standby.until)}: rolling back to it now is instant.`)
+        : null));
+}
+
 // --- Pipeline view (deploy tab and deployment detail) -------------------
 
 const STAGES = ['Clone', 'Install', 'Build', 'Test', 'Package', 'Verify', 'Promote'];
+
+const instanceList = (list) => (list || []).map((i) => `#${i.instance}${i.port ? ` (:${i.port})` : ''}`).join(', ');
+
+/** Rollout steps (Rolling, BlueGreen, several instances) for the timeline. */
+function rolloutSteps(events) {
+  const steps = [];
+  for (const e of events) {
+    const p = e.payload || {};
+    switch (e.event_type) {
+      case 'RolloutStepCompleted':
+        steps.push({
+          kind: 'ok',
+          at: e.created_at,
+          text: `Step ${p.step} of ${p.steps}: started ${instanceList(p.started) || 'nothing'}`
+            + (p.stopped && p.stopped.length ? `; drained and stopped ${p.stopped.length} old instance(s)` : ''),
+        });
+        break;
+      case 'RolloutAborted':
+        steps.push({ kind: 'bad', at: e.created_at, text: `Stopped at step ${p.step} of ${p.steps}: ${p.reason}. Restored ${(p.restored_instances || []).length} instance(s) of the previous release.` });
+        break;
+      case 'TrafficSwitched':
+        steps.push({ kind: 'ok', at: e.created_at, text: `Traffic switched to ${p.to_version} on ${instanceList(p.instances)}` });
+        break;
+      case 'StandbyKept':
+        steps.push({ kind: 'info', at: e.created_at, text: `${p.version} kept running until ${fmtTime(p.until)} for an instant rollback` });
+        break;
+      default:
+        break;
+    }
+  }
+  return steps;
+}
 
 function stageStates(deployment, events) {
   const stages = Object.fromEntries(STAGES.map((s) => [s, { status: 'pending', start: null, end: null, detail: null }]));
@@ -1124,6 +1216,13 @@ function pipelineCard(ctx, id, { link = false } = {}) {
               h('div', { class: 'name' }, name),
               h('div', { class: 'time' }, took || ' '));
           })),
+        (() => {
+          const steps = rolloutSteps(events);
+          if (!steps.length) return null;
+          return h('ol', { class: 'rollout', 'aria-label': 'Rollout steps', 'data-rollout': '' },
+            steps.map((s) => h('li', { class: `rollout-step ${s.kind}` },
+              h('span', { class: 'muted small' }, fmtTime(s.at)), ' ', s.text)));
+        })(),
         deployment.error ? h('div', { class: 'alert outcome', role: 'alert', 'data-error': '' }, deployment.error) : null,
         deployment.status === 'Success' ? h('div', { class: 'alert ok outcome' }, `${deployment.version} is live.`) : null,
         h('details', { class: 'outcome', open: isActiveDeployment(deployment) || deployment.status !== 'Success' },
@@ -1211,7 +1310,18 @@ async function logsTab(body, ctx) {
     append(body, h('div', { class: 'card empty' }, h('h2', {}, 'No logs yet'), h('p', {}, 'Logs appear once the app has been deployed.')));
     return;
   }
-  append(body, logViewer(ctx, project.name));
+  // A single instance's log: #/apps/<name>/logs?process=<id>.
+  const wanted = new URLSearchParams(location.hash.split('?')[1] || '').get('process');
+  const instances = project.instances || [];
+  const target = instances.some((i) => i.process.id === wanted) ? wanted : project.name;
+  if (instances.length > 1) {
+    const pick = h('select', { id: 'log-instance', 'aria-label': 'Instance' },
+      instances.map((i, n) => h('option', { value: i.process.id }, `Instance ${i.process.instance ?? n + 1}`)));
+    pick.value = target === project.name ? instances[0].process.id : target;
+    pick.addEventListener('change', () => go(`/apps/${enc(project.name)}/logs?process=${enc(pick.value)}`));
+    append(body, h('div', { class: 'field inline' }, h('label', { for: 'log-instance' }, 'Instance'), pick));
+  }
+  append(body, logViewer(ctx, target));
 }
 
 const MAX_LOG_LINES = 5000;
@@ -1649,6 +1759,11 @@ async function settingsTab(body, ctx) {
   }
   const s = project.settings || {};
   const { inputs, layout } = settingsInputs(s);
+  const strategyIn = h('select', { id: 'set-strategy', name: 'strategy' },
+    h('option', { value: '' }, 'From aegis.toml (GracefulSwitch by default)'),
+    STRATEGIES.map(([value, label]) => h('option', { value }, label)));
+  strategyIn.value = s.strategy || '';
+  const instancesIn = h('input', { id: 'set-instances', name: 'instances', type: 'number', min: 1, max: 16, value: s.instances ?? '', placeholder: '1' });
   const env = envEditor(s.env, 'env');
   const processOnly = h('input', { type: 'checkbox', id: 'set-process-only', checked: s.health_check_url === '' });
   const syncHealth = () => {
@@ -1681,6 +1796,8 @@ async function settingsTab(body, ctx) {
         if (v) req[key] = v;
       }
       if (inputs.port.value) req.port = Number(inputs.port.value);
+      if (strategyIn.value) req.strategy = strategyIn.value;
+      if (instancesIn.value) req.instances = Number(instancesIn.value);
       if (processOnly.checked) req.health_check_url = '';
       else if (inputs.health_check_url.value.trim()) req.health_check_url = inputs.health_check_url.value.trim();
       try {
@@ -1706,6 +1823,11 @@ async function settingsTab(body, ctx) {
     h('p', { class: 'muted small' }, 'Leave a field blank to use the value from aegis.toml or auto-detection. Changes take effect on the next deployment; older releases keep the settings they were built with.'),
     layout,
     h('label', { class: 'small', for: 'set-process-only' }, processOnly, ' No HTTP health check (healthy while the process stays up)'),
+    h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'set-strategy' }, 'Default strategy'), strategyIn,
+        h('span', { class: 'hint' }, 'Used when a deployment does not pick one. Rolling and Blue-green need a domain on the built-in proxy.')),
+      h('div', { class: 'field' }, h('label', { for: 'set-instances' }, 'Instances'), instancesIn,
+        h('span', { class: 'hint' }, 'Copies of the app behind the built-in proxy (1-16; more than 1 needs a domain). Resource limits apply to each instance.'))),
     h('fieldset', { class: 'field env' },
       h('legend', {}, 'Environment variables'),
       h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and written into each release. Use Secrets for passwords and keys.'),
@@ -2288,6 +2410,7 @@ async function resourcesTab(body, ctx) {
     h('div', { class: 'card-body' },
       canLimit
         ? h('p', { class: 'muted small' }, 'Changes apply to the running app immediately, without a restart, and again on every start and deploy. ',
+          (project.instances || []).length > 1 ? `Each limit applies to each of the ${project.instances.length} instances on its own; usage above is their total. ` : '',
           caps.reason ? caps.reason : '')
         : h('div', { class: 'alert warn', 'data-unsupported': '' },
           h('strong', {}, 'Limits are not available on this server. '), caps.reason || '',
@@ -2365,7 +2488,25 @@ function describeEvent(e) {
       bits.push(`back to ${p.target_version}: ${p.reason || ''}`);
       break;
     case 'ReleasePromoted':
-      bits.push(`${p.version} live${p.previous_version ? ` (was ${p.previous_version})` : ''}`);
+      bits.push(`${p.version} live${p.previous_version ? ` (was ${p.previous_version})` : ''}${p.process_ids && p.process_ids.length > 1 ? ` · ${p.process_ids.length} instances` : ''}`);
+      break;
+    case 'RolloutStepCompleted':
+      bits.push(`${p.version} step ${p.step}/${p.steps}: started ${instanceList(p.started) || 'nothing'}, stopped ${(p.stopped || []).length}`);
+      break;
+    case 'RolloutAborted':
+      bits.push(`${p.version} stopped at step ${p.step}/${p.steps}: ${p.reason || ''}`);
+      break;
+    case 'TrafficSwitched':
+      bits.push(`${p.from_version || '–'} → ${p.to_version}${p.instant_rollback ? ' (instant rollback)' : ''}`);
+      break;
+    case 'StandbyKept':
+      bits.push(`${p.version} kept until ${fmtTime(p.until)}`);
+      break;
+    case 'StandbyStopped':
+      bits.push(`${p.version} (${p.reason})`);
+      break;
+    case 'InstanceSetChanged':
+      bits.push(`${(p.process_ids || []).length} instances (${p.reason || ''})`);
       break;
     case 'RollbackRequested':
     case 'RollbackCompleted':

@@ -61,7 +61,7 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
 | `ReleaseCreated` | A build finished and the release is ready to start | `release_id`, `project_id`, `deployment_id`, `version`, `commit_sha`, `commit_message`, `checksum`, `path` |
-| `ReleasePromoted` | The release passed its health check and is now live | `release_id`, `project_id`, `version`, `previous_version`, `process_id` (the process now serving), `port` (where the proxy sends its traffic) |
+| `ReleasePromoted` | The release passed its health check and is now live | `release_id`, `project_id`, `version`, `previous_version`, `process_id` (the process now serving; the first instance), `port` (where the proxy sends its traffic), and for multi-instance cutovers `process_ids` and `ports` (every instance, in instance order) |
 | `ReleaseArchived` | The release directory was removed by retention | `project_id`, `version` |
 
 ### Deployment Aggregate
@@ -74,10 +74,23 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | `DeploymentFailed` | A build stage or the health check failed | `deployment_id`, `project_id`, `stage`, `reason`, `log_tail`, `rolled_back_to` |
 | `DeploymentRolledBack` | After a failed health check, the previous release was started again | `deployment_id`, `project_id`, `target_version`, `reason` |
 | `RollbackRequested` | An operator asked to switch to an earlier release | `project_id`, `from_version`, `target_version` |
-| `RollbackCompleted` | The earlier release is live | `project_id`, `from_version`, `to_version` |
+| `RollbackCompleted` | The earlier release is live | `project_id`, `from_version`, `to_version`, `instant` (switched back to a BlueGreen standby without starting anything) |
 | `RollbackFailed` | The earlier release did not become healthy | `project_id`, `target_version`, `reason`, `restored` |
 
 `DeploymentSucceeded` is accepted as a synonym for `DeploymentCompleted` when replaying history.
+
+### Rollouts and instances
+
+Recorded for apps with several instances and for the Rolling and BlueGreen strategies (see [Deployment strategies](configuration.md#deployment-strategies-and-instances)). An instance in these payloads is `{"process_id", "instance" (1-based), "port"}`. Events of a deployment carry its `deployment_id`, so they appear in its timeline.
+
+| Event Type | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `RolloutStepCompleted` | One Rolling step finished: new instances healthy and in the proxy, old ones drained and stopped | `deployment_id`, `project_id`, `strategy`, `version`, `step`, `steps`, `started` (instances), `stopped` (instances), `new_serving`, `old_serving` |
+| `RolloutAborted` | A new instance did not become healthy; the rollout stopped and the old set was restored | `deployment_id`, `project_id`, `strategy`, `version`, `step`, `steps`, `reason`, `restored_instances` |
+| `TrafficSwitched` | The proxy moved from one set of instances to another in one step (GracefulSwitch/Immediate/BlueGreen with several instances, or an instant BlueGreen rollback) | `deployment_id` (none for a rollback), `project_id`, `strategy`, `from_version`, `to_version`, `instances`, `previous_instances`, `instant_rollback` |
+| `StandbyKept` | BlueGreen: the previous set keeps running as an instant rollback target | `deployment_id`, `project_id`, `version`, `process_ids`, `until` (RFC 3339) |
+| `StandbyStopped` | The BlueGreen standby was stopped | `project_id`, `version`, `process_ids`, `reason` (`expired`, `replaced` by another release going live, `stopped` with the app) |
+| `InstanceSetChanged` | The live set of instances changed without a new release (on boot, missing instances were started) | `project_id`, `version`, `process_ids`, `ports`, `reason` (`recovered`) |
 
 ### Build Pipeline Aggregate
 
@@ -98,12 +111,12 @@ Each stage reports `Started`, then `Success`, `Skipped` (no command configured) 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
 | `ProcessStartRequested` / `ProcessStopRequested` / `ProcessRestartRequested` | An operator action (audit record) | `process_id`, `project_id` |
-| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd`, `port` (its `PORT`), `proxied` (port allocated for the proxy), `candidate` (a new release starting next to the live one), `runtime` (`process` or `docker`), `container` and `image` (container apps; `pid` is then the container's main process and `command` is `docker: <image>`) |
+| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd`, `port` (its `PORT`), `proxied` (port allocated for the proxy), `candidate` (a new release starting next to the live one, or an instance outside the live set such as a BlueGreen standby), `instance` (1-based number, for apps with several instances), `runtime` (`process` or `docker`), `container` and `image` (container apps; `pid` is then the container's main process and `command` is `docker: <image>`) |
 | `ProcessCrashed` | The process exited without being asked to | `process_id`, `project_id`, `exit_code`, `will_restart`, `restart_delay_ms` |
 | `ProcessFailed` | Crash loop or spawn failure; the supervisor stopped restarting it | `process_id`, `project_id`, `reason` |
 | `ProcessStopped` | The process was stopped | `process_id`, `project_id`, `reason` (`requested`, `replaced`, `restart`, `shutdown`), `exit_code` |
 
-A `ProcessStopped` with reason `requested` or `replaced` marks the process as wanted-down, so it is not restarted when the daemon boots. With reason `shutdown` it is started again on the next boot.
+A `ProcessStopped` with reason `requested` or `replaced` marks the process as wanted-down, so it is not restarted when the daemon boots. With reason `shutdown` it is started again on the next boot. An exception: `replaced` for an instance that is still in its app's live set of several (a Rolling update replaced it but the new set was never promoted) keeps it wanted, so an interrupted rollout comes back as the old set.
 
 ---
 
@@ -153,6 +166,6 @@ See [`upgrading.md`](upgrading.md). Payloads hold versions, URLs and error messa
 1. `ProjectCreated` creates or updates `ProjectState`.
 2. `DeploymentQueued` → `Queued`, `DeploymentStarted` → `InProgress`, `DeploymentCompleted` → `Success`, `DeploymentFailed` → `Failed`, `DeploymentRolledBack` → `RolledBack`. `BuildStage*` events update the deployment's current stage.
 3. `ReleaseCreated` → release `Built`. `ReleasePromoted` makes the release `Active`, marks the project's previously active release `Inactive`, records when it went live, and sets the project's current release. The time it went live, not build order, decides the default rollback target and which releases retention keeps. A built release whose deployment fails becomes `Failed`. `ReleaseArchived` → `Archived`.
-4. `ProcessStarted` sets the project's current process, unless it is a `candidate`: then `ReleasePromoted` (via `process_id`) makes it current once it is healthy. Process events update status, PID, port, exit code and desired state.
-5. `DomainMapped` adds the domain to the project (removing it from any other project); `DomainUnmapped` removes it. On boot, the proxy's routes are rebuilt from the projects' domains and their current processes' ports.
+4. `ProcessStarted` sets the project's current process (and makes it the only instance), unless it is a `candidate` or already one of the project's instances: then `ReleasePromoted` (via `process_id`, or `process_ids` for several instances) makes it current once it is healthy. `ReleasePromoted` and `InstanceSetChanged` set the project's live set of instances; the current process is the first. Process events update status, PID, port, instance number, exit code and desired state.
+5. `DomainMapped` adds the domain to the project (removing it from any other project); `DomainUnmapped` removes it. On boot, the proxy's routes are rebuilt from the projects' domains and the ports of their live instances.
 6. Events are applied in insertion order (`seq`), synchronously as they are stored, and replayed in the same order on startup.

@@ -11,6 +11,9 @@
 //! (see `cutover_side_by_side`). Otherwise both releases would need the same
 //! port, so there is a short window between stopping the old process and the
 //! new one accepting connections.
+//!
+//! Apps with several instances, and the Rolling and BlueGreen strategies,
+//! are handled in `rollout.rs`; `cutover` hands them over there.
 
 use crate::{ControlError, ControlPlane, ControlResult, SUPPORTED_STRATEGIES};
 use aegis_builder::{
@@ -50,6 +53,8 @@ pub(crate) struct TargetRelease {
     pub version: String,
     pub dir: PathBuf,
     pub config: ResolvedProjectConfig,
+    /// The deployment this cutover is part of (none for rollbacks).
+    pub deployment_id: Option<DeploymentId>,
 }
 
 /// How a cutover ended when the new release didn't come up.
@@ -66,13 +71,13 @@ fn validate_strategy(strategy: &str) -> ControlResult<()> {
         return Ok(());
     }
     Err(ControlError::InvalidArgument(format!(
-        "Unsupported strategy '{}'. Supported: {}. Rolling and BlueGreen need several instances per app, which Aegis does not run yet; GracefulSwitch is already zero-downtime for apps served by the built-in proxy.",
+        "Unsupported strategy '{}'. Supported: {}. GracefulSwitch is zero-downtime for apps served by the built-in proxy; Rolling and BlueGreen also need the built-in proxy.",
         strategy,
         SUPPORTED_STRATEGIES.join(", ")
     )))
 }
 
-fn drain_for(strategy: &str, config: &ResolvedProjectConfig) -> Duration {
+pub(crate) fn drain_for(strategy: &str, config: &ResolvedProjectConfig) -> Duration {
     if strategy == "Immediate" {
         Duration::ZERO
     } else {
@@ -111,6 +116,10 @@ impl ControlPlane {
     pub async fn queue_deployment(&self, req: DeployRequest) -> ControlResult<DeploymentId> {
         if let Some(strategy) = &req.strategy {
             validate_strategy(strategy)?;
+            if let Some(project) = self.inner.projection.get_project(&req.project_id) {
+                self.check_strategy_for(&project, strategy)
+                    .map_err(ControlError::InvalidArgument)?;
+            }
         }
         if let Some(version) = &req.version {
             ReleaseSwitcher::validate_version(version)
@@ -267,9 +276,17 @@ impl ControlPlane {
             return;
         };
 
-        let strategy = str_of("strategy").unwrap_or_else(|| "GracefulSwitch".to_string());
+        // The request's strategy, else the dashboard setting, else the default.
+        let strategy = str_of("strategy")
+            .or_else(|| project.settings.strategy.clone().filter(|s| !s.is_empty()))
+            .unwrap_or_else(|| "GracefulSwitch".to_string());
         if let Err(e) = validate_strategy(&strategy) {
             self.fail_deployment(deployment_id, project_id, json!({"reason": e.to_string()}))
+                .await;
+            return;
+        }
+        if let Err(reason) = self.check_strategy_for(&project, &strategy) {
+            self.fail_deployment(deployment_id, project_id, json!({"reason": reason}))
                 .await;
             return;
         }
@@ -382,6 +399,7 @@ impl ControlPlane {
             version: version.clone(),
             dir: release_dir,
             config: output.config,
+            deployment_id: Some(deployment_id),
         };
         match self.cutover(&project, &target, &strategy).await {
             Ok(()) => {
@@ -576,6 +594,12 @@ impl ControlPlane {
         target: &TargetRelease,
         strategy: &str,
     ) -> Result<(), CutoverFailure> {
+        // A BlueGreen standby of an older release is no longer a rollback
+        // target once another release goes live.
+        self.drop_standby(project.id, "replaced").await;
+        if let Some(result) = self.cutover_instances(project, target, strategy).await {
+            return result;
+        }
         if self.is_proxied(&project.id) {
             return self.cutover_side_by_side(project, target, strategy).await;
         }
@@ -834,7 +858,7 @@ impl ControlPlane {
 
     /// Waits until the process answers its health check (or, without a
     /// health URL, stays up for the liveness window).
-    async fn wait_healthy(
+    pub(crate) async fn wait_healthy(
         &self,
         id: &ProcessId,
         config: &ResolvedProjectConfig,
@@ -1018,22 +1042,17 @@ impl ControlPlane {
             version: target.version.clone(),
             dir,
             config,
+            deployment_id: None,
         };
-        match self
-            .cutover(
-                &project,
-                &target_release,
-                &target_release.config.strategy.clone(),
-            )
-            .await
-        {
-            Ok(()) => {
+        match self.rollback_cutover(&project, &target_release).await {
+            Ok(instant) => {
                 self.record(
                     "RollbackCompleted",
                     json!({
                         "project_id": project_id.to_string(),
                         "from_version": current,
                         "to_version": target.version,
+                        "instant": instant,
                     }),
                 )
                 .await?;

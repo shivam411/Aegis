@@ -42,7 +42,7 @@ Requests that change state must also send `Content-Type: application/json` (an e
 
 ## Endpoints
 
-All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use the project id or its name. Wherever it takes `{target}`, you can use a process id or a project (meaning the project's live process).
+All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use the project id or its name. Wherever it takes `{target}`, you can use a process id or a project (meaning the project's live process; for start, stop and restart of an app with several instances, all of them, restarted one at a time).
 
 | Method & path | Does |
 | :--- | :--- |
@@ -58,13 +58,13 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `POST /system/update/check` | Admins, signed in (not API tokens): ask GitHub now. Refused (409) with `[update] check = false` |
 | `POST /system/update/apply` | Admins, signed in: back up, download, verify and install the latest release, then restart (202; follow `phase`). `{"version"?}` must match the latest known release. 409 with the command to run when the daemon can't replace its own binary. See [upgrading.md](upgrading.md) |
 | `POST /detect` | Detect runtime and default commands: `{"source_dir"}` or `{"repository_url", "branch"?}` (shallow clone into scratch space) |
-| `GET /projects` | Projects with their live release, schedule and process |
+| `GET /projects` | Projects with their live release, schedule and process, plus `instances` (every instance of the live release with its process, CPU and memory; one entry for single-instance apps) and `standby` (a BlueGreen previous release kept running, or `null`) |
 | `POST /projects` | Register a project: `{"name", "source_dir"?, "repository_url"?, "branch"?, "project_id"?}` |
 | `GET /projects/{project}` | One project |
-| `POST /projects/{project}/deploy` | Queue a deployment (**202**): `{"version"?, "strategy"?, "branch"?, "commit"?, "source_dir"?, "repository_url"?}` |
+| `POST /projects/{project}/deploy` | Queue a deployment (**202**): `{"version"?, "strategy"?, "branch"?, "commit"?, "source_dir"?, "repository_url"?}`. `strategy` is `GracefulSwitch`, `Immediate`, `Rolling` or `BlueGreen`; the last two need a domain on the built-in proxy (else **400**). |
 | `POST /projects/{project}/rollback` | Switch to the previous (or `{"version"}`) release; returns once it's live |
 | `PUT /projects/{project}/schedule` | Daily auto-deploy: `{"hour", "minute"?, "branch"?}` (UTC) |
-| `PUT /projects/{project}/settings` | Override aegis.toml for future deployments: `{"install_command"?, "build_command"?, "test_command"?, "start_command"?, "port"?, "health_check_url"?}`. Omitted fields follow aegis.toml; an empty command skips that stage; an empty `health_check_url` means "healthy while the process stays up". Replaces all previous overrides |
+| `PUT /projects/{project}/settings` | Override aegis.toml for future deployments: `{"install_command"?, "build_command"?, "test_command"?, "start_command"?, "port"?, "health_check_url"?, "strategy"?, "instances"?}`. `strategy` is the default for deployments that don't name one; `Rolling`, `BlueGreen` and `instances` above 1 need a domain on the built-in proxy (else **409**). Omitted fields follow aegis.toml; an empty command skips that stage; an empty `health_check_url` means "healthy while the process stays up". Replaces all previous overrides |
 | `GET /projects/{project}/releases` | Release history |
 | `GET /projects/{project}/domains` | Domains the built-in proxy serves the app on, each with its TLS mode and certificate state (`cert.state`: valid, expiring, expired, pending, error, disabled or off) |
 | `POST /projects/{project}/domains` | Map a domain (**201**): `{"domain", "tls"?, "cert_path"?, "key_path"?}`. `tls` is `acme` (default; certificate requested in the background), `files` (absolute PEM paths on the server, checked now) or `off`. A domain belongs to one app (409 otherwise). **Users only**: API tokens get 403 |

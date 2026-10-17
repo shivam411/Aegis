@@ -71,6 +71,8 @@ pub struct RouteStatus {
     pub target: String,
     pub project_id: Option<String>,
     pub upstream_port: Option<u16>,
+    /// Every instance's port (several when the app runs more than one).
+    pub upstream_ports: Vec<u16>,
     pub cert: CertStatus,
 }
 
@@ -216,6 +218,17 @@ impl Ingress {
         self.inner.routes.upstream(project_id)
     }
 
+    /// Points a project's domains at a set of ports (one per instance) in
+    /// one step; requests are spread over them round robin.
+    pub fn set_upstreams(&self, project_id: &str, ports: Vec<u16>) {
+        self.inner.routes.set_upstreams(project_id, ports);
+    }
+
+    /// The ports a project's requests go to.
+    pub fn upstreams(&self, project_id: &str) -> Vec<u16> {
+        self.inner.routes.upstreams(project_id)
+    }
+
     /// Serves the Aegis dashboard (the web listener on `port`) on `domain`.
     pub fn set_dashboard(&self, domain: &str, route: DomainRoute, port: u16) {
         self.inner.routes.set_dashboard_port(Some(port));
@@ -321,6 +334,7 @@ impl Ingress {
                 };
                 RouteStatus {
                     upstream_port: self.inner.routes.port_for(&route.target),
+                    upstream_ports: self.inner.routes.ports_for(&route.target),
                     cert: self.cert_status(&domain),
                     domain,
                     target: target.into(),

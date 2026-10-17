@@ -577,6 +577,52 @@ pub struct DeploySection {
     pub drain_timeout_secs: Option<u64>,
     /// `always` (default), `on-failure` or `never`.
     pub restart_policy: Option<String>,
+    /// Rolling: how many new instances start (and old ones stop) per step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rolling_batch: Option<u32>,
+    /// BlueGreen: how long the previous set of instances keeps running (as
+    /// an instant rollback target) after traffic switched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blue_green_keep_secs: Option<u64>,
+}
+
+/// Upper bound for `[run] instances`.
+pub const MAX_INSTANCES: u32 = 16;
+/// Upper bound for `[deploy] blue_green_keep_secs` (one day).
+pub const MAX_BLUE_GREEN_KEEP_SECS: u64 = 24 * 3600;
+
+/// Deployment strategies. `Rolling` and `BlueGreen`, and more than one
+/// instance, need the app to be served by the built-in proxy.
+pub const STRATEGIES: &[&str] = &["GracefulSwitch", "Immediate", "Rolling", "BlueGreen"];
+
+/// Whether a strategy only works for apps behind the built-in proxy.
+pub fn strategy_needs_proxy(strategy: &str) -> bool {
+    matches!(strategy, "Rolling" | "BlueGreen")
+}
+
+/// Checks a strategy name.
+pub fn validate_strategy(strategy: &str) -> Result<(), String> {
+    if STRATEGIES.contains(&strategy) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Unsupported strategy '{}'. Supported: {}",
+            strategy,
+            STRATEGIES.join(", ")
+        ))
+    }
+}
+
+/// Checks an instance count.
+pub fn validate_instances(instances: u32) -> Result<(), String> {
+    if (1..=MAX_INSTANCES).contains(&instances) {
+        Ok(())
+    } else {
+        Err(format!(
+            "instances must be between 1 and {} (got {})",
+            MAX_INSTANCES, instances
+        ))
+    }
 }
 
 /// `[run]`: how a release runs. By default an app is a plain process
@@ -590,6 +636,10 @@ pub struct DeploySection {
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunSection {
+    /// Copies of the app to run side by side, each with its own `PORT`,
+    /// behind the built-in proxy. Default 1, at most [`MAX_INSTANCES`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instances: Option<u32>,
     /// "process" (default) or "docker".
     pub runtime: Option<String>,
     /// Dockerfile to build, relative to the release directory (the build
@@ -613,9 +663,11 @@ pub struct RunSection {
     /// (`docker run --init`). Default true.
     pub init: Option<bool>,
     /// In-memory scratch directories (absolute paths in the container).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tmpfs: Vec<String>,
     /// Named volumes that keep data across releases: "name:/path" or
     /// "name:/path:ro". Host paths are not allowed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<String>,
 }
 
@@ -871,6 +923,38 @@ impl ProjectFile {
         Self::parse(&std::fs::read_to_string(path)?)
     }
 
+    /// Checks the values with a fixed range: strategy, instances, rolling
+    /// batch and BlueGreen window. Whether a strategy can run for an app
+    /// (Rolling and BlueGreen need the built-in proxy) is checked when its
+    /// settings change and when it is deployed.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(strategy) = &self.deploy.strategy {
+            validate_strategy(strategy)?;
+        }
+        if let Some(n) = self.run.instances {
+            validate_instances(n)?;
+        }
+        if let Some(batch) = self.deploy.rolling_batch {
+            if !(1..=MAX_INSTANCES).contains(&batch) {
+                return Err(format!(
+                    "rolling_batch must be between 1 and {}",
+                    MAX_INSTANCES
+                ));
+            }
+        }
+        if self
+            .deploy
+            .blue_green_keep_secs
+            .is_some_and(|s| s > MAX_BLUE_GREEN_KEEP_SECS)
+        {
+            return Err(format!(
+                "blue_green_keep_secs must be at most {}",
+                MAX_BLUE_GREEN_KEEP_SECS
+            ));
+        }
+        Ok(())
+    }
+
     /// Loads `aegis.toml` from a directory, returning `None` if it doesn't exist.
     pub fn load_from_dir(dir: &Path) -> Result<Option<Self>, anyhow::Error> {
         let path = dir.join("aegis.toml");
@@ -893,6 +977,12 @@ pub struct ProjectOverrides {
     pub start_command: Option<String>,
     pub port: Option<u16>,
     pub health_check_url: Option<String>,
+    /// Default deployment strategy (`[deploy] strategy`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    /// Instances to run (`[run] instances`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instances: Option<u32>,
     /// Plain (non-secret) environment variables, merged over `[env]`.
     /// Secrets are kept elsewhere, encrypted, and never written to a release.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -915,8 +1005,12 @@ impl ProjectOverrides {
         set(&mut file.build.test_command, &self.test_command);
         set(&mut file.build.start_command, &self.start_command);
         set(&mut file.deploy.health_check_url, &self.health_check_url);
+        set(&mut file.deploy.strategy, &self.strategy);
         if let Some(port) = self.port {
             file.deploy.port = Some(port);
+        }
+        if let Some(instances) = self.instances {
+            file.run.instances = Some(instances);
         }
         file.env
             .extend(self.env.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -1108,6 +1202,49 @@ strategy = "GracefulSwitch"
         assert_eq!(file.env["KEEP"], "yes");
         let round_trip = ProjectFile::parse(&toml::to_string_pretty(&file).unwrap()).unwrap();
         assert_eq!(round_trip, file);
+    }
+
+    #[test]
+    fn instances_and_strategies_are_validated() {
+        let file = ProjectFile::parse(
+            "[deploy]\nstrategy = \"Rolling\"\nrolling_batch = 2\nblue_green_keep_secs = 60\n[run]\ninstances = 3\n",
+        )
+        .unwrap();
+        assert_eq!(file.run.instances, Some(3));
+        assert_eq!(file.deploy.rolling_batch, Some(2));
+        assert_eq!(file.deploy.blue_green_keep_secs, Some(60));
+        assert!(file.validate().is_ok());
+        let round_trip = ProjectFile::parse(&toml::to_string_pretty(&file).unwrap()).unwrap();
+        assert_eq!(round_trip, file);
+        // No [run] section is written when it is empty.
+        let plain = toml::to_string_pretty(&ProjectFile::default()).unwrap();
+        assert!(!plain.contains("[run]"), "{plain}");
+
+        for bad in [
+            "[run]\ninstances = 0\n",
+            "[run]\ninstances = 17\n",
+            "[deploy]\nstrategy = \"Canary\"\n",
+            "[deploy]\nrolling_batch = 0\n",
+            "[deploy]\nblue_green_keep_secs = 999999\n",
+        ] {
+            assert!(
+                ProjectFile::parse(bad).unwrap().validate().is_err(),
+                "{bad}"
+            );
+        }
+        assert!(strategy_needs_proxy("BlueGreen"));
+        assert!(!strategy_needs_proxy("GracefulSwitch"));
+        assert!(validate_strategy("Immediate").is_ok());
+
+        let mut file = ProjectFile::default();
+        ProjectOverrides {
+            strategy: Some("BlueGreen".into()),
+            instances: Some(4),
+            ..Default::default()
+        }
+        .apply_to(&mut file);
+        assert_eq!(file.deploy.strategy.as_deref(), Some("BlueGreen"));
+        assert_eq!(file.run.instances, Some(4));
     }
 
     #[test]

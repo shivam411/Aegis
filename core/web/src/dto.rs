@@ -45,6 +45,32 @@ pub struct ProcessDto {
     pub container: Option<String>,
     /// The image the container runs (docker only).
     pub image: Option<String>,
+    /// Instance number (1-based) when the app runs several instances.
+    #[serde(default)]
+    pub instance: Option<u32>,
+    /// The port the process listens on (`PORT`).
+    #[serde(default)]
+    pub port: Option<u16>,
+}
+
+/// One instance of an app.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct InstanceDto {
+    pub process: ProcessDto,
+    /// CPU in use (cores) at the latest sample, while it runs.
+    pub cpu_cores: Option<f64>,
+    /// Memory in use (bytes) at the latest sample, while it runs.
+    pub memory_bytes: Option<u64>,
+}
+
+/// The previous release, kept running after a BlueGreen switch so a
+/// rollback to it is instant.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct StandbyDto {
+    pub version: String,
+    pub process_ids: Vec<String>,
+    /// When it is stopped (RFC 3339).
+    pub until: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -65,8 +91,16 @@ pub struct ProjectDto {
     pub process: Option<ProcessDto>,
     /// CPU, memory and process limits.
     pub resources: ResourceLimitsDto,
-    /// The latest measurement, while the app runs.
+    /// The latest measurement, while the app runs (all instances together).
     pub usage: Option<SampleDto>,
+    /// Every instance serving the live release, in instance order (one
+    /// entry for single-instance apps). Resource limits apply to each
+    /// instance on its own.
+    #[serde(default)]
+    pub instances: Vec<InstanceDto>,
+    /// The previous release's instances after a BlueGreen switch.
+    #[serde(default)]
+    pub standby: Option<StandbyDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -139,7 +173,9 @@ pub struct CreateProjectRequest {
 #[serde(default, deny_unknown_fields)]
 pub struct DeployRequest {
     pub branch: Option<String>,
-    /// GracefulSwitch (default) or Immediate.
+    /// GracefulSwitch (default: the project's setting, else GracefulSwitch),
+    /// Immediate, Rolling or BlueGreen. Rolling and BlueGreen need the app
+    /// to be served by the built-in proxy.
     pub strategy: Option<String>,
     /// Copy code from this server directory instead of the project's default source.
     pub source_dir: Option<String>,
@@ -220,6 +256,18 @@ impl From<ProcessState> for ProcessDto {
             runtime: p.runtime.unwrap_or_else(|| "process".into()),
             container: p.container,
             image: p.image,
+            instance: p.instance,
+            port: p.port,
+        }
+    }
+}
+
+impl From<aegis_control::InstanceView> for InstanceDto {
+    fn from(i: aegis_control::InstanceView) -> Self {
+        Self {
+            process: i.process.into(),
+            cpu_cores: i.cpu_cores,
+            memory_bytes: i.memory_bytes,
         }
     }
 }
@@ -241,6 +289,12 @@ impl From<ProjectView> for ProjectDto {
             resources: p.resources.into(),
             process: view.process.map(Into::into),
             usage: view.usage.map(Into::into),
+            instances: view.instances.into_iter().map(Into::into).collect(),
+            standby: view.standby.map(|s| StandbyDto {
+                version: s.version,
+                process_ids: s.process_ids.iter().map(|i| i.to_string()).collect(),
+                until: s.until,
+            }),
         }
     }
 }
@@ -409,6 +463,12 @@ pub struct ProjectSettingsDto {
     pub start_command: Option<String>,
     pub port: Option<u16>,
     pub health_check_url: Option<String>,
+    /// Default deployment strategy: GracefulSwitch, Immediate, Rolling or
+    /// BlueGreen (the last two need a domain on the built-in proxy).
+    pub strategy: Option<String>,
+    /// Instances to run, 1-16 (more than 1 needs a domain on the built-in
+    /// proxy). Takes effect with the next deployment.
+    pub instances: Option<u32>,
     /// Plain environment variables, merged over aegis.toml's `[env]` and
     /// written into each release. Use secrets for sensitive values.
     pub env: std::collections::BTreeMap<String, String>,
@@ -423,6 +483,8 @@ impl From<aegis_config::ProjectOverrides> for ProjectSettingsDto {
             start_command: o.start_command,
             port: o.port,
             health_check_url: o.health_check_url,
+            strategy: o.strategy,
+            instances: o.instances,
             env: o.env,
         }
     }
@@ -437,6 +499,8 @@ impl From<ProjectSettingsDto> for aegis_config::ProjectOverrides {
             start_command: d.start_command,
             port: d.port,
             health_check_url: d.health_check_url,
+            strategy: d.strategy,
+            instances: d.instances,
             env: d.env,
         }
     }

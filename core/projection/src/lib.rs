@@ -35,6 +35,23 @@ pub struct ProjectState {
     /// Domains the built-in proxy serves this app on.
     #[serde(default)]
     pub domains: Vec<DomainState>,
+    /// The processes serving the live release, one per instance (in
+    /// instance order). `current_process` is the first of them. Empty for
+    /// projects recorded before instances existed; see
+    /// [`ProjectState::live_processes`].
+    #[serde(default)]
+    pub instances: Vec<ProcessId>,
+}
+
+impl ProjectState {
+    /// The processes serving the live release (all instances).
+    pub fn live_processes(&self) -> Vec<ProcessId> {
+        if self.instances.is_empty() {
+            self.current_process.into_iter().collect()
+        } else {
+            self.instances.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,6 +133,9 @@ pub struct ProcessState {
     /// The port was allocated for the proxy (rather than the configured one).
     #[serde(default)]
     pub proxied: bool,
+    /// Instance number (1-based) when the app runs several instances.
+    #[serde(default)]
+    pub instance: Option<u32>,
     /// "docker" for container apps; `None` for plain processes.
     #[serde(default)]
     pub runtime: Option<String>,
@@ -165,6 +185,15 @@ fn id_field<T: std::str::FromStr>(payload: &Value, key: &str) -> Option<T> {
 
 fn string_field(payload: &Value, key: &str) -> Option<String> {
     str_field(payload, key).map(str::to_string)
+}
+
+/// A list of ids, e.g. `process_ids`; invalid entries are skipped.
+fn id_list<T: std::str::FromStr>(payload: &Value, key: &str) -> Vec<T> {
+    payload
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()?.parse().ok()).collect())
+        .unwrap_or_default()
 }
 
 /// The deployment an event refers to. Events written before deployment ids
@@ -244,7 +273,11 @@ impl ProjectionEngine {
                             .as_ref()
                             .map(|p| p.resources.clone())
                             .unwrap_or_default(),
-                        domains: previous.map(|p| p.domains).unwrap_or_default(),
+                        domains: previous
+                            .as_ref()
+                            .map(|p| p.domains.clone())
+                            .unwrap_or_default(),
+                        instances: previous.map(|p| p.instances).unwrap_or_default(),
                     },
                 );
             }
@@ -446,10 +479,16 @@ impl ProjectionEngine {
                     r.version.clone()
                 });
                 let process = id_field::<ProcessId>(&payload, "process_id");
+                // Several instances: `process_ids` lists them all.
+                let instances = id_list(&payload, "process_ids");
                 if let Some(project) = st.projects.get_mut(&project_id) {
                     project.current_release = version.or_else(|| string_field(&payload, "version"));
-                    if process.is_some() {
-                        project.current_process = process;
+                    if !instances.is_empty() {
+                        project.current_process = instances.first().copied();
+                        project.instances = instances;
+                    } else if let Some(process) = process {
+                        project.current_process = Some(process);
+                        project.instances = vec![process];
                     }
                 }
             }
@@ -510,6 +549,11 @@ impl ProjectionEngine {
                             .and_then(|v| v.as_bool())
                             .or(previous.as_ref().map(|p| p.proxied))
                             .unwrap_or(false),
+                        instance: payload
+                            .get("instance")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as u32)
+                            .or(previous.as_ref().and_then(|p| p.instance)),
                         // Each start says how it runs; older events say nothing
                         // (a plain process).
                         runtime: string_field(&payload, "runtime").filter(|r| r != "process"),
@@ -518,13 +562,30 @@ impl ProjectionEngine {
                     },
                 );
                 // A candidate is a new release starting next to the live one
-                // (proxied cutover); it becomes current when promoted.
+                // (proxied cutover), or an instance outside the live set; it
+                // becomes current when promoted. A restart of an instance
+                // already in the live set changes nothing.
                 let candidate = payload
                     .get("candidate")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if let (false, Some(project)) = (candidate, st.projects.get_mut(&project_id)) {
-                    project.current_process = Some(id);
+                    if !project.instances.contains(&id) {
+                        project.current_process = Some(id);
+                        project.instances = vec![id];
+                    }
+                }
+            }
+            "InstanceSetChanged" => {
+                let Some(project_id) = id_field::<ProjectId>(&payload, "project_id") else {
+                    return;
+                };
+                let instances = id_list(&payload, "process_ids");
+                if let (Some(project), false) =
+                    (st.projects.get_mut(&project_id), instances.is_empty())
+                {
+                    project.current_process = instances.first().copied();
+                    project.instances = instances;
                 }
             }
             "ProcessCrashed" => {
@@ -552,14 +613,22 @@ impl ProjectionEngine {
                 }
             }
             "ProcessStopped" => {
-                if let Some(proc) = id_field::<ProcessId>(&payload, "process_id")
-                    .and_then(|id| st.processes.get_mut(&id))
-                {
+                let id = id_field::<ProcessId>(&payload, "process_id");
+                // An instance replaced by a rollout that hasn't finished is
+                // still in the live set: if the daemon stops before the new
+                // set is promoted, it is started again on boot.
+                let in_live_set = id.is_some_and(|id| {
+                    st.projects
+                        .values()
+                        .any(|p| p.instances.len() > 1 && p.instances.contains(&id))
+                });
+                if let Some(proc) = id.and_then(|id| st.processes.get_mut(&id)) {
                     proc.status = "Stopped".to_string();
                     proc.pid = None;
                     // Shutdown and restart stops are not operator intent to keep it down.
                     match str_field(&payload, "reason") {
                         Some("shutdown") | Some("restart") => {}
+                        Some("replaced") if in_live_set => {}
                         _ => proc.desired = "stopped".to_string(),
                     }
                     if let Some(code) = payload.get("exit_code").and_then(|v| v.as_i64()) {
@@ -1013,6 +1082,87 @@ mod tests {
             serde_json::json!({"process_id": proc_id.to_string(), "project_id": proj.to_string(), "pid": 9000}),
         ));
         assert_eq!(engine.get_process(&proc_id).unwrap().release_version, None);
+    }
+
+    #[test]
+    fn instance_sets_follow_promotions_restarts_and_recovery() {
+        let engine = ProjectionEngine::new();
+        let proj = ProjectId::new();
+        let p = proj.to_string();
+        engine.apply_event(&ev(
+            "ProjectCreated",
+            serde_json::json!({"project_id": p, "name": "web"}),
+        ));
+        let started = |id: ProcessId, candidate: bool, instance: u32| {
+            ev(
+                "ProcessStarted",
+                serde_json::json!({"process_id": id.to_string(), "project_id": p, "pid": 1,
+                    "release_version": "r1", "candidate": candidate, "instance": instance}),
+            )
+        };
+        // A single process, as before instances existed.
+        let single = ProcessId::new();
+        engine.apply_event(&started(single, false, 1));
+        let project = engine.get_project(&proj).unwrap();
+        assert_eq!(project.current_process, Some(single));
+        assert_eq!(project.live_processes(), vec![single]);
+
+        // Three candidates, then one promotion makes them the live set.
+        let set: Vec<ProcessId> = (0..3).map(|_| ProcessId::new()).collect();
+        for (i, id) in set.iter().enumerate() {
+            engine.apply_event(&started(*id, true, i as u32 + 1));
+        }
+        assert_eq!(
+            engine.get_project(&proj).unwrap().current_process,
+            Some(single)
+        );
+        engine.apply_event(&ev(
+            "ReleasePromoted",
+            serde_json::json!({"project_id": p, "release_id": ReleaseId::new().to_string(), "version": "r2", "process_id": set[0].to_string(),
+                "process_ids": set.iter().map(|i| i.to_string()).collect::<Vec<_>>()}),
+        ));
+        let project = engine.get_project(&proj).unwrap();
+        assert_eq!(project.instances, set);
+        assert_eq!(project.current_process, Some(set[0]));
+        assert_eq!(engine.get_process(&set[2]).unwrap().instance, Some(3));
+
+        // An automatic restart of instance 2 doesn't make it the only one.
+        engine.apply_event(&started(set[1], false, 2));
+        assert_eq!(engine.get_project(&proj).unwrap().instances, set);
+
+        // An instance replaced by an unfinished rollout stays wanted...
+        engine.apply_event(&ev(
+            "ProcessStopped",
+            serde_json::json!({"process_id": set[1].to_string(), "project_id": p, "reason": "replaced"}),
+        ));
+        assert_eq!(engine.get_process(&set[1]).unwrap().desired, "running");
+        // ...one the operator stopped does not.
+        engine.apply_event(&ev(
+            "ProcessStopped",
+            serde_json::json!({"process_id": set[2].to_string(), "project_id": p, "reason": "requested"}),
+        ));
+        assert_eq!(engine.get_process(&set[2]).unwrap().desired, "stopped");
+
+        // Recovery records a new set.
+        let fresh = ProcessId::new();
+        engine.apply_event(&ev(
+            "InstanceSetChanged",
+            serde_json::json!({"project_id": p,
+                "process_ids": [set[0].to_string(), set[1].to_string(), fresh.to_string()]}),
+        ));
+        assert_eq!(
+            engine.get_project(&proj).unwrap().instances,
+            vec![set[0], set[1], fresh]
+        );
+
+        // Back to a single-instance promotion.
+        engine.apply_event(&ev(
+            "ReleasePromoted",
+            serde_json::json!({"project_id": p, "release_id": ReleaseId::new().to_string(), "version": "r3", "process_id": single.to_string()}),
+        ));
+        let project = engine.get_project(&proj).unwrap();
+        assert_eq!(project.instances, vec![single]);
+        assert_eq!(project.current_process, Some(single));
     }
 
     #[test]

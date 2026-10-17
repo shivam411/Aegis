@@ -12,6 +12,7 @@ mod docker;
 mod domains;
 mod process;
 mod resources;
+mod rollout;
 mod secrets;
 
 use aegis_artifact_store::ArtifactStore;
@@ -36,6 +37,7 @@ pub use deploy::DeployRequest;
 pub use domains::DomainView;
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
+pub use rollout::{InstanceView, StandbyView};
 
 tokio::task_local! {
     static ACTOR: String;
@@ -53,9 +55,10 @@ pub fn current_actor() -> Option<String> {
     ACTOR.try_with(|a| a.clone()).ok()
 }
 
-/// Deployment strategies that work with a single instance per app.
-/// `GracefulSwitch` is zero-downtime for apps served by the built-in proxy.
-pub const SUPPORTED_STRATEGIES: &[&str] = &["GracefulSwitch", "Immediate"];
+/// Deployment strategies. `GracefulSwitch` (the default) is zero-downtime
+/// for apps served by the built-in proxy; `Rolling` and `BlueGreen` need the
+/// built-in proxy (see `rollout.rs`).
+pub const SUPPORTED_STRATEGIES: &[&str] = aegis_config::STRATEGIES;
 
 #[derive(Debug)]
 pub enum ControlError {
@@ -143,6 +146,12 @@ pub struct ProjectView {
     pub process: Option<ProcessState>,
     /// The latest resource sample, while the app runs.
     pub usage: Option<aegis_metrics::history::Sample>,
+    /// Every instance serving the live release (just `process` for
+    /// single-instance apps).
+    pub instances: Vec<InstanceView>,
+    /// The previous release's instances, kept running after a BlueGreen
+    /// switch as an instant rollback target.
+    pub standby: Option<StandbyView>,
 }
 
 struct Inner {
@@ -167,6 +176,12 @@ struct Inner {
     /// New releases starting next to the live one (proxied cutover), not
     /// yet promoted.
     candidates: Mutex<HashSet<ProcessId>>,
+    /// Instance number of each process of a multi-instance app.
+    process_instance: Mutex<HashMap<ProcessId, u32>>,
+    /// BlueGreen: the previous release's instances, kept warm per project.
+    standby: Mutex<HashMap<ProjectId, rollout::Standby>>,
+    /// Latest CPU (cores) and memory (bytes) of each process.
+    process_usage: Mutex<HashMap<ProcessId, (f64, u64)>>,
     /// Serializes domain changes so uniqueness checks can't race.
     domain_lock: tokio::sync::Mutex<()>,
     secrets: aegis_secrets::SecretStore,
@@ -246,6 +261,9 @@ impl ControlPlane {
                 ingress: OnceLock::new(),
                 process_ports: Mutex::new(HashMap::new()),
                 candidates: Mutex::new(HashSet::new()),
+                process_instance: Mutex::new(HashMap::new()),
+                standby: Mutex::new(HashMap::new()),
+                process_usage: Mutex::new(HashMap::new()),
                 domain_lock: tokio::sync::Mutex::new(()),
                 secrets,
                 backup_lock: tokio::sync::Mutex::new(()),
@@ -266,11 +284,13 @@ impl ControlPlane {
             for domain in &project.domains {
                 self.apply_domain_route(&ingress, project.id, domain);
             }
-            let port = project
-                .current_process
-                .and_then(|id| self.inner.projection.get_process(&id))
-                .and_then(|p| p.port);
-            ingress.set_upstream(&project.id.to_string(), port);
+            let ports = project
+                .live_processes()
+                .iter()
+                .filter_map(|id| self.inner.projection.get_process(id))
+                .filter_map(|p| p.port)
+                .collect();
+            ingress.set_upstreams(&project.id.to_string(), ports);
         }
     }
 
@@ -446,13 +466,21 @@ impl ControlPlane {
         project_id: ProjectId,
         settings: aegis_config::ProjectOverrides,
     ) -> ControlResult<ProjectState> {
-        if self.inner.projection.get_project(&project_id).is_none() {
+        let Some(project) = self.inner.projection.get_project(&project_id) else {
             return Err(ControlError::NotFound(format!(
                 "Unknown project {}",
                 project_id
             )));
-        }
+        };
         let settings = validate_settings(settings)?;
+        if let Some(strategy) = &settings.strategy {
+            self.check_strategy_for(&project, strategy)
+                .map_err(ControlError::FailedPrecondition)?;
+        }
+        if let Some(instances) = settings.instances.filter(|n| *n > 1) {
+            self.check_instances_for(&project, instances)
+                .map_err(ControlError::FailedPrecondition)?;
+        }
         self.record(
             "ProjectSettingsUpdated",
             json!({"project_id": project_id.to_string(), "settings": settings}),
@@ -620,6 +648,8 @@ impl ControlPlane {
                 ProjectView {
                     process,
                     usage,
+                    instances: self.instance_views(&project),
+                    standby: self.standby_view(&project.id),
                     project,
                 }
             })
@@ -708,6 +738,8 @@ pub(crate) fn validate_settings(
         start_command: clean(settings.start_command).filter(|s| !s.is_empty()),
         port: settings.port,
         health_check_url: clean(settings.health_check_url),
+        strategy: clean(settings.strategy).filter(|s| !s.is_empty()),
+        instances: settings.instances,
         env: settings
             .env
             .into_iter()
@@ -721,6 +753,12 @@ pub(crate) fn validate_settings(
     }
     if settings.port == Some(0) {
         return Err(ControlError::InvalidArgument("Port must be 1-65535".into()));
+    }
+    if let Some(strategy) = &settings.strategy {
+        aegis_config::validate_strategy(strategy).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(instances) = settings.instances {
+        aegis_config::validate_instances(instances).map_err(ControlError::InvalidArgument)?;
     }
     if let Some(url) = settings
         .health_check_url

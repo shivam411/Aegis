@@ -2722,7 +2722,7 @@
               "string",
               "null"
             ],
-            "description": "GracefulSwitch (default) or Immediate.",
+            "description": "GracefulSwitch (default: the project's setting, else GracefulSwitch),\nImmediate, Rolling or BlueGreen. Rolling and BlueGreen need the app\nto be served by the built-in proxy.",
             "default": null
           },
           "version": {
@@ -3108,6 +3108,35 @@
           }
         }
       },
+      "InstanceDto": {
+        "type": "object",
+        "description": "One instance of an app.",
+        "required": [
+          "process"
+        ],
+        "properties": {
+          "cpu_cores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "CPU in use (cores) at the latest sample, while it runs."
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Memory in use (bytes) at the latest sample, while it runs.",
+            "minimum": 0
+          },
+          "process": {
+            "$ref": "#/components/schemas/ProcessDto"
+          }
+        }
+      },
       "LastUpdateDto": {
         "type": "object",
         "description": "The last update this data directory saw.",
@@ -3385,6 +3414,15 @@
             ],
             "description": "The image the container runs (docker only)."
           },
+          "instance": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Instance number (1-based) when the app runs several instances.",
+            "minimum": 0
+          },
           "last_exit_code": {
             "type": [
               "integer",
@@ -3404,6 +3442,15 @@
               "null"
             ],
             "format": "int32",
+            "minimum": 0
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The port the process listens on (`PORT`).",
             "minimum": 0
           },
           "project_id": {
@@ -3458,6 +3505,13 @@
           "id": {
             "type": "string"
           },
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstanceDto"
+            },
+            "description": "Every instance serving the live release, in instance order (one\nentry for single-instance apps). Resource limits apply to each\ninstance on its own."
+          },
           "name": {
             "type": "string"
           },
@@ -3505,6 +3559,17 @@
               "null"
             ]
           },
+          "standby": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StandbyDto",
+                "description": "The previous release's instances after a BlueGreen switch."
+              }
+            ]
+          },
           "usage": {
             "oneOf": [
               {
@@ -3512,7 +3577,7 @@
               },
               {
                 "$ref": "#/components/schemas/SampleDto",
-                "description": "The latest measurement, while the app runs."
+                "description": "The latest measurement, while the app runs (all instances together)."
               }
             ]
           }
@@ -3583,6 +3648,16 @@
             ],
             "default": null
           },
+          "instances": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Instances to run, 1-16 (more than 1 needs a domain on the built-in\nproxy). Takes effect with the next deployment.",
+            "default": null,
+            "minimum": 0
+          },
           "port": {
             "type": [
               "integer",
@@ -3597,6 +3672,14 @@
               "string",
               "null"
             ],
+            "default": null
+          },
+          "strategy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default deployment strategy: GracefulSwitch, Immediate, Rolling or\nBlueGreen (the last two need a domain on the built-in proxy).",
             "default": null
           },
           "test_command": {
@@ -3614,6 +3697,7 @@
         "required": [
           "domain",
           "target",
+          "upstream_ports",
           "cert"
         ],
         "properties": {
@@ -3645,8 +3729,17 @@
               "null"
             ],
             "format": "int32",
-            "description": "Local port requests go to right now.",
+            "description": "Local port requests go to right now (the first instance's).",
             "minimum": 0
+          },
+          "upstream_ports": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Every instance's port; requests are spread over them."
           }
         }
       },
@@ -4143,6 +4236,30 @@
           }
         },
         "additionalProperties": false
+      },
+      "StandbyDto": {
+        "type": "object",
+        "description": "The previous release, kept running after a BlueGreen switch so a\nrollback to it is instant.",
+        "required": [
+          "version",
+          "process_ids",
+          "until"
+        ],
+        "properties": {
+          "process_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "until": {
+            "type": "string",
+            "description": "When it is stopped (RFC 3339)."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
       },
       "StatusDto": {
         "type": "object",

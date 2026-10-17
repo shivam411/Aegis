@@ -266,7 +266,8 @@ impl Modify for SecuritySchemes {
         update::update_status, update::check_update, update::apply_update
     ),
     components(schemas(
-        StatusDto, ProjectDto, ScheduleDto, ProcessDto, ReleaseDto, DeploymentDto, EventDto,
+        StatusDto, ProjectDto, ScheduleDto, ProcessDto, InstanceDto, StandbyDto, ReleaseDto,
+        DeploymentDto, EventDto,
         LogLineDto, LogsDto, CreateProjectRequest, DeployRequest, DeployAccepted,
         RollbackRequest, RollbackResult, ScheduleRequest, ErrorBody, ErrorDetail,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,

@@ -30,9 +30,19 @@ pub struct ResolvedProjectConfig {
     pub max_retained_versions: usize,
     pub restart_policy: String,
     pub env: BTreeMap<String, String>,
+    /// `[run] instances` (default 1). Not range-checked here; deployments
+    /// refuse values outside 1..=`aegis_config::MAX_INSTANCES`.
+    pub instances: u32,
+    /// New instances started per Rolling step (default 1).
+    pub rolling_batch: u32,
+    /// How long BlueGreen keeps the previous set running after the switch.
+    pub blue_green_keep: Duration,
     /// `[run]`: process (default) or container.
     pub run: RunSection,
 }
+
+/// Default for `[deploy] blue_green_keep_secs`.
+pub const DEFAULT_BLUE_GREEN_KEEP_SECS: u64 = 300;
 
 /// Treats empty or whitespace-only commands as "not set".
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -114,6 +124,13 @@ impl ResolvedProjectConfig {
             restart_policy: non_empty(file.deploy.restart_policy)
                 .unwrap_or_else(|| "always".into()),
             env: file.env,
+            instances: file.run.instances.unwrap_or(1),
+            rolling_batch: file.deploy.rolling_batch.unwrap_or(1).max(1),
+            blue_green_keep: Duration::from_secs(
+                file.deploy
+                    .blue_green_keep_secs
+                    .unwrap_or(DEFAULT_BLUE_GREEN_KEEP_SECS),
+            ),
             run: file.run,
         }
     }
@@ -167,6 +184,12 @@ mod tests {
         );
         assert_eq!(cfg.process_env().get("PORT").unwrap(), "3000");
         assert_eq!(cfg.restart_policy, "always");
+        assert_eq!(cfg.instances, 1);
+        assert_eq!(cfg.rolling_batch, 1);
+        assert_eq!(
+            cfg.blue_green_keep,
+            Duration::from_secs(DEFAULT_BLUE_GREEN_KEEP_SECS)
+        );
     }
 
     #[test]

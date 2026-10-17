@@ -401,6 +401,17 @@ td.actions { text-align: right; white-space: nowrap; }
   .pipeline { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
+/* Rollout steps (Rolling, BlueGreen, several instances) */
+.rollout { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 4px; }
+.rollout-step {
+  padding: 6px 10px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border-left: 3px solid var(--idle); font-size: 13px;
+}
+.rollout-step.ok { border-left-color: var(--ok); }
+.rollout-step.bad { border-left-color: var(--bad); }
+.rollout-step.info { border-left-color: var(--accent); }
+.field.inline { flex-direction: row; align-items: center; gap: 8px; }
+
 .outcome { margin-top: 12px; }
 .outcome summary { cursor: pointer; font-weight: 550; }
 .build-log {

@@ -8,7 +8,7 @@ use http::header::{self, HeaderValue};
 use http::{Request, Response, StatusCode, Version};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
-use hyper::body::Incoming;
+use hyper::body::{Body, Incoming};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
@@ -23,7 +23,7 @@ use tokio_rustls::TlsAcceptor;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type ProxyBody = BoxBody<Bytes, BoxError>;
-pub(crate) type UpstreamClient = Client<HttpConnector, Incoming>;
+pub(crate) type UpstreamClient = Client<HttpConnector, ProxyBody>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -174,17 +174,21 @@ pub(crate) async fn handle(
         );
     };
 
-    // Count the request against its upstream, then make sure the route
-    // didn't flip in between: a cutover that saw this port idle must not
-    // have this request sent to the process it is about to stop.
+    // Count the request against its upstream, then make sure the port is
+    // still in the app's set: a cutover (or a rolling step) that saw this
+    // port idle must not have this request sent to the process it is about
+    // to stop.
     let mut guard = inner.inflight.begin(port);
     for _ in 0..3 {
-        match inner.routes.port_for(&route.target) {
-            Some(current) if current != port => {
-                port = current;
+        if inner.routes.serves(&route.target, port) {
+            break;
+        }
+        match inner.routes.pick_for(&route.target, None) {
+            Some(next) => {
+                port = next;
                 guard = inner.inflight.begin(port);
             }
-            _ => break,
+            None => break,
         }
     }
     let upgrade = if req.version() <= Version::HTTP_11 {
@@ -230,9 +234,20 @@ pub(crate) async fn handle(
         };
     }
 
-    parts.uri = match format!("http://127.0.0.1:{}{}", port, path).parse() {
+    let upstream_uri = |port: u16| format!("http://127.0.0.1:{}{}", port, path).parse();
+    parts.uri = match upstream_uri(port) {
         Ok(uri) => uri,
         Err(_) => return page(StatusCode::BAD_REQUEST, "Bad request", "Invalid path."),
+    };
+    // A request without a body can be sent to another instance when the
+    // first one refuses the connection (it never saw the request).
+    let retry = body
+        .is_end_stream()
+        .then(|| (parts.method.clone(), parts.headers.clone()));
+    let body: ProxyBody = if retry.is_some() {
+        empty()
+    } else {
+        body.map_err(BoxError::from).boxed()
     };
     match tokio::time::timeout(
         timeout,
@@ -243,6 +258,40 @@ pub(crate) async fn handle(
         Ok(Ok(response)) => relay(response, guard),
         Ok(Err(e)) => {
             tracing::debug!(port, error = %e, "Upstream request failed");
+            if e.is_connect() {
+                inner.routes.mark_down(port);
+                let other = inner
+                    .routes
+                    .pick_for(&route.target, Some(port))
+                    .filter(|p| *p != port);
+                if let (Some((method, headers)), Some(other)) = (retry, other) {
+                    drop(guard);
+                    let guard = inner.inflight.begin(other);
+                    let mut req = Request::new(empty());
+                    *req.method_mut() = method;
+                    *req.headers_mut() = headers;
+                    *req.version_mut() = Version::HTTP_11;
+                    if let Ok(uri) = upstream_uri(other) {
+                        *req.uri_mut() = uri;
+                        match tokio::time::timeout(timeout, inner.client.request(req)).await {
+                            Ok(Ok(response)) => return relay(response, guard),
+                            Ok(Err(e)) => {
+                                if e.is_connect() {
+                                    inner.routes.mark_down(other);
+                                }
+                                tracing::debug!(port = other, error = %e, "Retry failed");
+                            }
+                            Err(_) => {
+                                return page(
+                                    StatusCode::GATEWAY_TIMEOUT,
+                                    "Gateway timeout",
+                                    "The app took too long to respond.",
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             page(
                 StatusCode::BAD_GATEWAY,
                 "Bad gateway",

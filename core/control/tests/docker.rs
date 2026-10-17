@@ -508,3 +508,101 @@ async fn container_app_lifecycle() {
     assert!(!container_exists(&container4));
     control.shutdown().await;
 }
+
+/// Container apps work with several instances and Rolling: every instance
+/// is its own container, and replacing them drops no requests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn container_app_rolling_instances() {
+    if !docker_ready().await {
+        return;
+    }
+    let data = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let port = free_port();
+    write_app(src.path(), port, SERVE);
+    // `[run]` is the last section of the file.
+    let toml = std::fs::read_to_string(src.path().join("aegis.toml")).unwrap();
+    std::fs::write(src.path().join("aegis.toml"), toml + "instances = 2\n").unwrap();
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    EventStore::initialize_db(&pool).await.unwrap();
+    let store = EventStore::new(pool);
+    let control = new_control(&store, data.path()).await;
+    let proxy = start_proxy(&control, &data.path().join("certs")).await;
+    let project = control
+        .register_project(RegisterProject {
+            name: "boxed".into(),
+            source_dir: Some(src.path().to_path_buf()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .id;
+    let _cleanup = Cleanup(project);
+    control
+        .map_domain(project, DOMAIN, "off", None, None)
+        .await
+        .unwrap();
+
+    let running = |control: &ControlPlane| -> Vec<(String, String)> {
+        control
+            .list_projects()
+            .into_iter()
+            .find(|v| v.project.id == project)
+            .unwrap()
+            .instances
+            .into_iter()
+            .filter(|i| i.process.status == "Running")
+            .map(|i| {
+                (
+                    i.process.container.clone().unwrap_or_default(),
+                    i.process.release_version.clone().unwrap_or_default(),
+                )
+            })
+            .collect()
+    };
+
+    let d1 = deploy(&control, project, "r1").await;
+    assert_eq!(d1.status, "Success", "{d1:?}");
+    let first = running(&control);
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert_ne!(first[0].0, first[1].0, "one container per instance");
+    for (container, _) in &first {
+        assert!(container_exists(container), "{container}");
+    }
+    assert_eq!(version_via_proxy(proxy.port).await.as_deref(), Some("r1"));
+
+    // Rolling to r2 under load: no failed requests, r2 everywhere after.
+    let stop = Arc::new(AtomicBool::new(false));
+    let load = hammer(proxy.port, stop.clone());
+    let id = control
+        .queue_deployment(DeployRequest {
+            project_id: project,
+            version: Some("r2".into()),
+            trigger: "test".into(),
+            strategy: Some("Rolling".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let d2 = wait_deployment(&control, id).await;
+    stop.store(true, Ordering::SeqCst);
+    let (seen, failures) = load.await.unwrap();
+    assert_eq!(d2.status, "Success", "{d2:?}");
+    assert!(
+        failures.is_empty(),
+        "failed during the rollout: {failures:?}"
+    );
+    assert_eq!(seen.last().map(String::as_str), Some("r2"), "{seen:?}");
+    let second = running(&control);
+    assert_eq!(second.len(), 2, "{second:?}");
+    assert!(second.iter().all(|(_, v)| v == "r2"), "{second:?}");
+    // The replaced containers are gone.
+    for (container, _) in &first {
+        wait_for("old container removed", || !container_exists(container)).await;
+    }
+    control.shutdown().await;
+}

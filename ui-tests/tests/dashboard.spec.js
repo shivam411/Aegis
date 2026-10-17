@@ -121,6 +121,9 @@ test('full lifecycle from the browser', async ({ page }) => {
   await test.step('redeploy a new commit', async () => {
     commit(repo, 'v2');
     await page.getByRole('link', { name: 'Deploy', exact: true }).click();
+    // Rolling and Blue-green are offered, with what they need.
+    await page.getByLabel('Strategy').selectOption('Rolling');
+    await expect(page.locator('[data-strategy-hint]')).toContainText('built-in proxy');
     await page.getByLabel('Strategy').selectOption('GracefulSwitch');
     await page.locator('form').getByRole('button', { name: 'Deploy' }).click();
     const pipeline = page.locator('[data-deployment]');
