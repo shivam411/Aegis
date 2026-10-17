@@ -267,7 +267,12 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
         version: installed.tag.clone(),
         signed_by: installed.signed_by.clone(),
         allow_unsigned: installed.signed_by.is_none(),
-        method: if from_request { "helper" } else { "self-update" }.into(),
+        method: if from_request {
+            "helper"
+        } else {
+            "self-update"
+        }
+        .into(),
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     };
     if let Err(e) = helper::write_installed(&request_dir, &record) {

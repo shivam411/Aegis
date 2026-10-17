@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const TAG: &str = "v1.4.0";
-const SUMS: &str = "3f0a8bd4a3f1b5e0c76e9a8f2c2a7d1c3f0a8bd4a3f1b5e0c76e9a8f2c2a7d1c  aegis-linux-amd64.tar.gz\n";
+const SUMS: &str =
+    "3f0a8bd4a3f1b5e0c76e9a8f2c2a7d1c3f0a8bd4a3f1b5e0c76e9a8f2c2a7d1c  aegis-linux-amd64.tar.gz\n";
 
 fn bash() -> Option<String> {
     match std::env::var("AEGIS_TEST_BASH") {
@@ -166,7 +167,13 @@ fn install_sh_verifies_release_signatures() {
             keys.clone(),
             "not a minisign signature",
         ),
-        ("missing signature", SUMS.into(), None, keys.clone(), "not signed"),
+        (
+            "missing signature",
+            SUMS.into(),
+            None,
+            keys.clone(),
+            "not signed",
+        ),
         (
             "no release key (placeholder)",
             SUMS.into(),

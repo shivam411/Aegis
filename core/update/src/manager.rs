@@ -391,7 +391,8 @@ impl UpdateManager {
         // Written by `aegis-daemon self-update` (the helper, or an admin)
         // when it installed this version.
         let record = helper::take_installed(&self.settings.state_dir).filter(|r| {
-            parse_version(&r.version).is_some() && parse_version(&r.version) == parse_version(&current)
+            parse_version(&r.version).is_some()
+                && parse_version(&r.version) == parse_version(&current)
         });
         let (events, persisted) = {
             let mut inner = self.inner.lock().unwrap();

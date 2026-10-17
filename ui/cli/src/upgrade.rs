@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-pub use aegis_update::{plan, Plan};
 use aegis_update::{helper, parse_version, SignaturePolicy, Source, Target};
+pub use aegis_update::{plan, Plan};
 
 /// The repository releases are downloaded from.
 pub const REPO: &str = aegis_update::DEFAULT_REPO;
@@ -82,7 +82,7 @@ pub async fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_update::{parse_version, tag_from_api};
+    use aegis_update::tag_from_api;
 
     #[test]
     fn compares_versions() {

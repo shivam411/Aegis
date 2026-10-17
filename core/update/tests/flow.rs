@@ -13,12 +13,12 @@ use aegis_update::{
     InstallMode, Keyring, Phase, SignaturePolicy, Source, Target, UpdateError, UpdateHooks,
     UpdateManager, UpdateSettings,
 };
-use minisign::TestKey;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use minisign::TestKey;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -498,14 +498,23 @@ async fn helper_mode_hands_over_a_request_and_reports_its_failure() {
     let error = anyhow::Error::from(aegis_update::SignatureError::Missing { tag: TAG.into() });
     helper::write_failure(&dir, &error).unwrap();
     for _ in 0..100 {
-        if hooks.types().iter().filter(|t| *t == "UpdateFailed").count() == 2 {
+        if hooks
+            .types()
+            .iter()
+            .filter(|t| *t == "UpdateFailed")
+            .count()
+            == 2
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let failed = hooks.last("UpdateFailed");
     assert_eq!(failed["stage"], "signature", "{failed}");
-    assert!(failed["error"].as_str().unwrap().contains("SHA256SUMS.minisig"));
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .contains("SHA256SUMS.minisig"));
 
     // The helper records what it installed; the new daemon reports the key.
     let installed = helper::InstalledRecord {
@@ -539,8 +548,8 @@ async fn helper_mode_hands_over_a_request_and_reports_its_failure() {
 async fn self_update_installs_a_requested_release() {
     let fake = fake_github(false).await;
     let s = setup(&fake, true);
-    let source =
-        Source::new(Some(fake.base.clone()), "shivam411/Aegis", "test").with_keyring(fake.keyring());
+    let source = Source::new(Some(fake.base.clone()), "shivam411/Aegis", "test")
+        .with_keyring(fake.keyring());
     let opts = |wanted, force| helper::SelfUpdate {
         source: &source,
         exe: &s.exe,
@@ -607,13 +616,18 @@ async fn self_update_requires_a_signature_unless_explicitly_allowed() {
 
     // --allow-unsigned accepts both (SHA-256 is still checked)...
     for (signing, keyring) in [(Signing::Missing, None), (Signing::Valid, placeholder())] {
-        let (result, exe) = self_update_with(signing, keyring, SignaturePolicy::AllowUnsigned).await;
+        let (result, exe) =
+            self_update_with(signing, keyring, SignaturePolicy::AllowUnsigned).await;
         let installed = result.unwrap();
         assert_eq!(installed.signed_by, None);
         assert_eq!(exe, new_binary());
     }
     // ...but never a signature that is present and wrong.
-    for signing in [Signing::TamperedSums, Signing::WrongKey, Signing::OtherRelease] {
+    for signing in [
+        Signing::TamperedSums,
+        Signing::WrongKey,
+        Signing::OtherRelease,
+    ] {
         let (result, exe) = self_update_with(signing, None, SignaturePolicy::AllowUnsigned).await;
         assert!(result.is_err());
         assert_eq!(exe, b"old daemon");

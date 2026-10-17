@@ -45,7 +45,13 @@ impl TestKey {
         b64(&raw)
     }
 
-    fn signature_file(&self, algorithm: &[u8; 2], key_id: [u8; 8], message: &[u8], comment: &str) -> String {
+    fn signature_file(
+        &self,
+        algorithm: &[u8; 2],
+        key_id: [u8; 8],
+        message: &[u8],
+        comment: &str,
+    ) -> String {
         let signature = self.pair.sign(message);
         let mut line = algorithm.to_vec();
         line.extend_from_slice(&key_id);

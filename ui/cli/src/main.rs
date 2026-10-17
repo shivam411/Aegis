@@ -1314,10 +1314,12 @@ async fn run() -> Result<(), anyhow::Error> {
                 println!("Cancelled. Pass --yes to skip this question.");
                 return Ok(());
             }
-            let installed =
-                upgrade::install(&source, &exe, &latest, force, allow_unsigned).await?;
+            let installed = upgrade::install(&source, &exe, &latest, force, allow_unsigned).await?;
             match &installed.signed_by {
-                Some(key) => println!("Installed {} (signed by release key {}).", installed.tag, key),
+                Some(key) => println!(
+                    "Installed {} (signed by release key {}).",
+                    installed.tag, key
+                ),
                 None => eprintln!(
                     "Installed {} WITHOUT a signature check (--allow-unsigned).",
                     installed.tag

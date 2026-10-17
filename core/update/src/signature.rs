@@ -35,7 +35,10 @@ pub enum SignatureError {
     /// The signature file can't be parsed.
     Malformed(String),
     /// Signed by a key this build doesn't trust.
-    UnknownKey { key_id: String, trusted: Vec<String> },
+    UnknownKey {
+        key_id: String,
+        trusted: Vec<String>,
+    },
     /// The signature doesn't match `SHA256SUMS` (tampered or corrupt).
     Invalid { key_id: String },
     /// A valid signature, but for another release.
@@ -119,8 +122,7 @@ impl Keyring {
         let mut keys: Vec<TrustedKey> = Vec::new();
         for (n, line) in text.lines().enumerate() {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') || line.starts_with("untrusted comment:")
-            {
+            if line.is_empty() || line.starts_with('#') || line.starts_with("untrusted comment:") {
                 continue;
             }
             let bad = || anyhow::anyhow!("Line {} is not a minisign public key", n + 1);
@@ -164,12 +166,17 @@ impl Keyring {
     /// Checks `signature` (the text of `SHA256SUMS.minisig`) over `sums`
     /// (the bytes of `SHA256SUMS`) for release `tag`. Returns the ID of the
     /// key that signed it.
-    pub fn verify(&self, sums: &[u8], signature: &str, tag: &str) -> Result<String, SignatureError> {
+    pub fn verify(
+        &self,
+        sums: &[u8],
+        signature: &str,
+        tag: &str,
+    ) -> Result<String, SignatureError> {
         if self.keys.is_empty() {
             return Err(SignatureError::NoTrustedKey);
         }
-        let parsed = Signature::decode(signature)
-            .map_err(|e| SignatureError::Malformed(e.to_string()))?;
+        let parsed =
+            Signature::decode(signature).map_err(|e| SignatureError::Malformed(e.to_string()))?;
         // The key ID sits in bytes 2..10 of the signature line.
         let key_id = signature
             .lines()
@@ -182,14 +189,12 @@ impl Keyring {
             .filter(|raw| raw.len() == 74)
             .map(|raw| key_id_hex(&raw[2..10]))
             .ok_or_else(|| SignatureError::Malformed("no key ID".into()))?;
-        let key = self
-            .keys
-            .iter()
-            .find(|k| k.id == key_id)
-            .ok_or_else(|| SignatureError::UnknownKey {
+        let key = self.keys.iter().find(|k| k.id == key_id).ok_or_else(|| {
+            SignatureError::UnknownKey {
                 key_id: key_id.clone(),
                 trusted: self.ids(),
-            })?;
+            }
+        })?;
         // Pre-hashed signatures only (minisign's default since 0.8).
         key.key
             .verify(sums, &parsed, false)
@@ -222,7 +227,13 @@ mod tests {
     fn ring_of(keys: &[&TestKey]) -> Keyring {
         let text: String = keys
             .iter()
-            .map(|k| format!("untrusted comment: minisign public key {}\n{}\n", k.id(), k.public_base64()))
+            .map(|k| {
+                format!(
+                    "untrusted comment: minisign public key {}\n{}\n",
+                    k.id(),
+                    k.public_base64()
+                )
+            })
             .collect();
         Keyring::parse(&text).unwrap()
     }
@@ -272,7 +283,10 @@ mod tests {
         // Garbage, and a missing file's empty text.
         for bad in ["", "not a signature", "untrusted comment: x\nAAAA\n"] {
             let err = ring.verify(SUMS, bad, "v1.2.0").unwrap_err();
-            assert!(matches!(err, SignatureError::Malformed(_)), "{bad:?}: {err}");
+            assert!(
+                matches!(err, SignatureError::Malformed(_)),
+                "{bad:?}: {err}"
+            );
         }
     }
 
@@ -345,9 +359,14 @@ mod tests {
         let committed: Vec<String> = RELEASE_KEYS_FILE
             .lines()
             .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("untrusted comment:"))
+            .filter(|l| {
+                !l.is_empty() && !l.starts_with('#') && !l.starts_with("untrusted comment:")
+            })
             .map(str::to_string)
             .collect();
-        assert_eq!(listed, committed, "install.sh RELEASE_KEYS != core/update/keys/release.pub");
+        assert_eq!(
+            listed, committed,
+            "install.sh RELEASE_KEYS != core/update/keys/release.pub"
+        );
     }
 }
