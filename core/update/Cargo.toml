@@ -21,7 +21,11 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 webpki-roots = "0.26"
 http-body-util = "0.1"
+minisign-verify = "0.3"
+base64 = "0.22"
 
 [dev-dependencies]
 axum = "0.7"
+blake2 = "0.10"
+ring = "0.17"
 tempfile = { workspace = true }

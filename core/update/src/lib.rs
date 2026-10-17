@@ -1,10 +1,12 @@
 //! Aegis self-update, shared by the daemon (update checks, dashboard
 //! upgrades, `aegis-daemon self-update`) and the CLI (`aegis upgrade`).
 //!
-//! Trust model: release metadata and archives come from GitHub over TLS
-//! (certificates checked against the bundled Mozilla roots), and every
-//! archive must match the SHA-256 listed in the same release's `SHA256SUMS`
-//! before anything is unpacked. See docs/security.md.
+//! Trust model: the release's `SHA256SUMS` must carry a valid minisign
+//! signature by one of the release keys compiled into this build
+//! (`keys/release.pub`, see [`signature`]), and every archive must match the
+//! SHA-256 listed there before anything is unpacked. Release metadata and
+//! downloads come from GitHub over TLS (certificates checked against the
+//! bundled Mozilla roots). See docs/security.md.
 
 pub mod archive;
 pub mod checksum;
@@ -13,6 +15,7 @@ pub mod http;
 pub mod install;
 pub mod manager;
 pub mod release;
+pub mod signature;
 pub mod source;
 mod state;
 pub mod version;
@@ -20,6 +23,7 @@ pub mod version;
 pub use install::InstallMode;
 pub use manager::{Phase, UpdateError, UpdateHooks, UpdateManager, UpdateSettings, UpdateStatus};
 pub use release::{parse_release, select_asset, tag_from_api, Asset, Release, Target};
+pub use signature::{Keyring, SignatureError, SignaturePolicy};
 pub use source::Source;
 pub use state::AppliedUpdate;
 pub use version::{is_major_jump, parse_version, plan, Plan, Version};

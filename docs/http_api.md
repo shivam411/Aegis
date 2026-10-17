@@ -54,9 +54,9 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /host/metrics?range=&points=` | The same for the whole host |
 | `GET /metrics/stream?project=&host=` | **SSE**: a `sample` message per app (and the host) every sample interval |
 | `GET /host` | Host CPU %, memory, swap, disk (the data directory's filesystem) and load average, sampled every 5 s |
-| `GET /system/update` | Whether a newer Aegis release is available (cached result of the periodic check), how it would be installed here (`mode`), and update progress (`phase`) |
+| `GET /system/update` | Whether a newer Aegis release is available (cached result of the periodic check), how it would be installed here (`mode`), the release signing keys this build trusts (`release_keys`), and update progress (`phase`) |
 | `POST /system/update/check` | Admins, signed in (not API tokens): ask GitHub now. Refused (409) with `[update] check = false` |
-| `POST /system/update/apply` | Admins, signed in: back up, download, verify and install the latest release, then restart (202; follow `phase`). `{"version"?}` must match the latest known release. 409 with the command to run when the daemon can't replace its own binary. See [upgrading.md](upgrading.md) |
+| `POST /system/update/apply` | Admins, signed in: back up, download, verify (release signature, then SHA-256) and install the latest release, then restart (202; follow `phase`). `{"version"?}` must match the latest known release. 409 with the command to run when the daemon can't replace its own binary, or when this build has no release signing key. See [upgrading.md](upgrading.md) |
 | `POST /detect` | Detect runtime and default commands: `{"source_dir"}` or `{"repository_url", "branch"?}` (shallow clone into scratch space) |
 | `GET /projects` | Projects with their live release, schedule and process, plus `instances` (every instance of the live release with its process, CPU and memory; one entry for single-instance apps) and `standby` (a BlueGreen previous release kept running, or `null`) |
 | `POST /projects` | Register a project: `{"name", "source_dir"?, "repository_url"?, "branch"?, "project_id"?}` |

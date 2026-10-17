@@ -34,8 +34,14 @@ pub struct LastUpdateDto {
     pub to_version: String,
     /// RFC 3339: when the new version first started.
     pub at: String,
-    /// `in_place`, `helper` or `external`.
+    /// `in_place`, `helper`, `self-update` (an admin ran
+    /// `aegis-daemon self-update`) or `external`.
     pub method: String,
+    /// ID of the release key whose signature was verified, when known.
+    pub signed_by: Option<String>,
+    /// Installed with `aegis-daemon self-update --allow-unsigned`: the
+    /// release signature was not checked.
+    pub allow_unsigned: bool,
 }
 
 /// Update status.
@@ -68,6 +74,10 @@ pub struct UpdateStatusDto {
     pub phase: String,
     pub phase_error: Option<String>,
     pub last_update: Option<LastUpdateDto>,
+    /// IDs of the release signing keys this build verifies releases with.
+    /// Empty: this build has no key, so updates can't be installed from the
+    /// dashboard (`blocked_reason` says what to do instead).
+    pub release_keys: Vec<String>,
 }
 
 impl From<UpdateStatus> for UpdateStatusDto {
@@ -108,7 +118,10 @@ impl From<UpdateStatus> for UpdateStatusDto {
                 to_version: u.to_version,
                 at: u.at,
                 method: u.method,
+                signed_by: u.signed_by,
+                allow_unsigned: u.allow_unsigned,
             }),
+            release_keys: s.release_keys,
         }
     }
 }
@@ -159,6 +172,7 @@ fn not_configured(version: &str) -> UpdateStatusDto {
         phase: "idle".into(),
         phase_error: None,
         last_update: None,
+        release_keys: aegis_update::Keyring::release().ids(),
     }
 }
 

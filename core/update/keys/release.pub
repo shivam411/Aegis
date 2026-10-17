@@ -1,0 +1,13 @@
+# Aegis release signing keys: the minisign public keys whose signature on a
+# release's SHA256SUMS this build accepts. Compiled into aegis-daemon and
+# aegis-cli (core/update/src/signature.rs). One base64 key per line, as on
+# the second line of the .pub file `minisign -G` writes; '#' lines and
+# minisign's "untrusted comment:" lines are ignored. List several keys while
+# rotating (docs/releasing.md). install.sh's RELEASE_KEYS must list the same
+# keys; a test checks that.
+#
+# PLACEHOLDER: no release signing key has been generated yet. Until a key is
+# added here, Aegis refuses to install releases from the dashboard, the
+# update helper, `aegis upgrade` and `aegis-daemon self-update` (unless run
+# with --allow-unsigned), and the release workflow refuses to publish.
+# See docs/releasing.md, "One-time setup".

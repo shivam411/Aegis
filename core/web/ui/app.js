@@ -507,6 +507,8 @@ function renderUpdateBanner() {
   if (recent && !hidden(updatedKey)) {
     replace(el, h('div', { class: 'alert ok', 'data-update': 'updated' },
       h('strong', {}, `Updated to v${s.current_version}`), ` (from v${s.last_update.from_version.replace(/^v/, '')}). `,
+      s.last_update.signed_by ? `Signed by release key ${s.last_update.signed_by}. `
+        : s.last_update.allow_unsigned ? 'Installed without a signature check (--allow-unsigned). ' : null,
       h('button', { class: 'btn small', type: 'button', onclick: () => dismiss(updatedKey) }, 'Dismiss')));
     return;
   }
@@ -556,7 +558,7 @@ async function upgradeNow(btn) {
       h('p', { class: 'muted' }, `You run v${s.current_version}. ${how}`),
       h('ol', { class: 'update-steps' },
         h('li', {}, 'A backup of the database, secrets key and certificates is taken first (Account → Backups; release directories are not included).'),
-        h('li', {}, `${version} is downloaded from GitHub and checked against the release's SHA-256 checksums. If anything fails before the swap, nothing changes.`),
+        h('li', {}, `${version} is downloaded from GitHub. Its SHA-256 checksums must be signed by the Aegis release key (${(s.release_keys || []).join(', ')}) and the download must match them. If anything fails before the swap, nothing changes.`),
         h('li', {}, 'The Aegis binaries are replaced; the old daemon is kept next to the new one as aegis-daemon.previous.'),
         h('li', {}, 'Aegis restarts. Your apps are stopped during the restart and started again automatically, so expect a short outage (usually a few seconds). Deployments in progress are marked failed. The dashboard reconnects by itself.')),
       h('p', { class: 'muted small' }, 'Going back later may need the pre-update backup if the new version upgraded the database. See docs/upgrading.md.')),

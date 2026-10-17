@@ -4,6 +4,7 @@
 use crate::helper;
 use crate::install::{self, InstallMode};
 use crate::release::{Release, Target};
+use crate::signature::{self, Keyring, SignaturePolicy};
 use crate::source::Source;
 use crate::state::{self, AppliedUpdate, LastCheck, Pending, Persisted};
 use crate::version::{is_major_jump, parse_version, Version};
@@ -52,6 +53,10 @@ pub struct UpdateSettings {
     pub manual_command: String,
     /// How long to wait for the helper before reporting a failure.
     pub helper_timeout: Duration,
+    /// The keys release signatures are checked against: the compiled-in
+    /// release keys (tests use their own). Empty: nothing can be installed
+    /// from the dashboard.
+    pub keyring: Keyring,
 }
 
 impl UpdateSettings {
@@ -70,6 +75,7 @@ impl UpdateSettings {
             verify_runs: true,
             manual_command: "sudo aegis-daemon self-update".to_string(),
             helper_timeout: Duration::from_secs(15 * 60),
+            keyring: Keyring::release().clone(),
         }
     }
 }
@@ -123,6 +129,9 @@ pub struct UpdateStatus {
     pub phase: Phase,
     pub phase_error: Option<String>,
     pub last_update: Option<AppliedUpdate>,
+    /// IDs of the release keys this build accepts signatures from; empty
+    /// when it has none (then nothing is installed from the dashboard).
+    pub release_keys: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -177,7 +186,8 @@ impl UpdateManager {
             settings.api_base.clone(),
             &settings.repo,
             &format!("aegis-daemon/{}", settings.current_version),
-        );
+        )
+        .with_keyring(settings.keyring.clone());
         let persisted = state::load(&settings.state_dir);
         Arc::new(Self {
             settings,
@@ -257,10 +267,16 @@ impl UpdateManager {
 
     fn blocked_reason(&self, release: &Release) -> Option<String> {
         let (current, latest) = (self.current()?, parse_version(&release.tag)?);
-        is_major_jump(&current, &latest).then(|| {
-            format!(
+        if is_major_jump(&current, &latest) {
+            return Some(format!(
                 "{} is a new major version. Read the release notes, then upgrade on the server with `aegis-daemon self-update --version {} --force`.",
                 release.tag, release.tag
+            ));
+        }
+        self.settings.keyring.is_empty().then(|| {
+            format!(
+                "This Aegis build has no release signing key, so it can't check that {} is genuine and won't install it from the dashboard. Install the release by hand, or run on the server (checks SHA-256 only, recorded in Events): {} --allow-unsigned",
+                release.tag, self.settings.manual_command
             )
         })
     }
@@ -292,6 +308,7 @@ impl UpdateManager {
             phase: inner.phase,
             phase_error: inner.phase_error.clone(),
             last_update: inner.persisted.last_update.clone(),
+            release_keys: self.settings.keyring.ids(),
         }
     }
 
@@ -371,6 +388,12 @@ impl UpdateManager {
     pub async fn on_boot(&self) {
         let current = self.settings.current_version.clone();
         let _ = helper::take_result(&self.settings.state_dir);
+        // Written by `aegis-daemon self-update` (the helper, or an admin)
+        // when it installed this version.
+        let record = helper::take_installed(&self.settings.state_dir).filter(|r| {
+            parse_version(&r.version).is_some()
+                && parse_version(&r.version) == parse_version(&current)
+        });
         let (events, persisted) = {
             let mut inner = self.inner.lock().unwrap();
             let p = &mut inner.persisted;
@@ -378,11 +401,17 @@ impl UpdateManager {
             if let Some(pending) = p.pending.take() {
                 let installed = parse_version(&pending.to_version);
                 if installed.is_some() && installed == parse_version(&current) {
+                    let signed_by = pending
+                        .signed_by
+                        .clone()
+                        .or_else(|| record.as_ref().and_then(|r| r.signed_by.clone()));
                     p.last_update = Some(AppliedUpdate {
                         from_version: pending.from_version.clone(),
                         to_version: current.clone(),
                         at: now(),
                         method: pending.method.clone(),
+                        signed_by: signed_by.clone(),
+                        allow_unsigned: false,
                     });
                     events.push((
                         "UpdateApplied",
@@ -392,6 +421,7 @@ impl UpdateManager {
                             "method": pending.method,
                             "backup": pending.backup,
                             "actor": pending.actor,
+                            "signed_by": signed_by,
                         }),
                     ));
                 } else {
@@ -412,12 +442,38 @@ impl UpdateManager {
             } else if let Some(last) = p.last_version.clone() {
                 let (before, now_running) = (parse_version(&last), parse_version(&current));
                 if let (Some(before), Some(now_running)) = (before, now_running) {
-                    if now_running > before {
+                    if let Some(record) = record.filter(|_| now_running != before) {
+                        // `aegis-daemon self-update` run by an admin (also
+                        // reinstalls and downgrades with --force).
+                        if record.allow_unsigned {
+                            tracing::warn!(
+                                version = %current,
+                                "This version was installed with --allow-unsigned: its release signature was not checked"
+                            );
+                        }
+                        p.last_update = Some(AppliedUpdate {
+                            from_version: last.clone(),
+                            to_version: current.clone(),
+                            at: now(),
+                            method: record.method.clone(),
+                            signed_by: record.signed_by.clone(),
+                            allow_unsigned: record.allow_unsigned,
+                        });
+                        events.push((
+                            "UpdateApplied",
+                            json!({"from_version": last, "to_version": current,
+                                   "method": record.method,
+                                   "signed_by": record.signed_by,
+                                   "allow_unsigned": record.allow_unsigned}),
+                        ));
+                    } else if now_running > before {
                         p.last_update = Some(AppliedUpdate {
                             from_version: last.clone(),
                             to_version: current.clone(),
                             at: now(),
                             method: "external".into(),
+                            signed_by: None,
+                            allow_unsigned: false,
                         });
                         events.push((
                             "UpdateApplied",
@@ -534,7 +590,14 @@ impl UpdateManager {
             .await;
     }
 
-    fn set_pending(&self, release: &Release, method: &str, backup: &str, actor: &str) {
+    fn set_pending(
+        &self,
+        release: &Release,
+        method: &str,
+        backup: &str,
+        actor: &str,
+        signed_by: Option<String>,
+    ) {
         let persisted = {
             let mut inner = self.inner.lock().unwrap();
             inner.persisted.pending = Some(Pending {
@@ -544,6 +607,7 @@ impl UpdateManager {
                 backup: Some(backup.into()),
                 actor: actor.into(),
                 started_at: now(),
+                signed_by,
             });
             inner.persisted.clone()
         };
@@ -584,10 +648,27 @@ impl UpdateManager {
                 )
                 .await;
         };
-        let bundle = match self.source.fetch_bundle(&release, &target).await {
+        // The dashboard never installs an unsigned release.
+        let bundle = match self
+            .source
+            .fetch_bundle(&release, &target, SignaturePolicy::Required)
+            .await
+        {
             Ok(bundle) => bundle,
-            Err(e) => return self.fail(&release, "download", e, &actor).await,
+            Err(e) => {
+                let stage = if signature::is_signature_error(&e) {
+                    "signature"
+                } else {
+                    "download"
+                };
+                return self.fail(&release, stage, e, &actor).await;
+            }
         };
+        tracing::info!(
+            to = %release.tag,
+            key = bundle.signed_by.as_deref().unwrap_or("-"),
+            "The release signature is valid"
+        );
         let staged = match bundle.stage(&self.settings.exe) {
             Ok(staged) => staged,
             Err(e) => return self.fail(&release, "install", e, &actor).await,
@@ -605,7 +686,13 @@ impl UpdateManager {
         };
         // 3. Swap.
         self.set_phase(Phase::Installing);
-        self.set_pending(&release, "in_place", &backup, &actor);
+        self.set_pending(
+            &release,
+            "in_place",
+            &backup,
+            &actor,
+            bundle.signed_by.clone(),
+        );
         match staged.commit() {
             Ok(replaced) => tracing::info!(
                 to = %release.tag,
@@ -626,7 +713,7 @@ impl UpdateManager {
             Ok(name) => name,
             Err(e) => return self.fail(&release, "backup", e, &actor).await,
         };
-        self.set_pending(&release, "helper", &backup, &actor);
+        self.set_pending(&release, "helper", &backup, &actor, None);
         if let Err(e) = helper::write_request(&self.settings.state_dir, &release.tag) {
             return self.fail(&release, "request", e, &actor).await;
         }
@@ -651,8 +738,13 @@ impl UpdateManager {
                         )
                         .await;
                 }
+                // Only stages the helper can report; anything else is "helper".
+                let stage = match result.stage.as_deref() {
+                    Some("signature") => "signature",
+                    _ => "helper",
+                };
                 return self
-                    .fail(&release, "helper", anyhow::anyhow!(result.message), &actor)
+                    .fail(&release, stage, anyhow::anyhow!(result.message), &actor)
                     .await;
             }
         }

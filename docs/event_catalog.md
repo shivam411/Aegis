@@ -157,8 +157,8 @@ See [`upgrading.md`](upgrading.md). Payloads hold versions, URLs and error messa
 | :--- | :--- | :--- |
 | `UpdateAvailable` | An update check found a newer stable release (recorded once per release) | `current_version`, `latest_version`, `url` (release notes) |
 | `UpdateStarted` | An admin started an upgrade from the dashboard/API | `from_version`, `to_version`, `mode` (`in_place` or `helper`), `actor` |
-| `UpdateApplied` | Recorded by the **new** version when it starts after an update; also when the daemon notices it was upgraded by other means | `from_version`, `to_version`, `method` (`in_place`, `helper` or `external`), `backup` (the pre-update backup's name), `actor` |
-| `UpdateFailed` | The upgrade stopped; unless `stage` is `restart`, nothing was replaced | `from_version`, `to_version`, `stage` (`download`, `verify`, `install`, `backup`, `request`, `helper`, `restart`), `error`, `actor` |
+| `UpdateApplied` | Recorded by the **new** version when it starts after an update; also when the daemon notices it was upgraded by other means | `from_version`, `to_version`, `method` (`in_place`, `helper`, `self-update` or `external`), `backup` (the pre-update backup's name), `actor`, `signed_by` (ID of the release key whose signature was verified, when known), `allow_unsigned` (`true`: installed with `aegis-daemon self-update --allow-unsigned`, without a signature check) |
+| `UpdateFailed` | The upgrade stopped; unless `stage` is `restart`, nothing was replaced | `from_version`, `to_version`, `stage` (`download`, `signature` (release signature missing, invalid, by an untrusted key or for another release, or no key in this build), `verify`, `install`, `backup`, `request`, `helper`, `restart`), `error`, `actor` |
 
 ---
 

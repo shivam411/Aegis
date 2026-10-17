@@ -81,7 +81,14 @@ async fn user(api: &Api, name: &str, role: Role) -> Session {
 
 /// An API whose updater already knows of v0.99.0 (same
 /// major version as the test build) and can't write its "binary".
+const TEST_RELEASE_KEY: &str = "RWQBAgMEBQYHCAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH";
+const TEST_RELEASE_KEY_ID: &str = "0807060504030201";
+
 async fn api_with_updates(data: &std::path::Path) -> Api {
+    api_with_keys(data, TEST_RELEASE_KEY).await
+}
+
+async fn api_with_keys(data: &std::path::Path, keys: &str) -> Api {
     let mut api = api().await;
     let state_dir = data.join("update");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -106,6 +113,8 @@ async fn api_with_updates(data: &std::path::Path) -> Api {
     // A platform with tar.gz releases, whatever runs the test.
     settings.target = aegis_update::Target::from_consts("linux", "x86_64");
     settings.manual_command = "sudo aegis-daemon self-update".into();
+    // A release key (well-formed; nothing is signed in these tests).
+    settings.keyring = aegis_update::Keyring::parse(keys).unwrap();
     let manager = UpdateManager::new(
         settings,
         Arc::new(ControlUpdateHooks(api.state.control.clone())),
@@ -132,6 +141,8 @@ async fn roles_and_refusal() {
         assert_eq!(body["mode"], "manual");
         assert_eq!(body["manual_command"], "sudo aegis-daemon self-update");
         assert_eq!(body["can_apply"], false);
+        assert_eq!(body["release_keys"], json!([TEST_RELEASE_KEY_ID]));
+        assert!(body["blocked_reason"].is_null(), "{body}");
     }
     // So do API tokens.
     let (status, _) = api.get("/api/v1/system/update").await;
@@ -172,6 +183,35 @@ async fn roles_and_refusal() {
     assert!(body["check_error"].is_string(), "{body}");
     // The previous result is kept.
     assert_eq!(body["update_available"], true);
+}
+
+/// A build without a release key (the placeholder key file) never offers
+/// "Upgrade now" and says why.
+#[tokio::test]
+async fn without_a_release_key_upgrades_are_blocked() {
+    let data = tempfile::TempDir::new().unwrap();
+    let api = api_with_keys(data.path(), "# placeholder\n").await;
+    let admin = login(&api, "admin", ADMIN_PASSWORD).await;
+    let (status, body) = admin.call(&api, "GET", "/api/v1/system/update").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["update_available"], true);
+    assert_eq!(body["release_keys"], json!([]));
+    assert_eq!(body["can_apply"], false);
+    let reason = body["blocked_reason"].as_str().unwrap();
+    assert!(reason.contains("no release signing key"), "{reason}");
+    assert!(reason.contains("--allow-unsigned"), "{reason}");
+    let (status, body) = admin
+        .call(&api, "POST", "/api/v1/system/update/apply")
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no release signing key"),
+        "{body}"
+    );
+    assert!(api.state.control.list_backups().unwrap().is_empty());
 }
 
 #[tokio::test]

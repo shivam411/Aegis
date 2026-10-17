@@ -117,14 +117,17 @@ const USAGE: &str = "Usage:
   aegis-daemon admin restore ARCHIVE [--force]
                                          Restore a backup. The daemon must be stopped.
                                          --force restores a backup made by another Aegis version
-  aegis-daemon self-update [--check] [--version TAG] [--force] [--restart-unit UNIT]
+  aegis-daemon self-update [--check] [--version TAG] [--force] [--restart-unit UNIT] [--allow-unsigned]
                                          Download the latest (or TAG) release from GitHub, verify
-                                         it against the release's SHA256SUMS and replace this
+                                         its signature (release key) and SHA256SUMS and replace this
                                          binary (and aegis-cli/aegis-tui next to it), keeping
                                          <binary>.previous. Run it as the binaries' owner (root
                                          for install.sh --server). --force allows reinstalls,
                                          downgrades, pre-releases and major-version jumps.
-                                         --restart-unit restarts that systemd unit afterwards
+                                         --restart-unit restarts that systemd unit afterwards.
+                                         --allow-unsigned installs a release without a valid-key
+                                         signature check (unsigned release, or a build without a
+                                         release key); SHA-256 is still checked. Not recommended
 
 The configuration is read from $AEGIS_CONFIG (default: ./aegis.toml).";
 
