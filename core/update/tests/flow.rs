@@ -1,0 +1,405 @@
+//! Check → available → apply against a fake GitHub API on 127.0.0.1, up to
+//! the binary swap and the restart request (the test process is not
+//! restarted). No real network access.
+
+use aegis_update::archive::build_tar_gz;
+use aegis_update::checksum::{sha256, to_hex};
+use aegis_update::helper;
+use aegis_update::{
+    InstallMode, Phase, Source, Target, UpdateError, UpdateHooks, UpdateManager, UpdateSettings,
+};
+use axum::extract::{Path, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+const TAG: &str = "v0.2.0";
+
+#[derive(Clone)]
+struct Fake {
+    base: String,
+    files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    hits: Arc<AtomicUsize>,
+}
+
+async fn latest(State(f): State<Fake>) -> Response {
+    f.hits.fetch_add(1, Ordering::SeqCst);
+    release_json(&f).into_response()
+}
+
+async fn by_tag(State(f): State<Fake>, Path(tag): Path<String>) -> Response {
+    f.hits.fetch_add(1, Ordering::SeqCst);
+    if tag != TAG {
+        return (StatusCode::NOT_FOUND, r#"{"message":"Not Found"}"#).into_response();
+    }
+    release_json(&f).into_response()
+}
+
+fn release_json(f: &Fake) -> ([(header::HeaderName, &'static str); 1], String) {
+    let names: Vec<String> = f.files.lock().unwrap().keys().cloned().collect();
+    let assets: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"name": n, "size": 1, "browser_download_url": format!("{}/download/{}", f.base, n)}))
+        .collect();
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        json!({
+            "tag_name": TAG, "name": "Aegis 0.2.0", "draft": false, "prerelease": false,
+            "html_url": "https://github.com/shivam411/Aegis/releases/tag/v0.2.0",
+            "published_at": "2026-10-01T00:00:00Z", "assets": assets,
+        })
+        .to_string(),
+    )
+}
+
+/// Downloads redirect once, like GitHub's release downloads do.
+async fn download(State(f): State<Fake>, Path(name): Path<String>) -> Response {
+    f.hits.fetch_add(1, Ordering::SeqCst);
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, format!("{}/cdn/{}", f.base, name))],
+    )
+        .into_response()
+}
+
+async fn cdn(State(f): State<Fake>, Path(name): Path<String>) -> Response {
+    match f.files.lock().unwrap().get(&name) {
+        Some(bytes) => bytes.clone().into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The new "binary": a script that answers --version like aegis-daemon.
+fn new_binary() -> Vec<u8> {
+    b"#!/bin/sh\necho 'aegis-daemon 0.2.0'\n".to_vec()
+}
+
+async fn fake_github(tamper: bool) -> Fake {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let archive = build_tar_gz(&[
+        ("aegis-daemon", &new_binary()),
+        ("aegis-cli", b"new cli"),
+        ("aegis-tui", b"new tui"),
+    ]);
+    let listed = if tamper {
+        sha256(b"something else")
+    } else {
+        sha256(&archive)
+    };
+    let sums = format!(
+        "{}  aegis-linux-amd64.tar.gz\n{}  aegis-darwin-arm64.tar.gz\n",
+        to_hex(&listed),
+        to_hex(&sha256(b"other"))
+    );
+    let mut files = HashMap::new();
+    files.insert("aegis-linux-amd64.tar.gz".to_string(), archive);
+    files.insert("SHA256SUMS".to_string(), sums.into_bytes());
+    let fake = Fake {
+        base,
+        files: Arc::new(Mutex::new(files)),
+        hits: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route("/repos/shivam411/Aegis/releases/latest", get(latest))
+        .route("/repos/shivam411/Aegis/releases/tags/:tag", get(by_tag))
+        .route("/download/:name", get(download))
+        .route("/cdn/:name", get(cdn))
+        .with_state(fake.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    fake
+}
+
+#[derive(Default)]
+struct Hooks {
+    events: Mutex<Vec<(String, Value)>>,
+    backups: AtomicUsize,
+}
+
+impl Hooks {
+    fn types(&self) -> Vec<String> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect()
+    }
+    fn last(&self, event_type: &str) -> Value {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(t, _)| t == event_type)
+            .map(|(_, p)| p.clone())
+            .unwrap_or_else(|| panic!("no {event_type} in {:?}", self.types()))
+    }
+}
+
+#[async_trait::async_trait]
+impl UpdateHooks for Hooks {
+    async fn record(&self, event_type: &str, payload: Value) {
+        self.events
+            .lock()
+            .unwrap()
+            .push((event_type.to_string(), payload));
+    }
+    async fn backup(&self) -> anyhow::Result<String> {
+        let n = self.backups.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(format!("aegis-backup-{n}.tar.gz"))
+    }
+}
+
+struct Setup {
+    _dir: tempfile::TempDir,
+    exe: std::path::PathBuf,
+    settings: UpdateSettings,
+}
+
+fn setup(fake: &Fake, check: bool) -> Setup {
+    let dir = tempfile::TempDir::new().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let exe = bin.join("aegis-daemon");
+    std::fs::write(&exe, b"old daemon").unwrap();
+    std::fs::write(bin.join("aegis-cli"), b"old cli").unwrap();
+    let mut settings = UpdateSettings::new("0.1.0", exe.clone(), dir.path().join("update"));
+    settings.check = check;
+    settings.api_base = Some(fake.base.clone());
+    settings.helper_unit = dir.path().join("no-helper.path");
+    settings.target = Target::from_consts("linux", "x86_64");
+    // The fake binary is a shell script; only run it where sh exists.
+    settings.verify_runs = cfg!(unix);
+    settings.manual_command = "sudo aegis-daemon self-update".into();
+    Setup {
+        _dir: dir,
+        exe,
+        settings,
+    }
+}
+
+#[tokio::test]
+async fn disabled_checks_make_no_requests() {
+    let fake = fake_github(false).await;
+    let s = setup(&fake, false);
+    let hooks = Arc::new(Hooks::default());
+    let mgr = UpdateManager::new(s.settings.clone(), hooks.clone());
+    assert!(matches!(mgr.check_now().await, Err(UpdateError::Disabled)));
+    assert!(mgr.spawn_periodic().is_none());
+    assert!(matches!(
+        mgr.apply("user:admin".into(), None).await,
+        Err(UpdateError::Disabled)
+    ));
+    mgr.on_boot().await;
+    let status = mgr.status();
+    assert!(!status.check_enabled && !status.update_available);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 0);
+    assert!(hooks.types().is_empty(), "{:?}", hooks.types());
+}
+
+#[tokio::test]
+async fn check_then_apply_replaces_the_binary_and_requests_a_restart() {
+    let fake = fake_github(false).await;
+    let s = setup(&fake, true);
+    let hooks = Arc::new(Hooks::default());
+    let mgr = UpdateManager::new(s.settings.clone(), hooks.clone());
+    mgr.on_boot().await;
+    assert_eq!(mgr.mode(), InstallMode::InPlace);
+
+    // Nothing to apply before a check.
+    assert!(matches!(
+        mgr.apply("user:admin".into(), None).await,
+        Err(UpdateError::NothingToApply(_))
+    ));
+
+    let status = mgr.check_now().await.unwrap();
+    assert!(status.update_available, "{status:?}");
+    assert_eq!(status.latest.as_ref().unwrap().tag, TAG);
+    assert!(status.check_error.is_none());
+    // A second check doesn't announce the same release again.
+    mgr.check_now().await.unwrap();
+    assert_eq!(hooks.types(), vec!["UpdateAvailable"]);
+    assert_eq!(hooks.last("UpdateAvailable")["latest_version"], TAG);
+
+    // The version the admin saw must still be the latest.
+    assert!(matches!(
+        mgr.apply("user:admin".into(), Some("v0.3.0")).await,
+        Err(UpdateError::NothingToApply(_))
+    ));
+
+    let mut restart = mgr.restart_requested();
+    let status = mgr.apply("user:admin".into(), Some(TAG)).await.unwrap();
+    assert_eq!(status.phase, Phase::Restarting, "{status:?}");
+    assert!(*restart.borrow_and_update());
+    assert_eq!(std::fs::read(&s.exe).unwrap(), new_binary());
+    assert_eq!(
+        std::fs::read(s.exe.with_file_name("aegis-daemon.previous")).unwrap(),
+        b"old daemon"
+    );
+    let bin = s.exe.parent().unwrap();
+    assert_eq!(std::fs::read(bin.join("aegis-cli")).unwrap(), b"new cli");
+    // Not installed before, so not installed now.
+    assert!(!bin.join("aegis-tui").exists());
+    assert_eq!(hooks.backups.load(Ordering::SeqCst), 1);
+    assert_eq!(hooks.types(), vec!["UpdateAvailable", "UpdateStarted"]);
+    assert_eq!(hooks.last("UpdateStarted")["mode"], "in_place");
+    // Busy until the restart.
+    assert!(matches!(
+        mgr.apply("user:admin".into(), None).await,
+        Err(UpdateError::Busy)
+    ));
+
+    // "Restart": the new version starts on the same data directory.
+    let mut after = s.settings.clone();
+    after.current_version = "0.2.0".into();
+    let hooks2 = Arc::new(Hooks::default());
+    let mgr2 = UpdateManager::new(after, hooks2.clone());
+    mgr2.on_boot().await;
+    let applied = hooks2.last("UpdateApplied");
+    assert_eq!(applied["from_version"], "0.1.0");
+    assert_eq!(applied["to_version"], "0.2.0");
+    assert_eq!(applied["method"], "in_place");
+    assert_eq!(applied["backup"], "aegis-backup-1.tar.gz");
+    let status = mgr2.status();
+    assert!(!status.update_available);
+    assert_eq!(status.last_update.unwrap().to_version, "0.2.0");
+}
+
+#[tokio::test]
+async fn a_tampered_archive_is_rejected_before_anything_changes() {
+    let fake = fake_github(true).await;
+    let s = setup(&fake, true);
+    let hooks = Arc::new(Hooks::default());
+    let mgr = UpdateManager::new(s.settings.clone(), hooks.clone());
+    mgr.check_now().await.unwrap();
+    let restart = mgr.restart_requested();
+    let status = mgr.apply("user:admin".into(), None).await.unwrap();
+    assert_eq!(status.phase, Phase::Failed);
+    assert!(
+        status
+            .phase_error
+            .as_deref()
+            .unwrap()
+            .contains("Checksum mismatch"),
+        "{status:?}"
+    );
+    assert!(!*restart.borrow());
+    assert_eq!(std::fs::read(&s.exe).unwrap(), b"old daemon");
+    assert!(!s.exe.with_file_name("aegis-daemon.previous").exists());
+    assert_eq!(hooks.backups.load(Ordering::SeqCst), 0);
+    let failed = hooks.last("UpdateFailed");
+    assert_eq!(failed["stage"], "download");
+    // No staging files left next to the binary.
+    assert_eq!(
+        std::fs::read_dir(s.exe.parent().unwrap()).unwrap().count(),
+        2
+    );
+    // After a failure, it may be tried again.
+    assert!(matches!(
+        mgr.apply("user:admin".into(), None).await,
+        Ok(UpdateStatus {
+            phase: Phase::Failed,
+            ..
+        })
+    ));
+}
+
+use aegis_update::UpdateStatus;
+
+#[tokio::test]
+async fn refuses_when_the_binary_is_not_writable() {
+    let fake = fake_github(false).await;
+    let mut s = setup(&fake, true);
+    // A binary the daemon can't replace (as for a root-owned /usr/local/bin).
+    s.settings.exe = s.exe.parent().unwrap().join("missing").join("aegis-daemon");
+    let hooks = Arc::new(Hooks::default());
+    let mgr = UpdateManager::new(s.settings.clone(), hooks.clone());
+    mgr.check_now().await.unwrap();
+    let status = mgr.status();
+    assert_eq!(status.mode, InstallMode::Manual);
+    assert_eq!(
+        status.manual_command.as_deref(),
+        Some("sudo aegis-daemon self-update")
+    );
+    let err = mgr.apply("user:admin".into(), None).await.unwrap_err();
+    assert!(matches!(err, UpdateError::NotPossible(_)));
+    assert!(
+        err.to_string().contains("sudo aegis-daemon self-update"),
+        "{err}"
+    );
+    assert_eq!(hooks.backups.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn helper_mode_hands_over_a_request_and_reports_its_failure() {
+    let fake = fake_github(false).await;
+    let mut s = setup(&fake, true);
+    s.settings.exe = s.exe.parent().unwrap().join("missing").join("aegis-daemon");
+    std::fs::write(&s.settings.helper_unit, "[Path]").unwrap();
+    let hooks = Arc::new(Hooks::default());
+    let mgr = UpdateManager::new(s.settings.clone(), hooks.clone());
+    mgr.check_now().await.unwrap();
+    assert_eq!(mgr.mode(), InstallMode::Helper);
+    let status = mgr.start_apply("user:admin".into(), Some(TAG)).unwrap();
+    assert_eq!(status.phase, Phase::Downloading);
+
+    // Play the root helper: take the request, report a failure.
+    let dir = s.settings.state_dir.clone();
+    let mut tag = None;
+    for _ in 0..100 {
+        if let Some(t) = helper::take_request(&dir).unwrap() {
+            tag = Some(t);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(tag.as_deref(), Some(TAG));
+    assert_eq!(hooks.backups.load(Ordering::SeqCst), 1);
+    helper::write_result(&dir, false, "Checksum mismatch for x").unwrap();
+    for _ in 0..100 {
+        if mgr.status().phase == Phase::Failed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let status = mgr.status();
+    assert_eq!(status.phase, Phase::Failed);
+    assert_eq!(hooks.last("UpdateFailed")["stage"], "helper");
+    assert_eq!(hooks.last("UpdateStarted")["mode"], "helper");
+}
+
+#[tokio::test]
+async fn self_update_installs_a_requested_release() {
+    let fake = fake_github(false).await;
+    let s = setup(&fake, true);
+    let source = Source::new(Some(fake.base.clone()), "shivam411/Aegis", "test");
+    let opts = |wanted, force| helper::SelfUpdate {
+        source: &source,
+        exe: &s.exe,
+        target: Target::from_consts("linux", "x86_64").unwrap(),
+        current: aegis_update::parse_version("0.1.0").unwrap(),
+        wanted,
+        force,
+        verify_runs: cfg!(unix),
+    };
+    let err = helper::self_update(opts(Some("v0.9.9"), false))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Not Found"), "{err}");
+    let installed = helper::self_update(opts(Some(TAG), false)).await.unwrap();
+    assert_eq!(installed.to.to_string(), "0.2.0");
+    assert_eq!(std::fs::read(&s.exe).unwrap(), new_binary());
+    // Already there: nothing to do without --force.
+    let mut again = opts(None, false);
+    again.current = installed.to.clone();
+    let err = helper::self_update(again).await.unwrap_err();
+    assert!(err.to_string().contains("not newer"), "{err}");
+}

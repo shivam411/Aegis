@@ -14,6 +14,7 @@ chrono = { workspace = true }
 toml = { workspace = true }
 
 aegis-config = { path = "../../core/config" }
+aegis-update = { path = "../../core/update" }
 aegis-api = { path = "../../core/api" }
 aegis-types = { path = "../../core/types" }
 aegis-engine = { path = "../../runtime/engine" }

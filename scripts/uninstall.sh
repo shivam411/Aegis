@@ -35,6 +35,8 @@ for bin in aegis-daemon aegis-cli aegis-tui; do
         info "Removed ${INSTALL_DIR}/${bin}"
         removed=$((removed + 1))
     fi
+    # Kept by self-update for rollback.
+    rm -f "${INSTALL_DIR}/${bin}.previous"
 done
 
 if [ "${removed}" -eq 0 ]; then

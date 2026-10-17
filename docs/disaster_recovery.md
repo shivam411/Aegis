@@ -17,6 +17,8 @@ This document defines disaster recovery procedures, failure recovery objectives,
 | **Failed Migration** | Parser halts with validation error | Original systemd/PM2 configuration left untouched; run `aegis validate` | `< 10 seconds` |
 | **Power Loss Outage** | Daemon performs WAL log recovery on boot | Process supervisor restarts active release PIDs automatically | `< 15 seconds` |
 
+These recovery times are objectives, not measurements. The only one measured so far is a clean daemon restart: in the CI soak test the daemon answered within about 120 ms of starting and the app served again right after ([`benchmarks.md`](benchmarks.md)). Power loss, reboots and restores have not been timed.
+
 ---
 
 ## 2. Backups and restore

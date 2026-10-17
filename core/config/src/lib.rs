@@ -48,6 +48,51 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub backup: BackupConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+/// `[update]`: checks for new Aegis releases on GitHub.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// Ask the GitHub releases API for the latest stable release every
+    /// `interval_hours`. When false the daemon makes no update-related
+    /// network requests at all, and upgrades from the dashboard are off.
+    pub check: bool,
+    /// Hours between checks.
+    pub interval_hours: u64,
+    /// The GitHub repository releases come from, as `owner/name` (for forks).
+    pub repo: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            check: true,
+            interval_hours: 12,
+            repo: "shivam411/Aegis".into(),
+        }
+    }
+}
+
+impl UpdateConfig {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if !(1..=24 * 31).contains(&self.interval_hours) {
+            anyhow::bail!("update.interval_hours must be 1-744");
+        }
+        let part_ok = |s: &str| {
+            !s.is_empty()
+                && s != "."
+                && s != ".."
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        match self.repo.split_once('/') {
+            Some((owner, name)) if part_ok(owner) && part_ok(name) => Ok(()),
+            _ => anyhow::bail!("update.repo must be a GitHub repository like \"owner/name\""),
+        }
+    }
 }
 
 /// `[backup]`: scheduled backups of the database, the secrets key,
@@ -1297,5 +1342,31 @@ include_releases = false
             assert!(config.backup.validate().is_err(), "{bad}");
         }
         assert!(toml::from_str::<Config>("[backup]\nkeepp = 3\n").is_err());
+    }
+
+    #[test]
+    fn update_section_defaults_and_validation() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.update, UpdateConfig::default());
+        assert!(config.update.check);
+        assert_eq!(config.update.interval_hours, 12);
+        assert!(config.update.validate().is_ok());
+
+        let config: Config =
+            toml::from_str("[update]\ncheck = false\nrepo = \"me/aegis-fork\"\n").unwrap();
+        assert!(!config.update.check);
+        assert_eq!(config.update.repo, "me/aegis-fork");
+        assert!(config.update.validate().is_ok());
+
+        for bad in [
+            "interval_hours = 0",
+            r#"repo = "aegis""#,
+            r#"repo = "a/b/c""#,
+            r#"repo = "../x""#,
+        ] {
+            let config: Config = toml::from_str(&format!("[update]\n{bad}\n")).unwrap();
+            assert!(config.update.validate().is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<Config>("[update]\nchek = false\n").is_err());
     }
 }

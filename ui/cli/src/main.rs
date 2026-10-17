@@ -1205,7 +1205,7 @@ async fn run() -> Result<(), anyhow::Error> {
             }
         },
         Commands::Upgrade { check, force, yes } => {
-            let current = env!("CARGO_PKG_VERSION");
+            let current = aegis_update::VERSION;
             println!("This CLI:       v{}", current);
             if let Some(status) = daemon.status().await {
                 println!("Daemon:         v{}", status.version);
@@ -1243,10 +1243,13 @@ async fn run() -> Result<(), anyhow::Error> {
                     exe.display()
                 );
                 println!(
-                    "  curl -fsSL {} | sudo bash -s -- --server   (add --domain NAME if you used it)",
-                    upgrade::INSTALL_SCRIPT_URL
+                    "  sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml /usr/local/bin/aegis-daemon self-update --restart-unit aegis.service"
                 );
-                println!("  sudo systemctl restart aegis");
+                println!(
+                    "  (downloads {}, checks it against the release's SHA256SUMS and keeps the old binaries as *.previous;",
+                    latest
+                );
+                println!("   admins can also use \"Upgrade now\" in the dashboard, see docs/upgrading.md)");
                 return Ok(());
             }
             println!(

@@ -72,9 +72,17 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | **Time travel inspection (`aegis inspect --at`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
 | **Incident report (`aegis incident`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
 | **Outage investigation (`aegis investigate`)** | 🧪 Experimental | Unit tests over synthetic event histories in [`ui/cli/src/`](../ui/cli/src/); not yet run against a live daemon in CI |
-| **Self-update (`aegis upgrade`)** | 🧪 Experimental | Version comparison unit-tested in [`ui/cli/src/upgrade.rs`](../ui/cli/src/upgrade.rs); the install step is not run in CI |
+| **Self-update (`aegis upgrade`)** | 🧪 Experimental | Version comparison unit-tested in [`core/update`](../core/update/src/version.rs) (shared with the daemon); the install.sh step is not run in CI |
+| **Update checks and "Upgrade now"** (`[update]`, `aegis-daemon self-update`) | 🧪 Experimental | [`core/update/tests/flow.rs`](../core/update/tests/flow.rs) drives check → available → apply against a fake GitHub API on 127.0.0.1 up to the binary swap and restart request (tampered archives rejected, checks off means no requests, unwritable binaries refused, helper hand-over); role tests in [`core/web/tests/update.rs`](../core/web/tests/update.rs); banner in [`ui-tests/tests/update.spec.js`](../ui-tests/tests/update.spec.js). Not tested end to end: the restart under systemd, the root `aegis-update` helper units, and a download from the real GitHub. See [`upgrading.md`](upgrading.md). |
 | **PM2 & systemd migration (`aegis migrate`)** | 🧪 Experimental | Parser unit tests in [`ui/cli/src/migrate.rs`](../ui/cli/src/migrate.rs); not checked against real PM2/systemd setups |
 | **Terminal UI (`aegis-tui`)** | 🧪 Experimental | `ratatui` dashboard over the local gRPC API: apps table, app view (releases, deployments, live logs), live event stream, and confirmed start/stop/restart/deploy/rollback actions ([roadmap](roadmap_web_control_plane.md) Phase 6). The state reducer, filters and screen rendering (`TestBackend`) have unit tests in CI. Two opt-in tests (`cargo test -p aegis-tui -- --ignored` with `AEGIS_TUI_LIVE_ADDR` set) drive its gRPC worker against a real daemon, including a reconnect after a daemon restart; they are not in CI, and no test drives the interactive terminal, so it stays Experimental. |
+
+### Performance and stability evidence
+
+| Feature | Status | Evidence |
+| :--- | :---: | :--- |
+| **Benchmarks in CI** (event store append/replay, projection rebuild, proxy overhead, deploy saga wall time) | 🟡 Validated (warn only) | [`benchmarks/`](../benchmarks/) run on every PR and push to `main` in [`perf.yml`](../.github/workflows/perf.yml), compared with the latest `main` run. A >30% regression is a warning, not a failure, and the numbers come from shared CI runners. See [`benchmarks.md`](benchmarks.md). |
+| **Soak test** (real daemon, load through the proxy, deploys/rollbacks/restarts/limit changes/daemon restarts, leak and error checks) | 🟡 Validated (5 min per push to `main`, 60 min nightly) | [`scripts/soak.sh`](../scripts/soak.sh), [`benchmarks.md`](benchmarks.md). No 24 h+ soak has been run; leak detection over 5 minutes only catches fast leaks. A 15-minute run found an fd leak (one open log file per app process ever started), so the nightly soak fails until it is fixed. |
 
 ### Not implemented yet
 

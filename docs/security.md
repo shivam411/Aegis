@@ -129,6 +129,17 @@ Only pushes to the project's branch deploy, and always from the project's **conf
 - `ExecStartPre=aegis-daemon check-config` stops a bad configuration from starting.
 - `Delegate=yes` gives the daemon its own cgroup subtree for per-app limits. `/sys/fs/cgroup` is left writable for that, and systemd's file ownership still confines the `aegis` user to its own subtree. The daemon never needs root for limits under this unit. Run by hand as root, it creates `/sys/fs/cgroup/aegis` instead.
 - The installer never changes firewall rules. With Option B, open 80/443 for the proxy yourself.
+- Unless run with `--no-self-update`, it also installs `aegis-update.path` and `aegis-update.service` (root) for upgrades from the dashboard; see below. The installer itself checks the downloaded archive against the release's `SHA256SUMS`.
+
+## Self-update
+
+See [`upgrading.md`](upgrading.md) for the procedure.
+
+- **What is verified.** The release archive must match the SHA-256 listed for it in the same release's `SHA256SUMS` (written by `.github/workflows/release.yml`), checked before anything is unpacked; only regular files named `aegis-daemon`, `aegis-cli` and `aegis-tui` at the archive's top level are used. The new daemon must then run and report the expected version (`--version`) before it replaces the old one. Downloads must be `https://github.com/<repo>/releases/download/...` URLs (redirects to GitHub's download hosts are followed, HTTPS only), with size limits and timeouts.
+- **The trust root** is TLS to `api.github.com`/`github.com` (certificates checked against the Mozilla root store compiled into Aegis) and whoever can publish releases in the configured `[update] repo`. The checksum protects against corrupted or swapped downloads, not against a compromised GitHub account or release workflow: the checksum file comes from the same release. Releases are **not signed** yet; signatures (e.g. minisign or Sigstore) would make the maintainers' signing key the trust root and are future work.
+- **Who can trigger it.** Viewers and deployers can only see that an update exists. Checking now and upgrading need a signed-in admin (with CSRF token); API tokens can't do either. Only the version of the latest stable release (draft and pre-releases excluded) that is newer than the running one can be installed from the dashboard; never a downgrade, never a new major version.
+- **Least privilege on servers.** The daemon (user `aegis`, `ProtectSystem=strict`) can't write `/usr/local/bin`. It writes `/var/lib/aegis/update/request.json` containing only a version string. The root helper reads nothing else from the daemon: it rejects symlinks, oversized or malformed requests, deletes the request first, downloads and verifies the release itself, installs only a version newer than its own, may write only `/usr/local/bin` and that directory (`ProtectSystem=strict`, `ReadWritePaths=`), and writes its result file fresh (never through an existing file or symlink). So a compromised `aegis` user can at most make root install a newer genuine release. Install with `--no-self-update` to remove even that; the dashboard then shows the command for an admin to run.
+- **Privacy.** With `check = true` the daemon contacts `api.github.com` every 12 hours (sending its version in the `User-Agent`, and your server's IP address). Set `[update] check = false` to stop that.
 
 ## Known limitations
 

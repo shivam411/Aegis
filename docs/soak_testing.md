@@ -2,7 +2,7 @@
 
 This document defines how to soak-test Aegis to check long-term stability under continuous load.
 
-> **Status: no soak test has been run yet.** There is no soak script in the repository. Results go in a report based on [`soak-report.md`](../validation/_templates/soak/soak-report.md), together with the script that produced them.
+> **Status: short soaks run in CI; the long ones below haven't been run.** [`scripts/soak.sh`](../scripts/soak.sh) implements most of this protocol (steady load through the proxy, deploys, rollbacks, restarts, limit changes, daemon restarts; RSS, fds, threads, zombies, database and log size). It runs for 5 minutes on every push to `main` and for 60 minutes nightly; see [`benchmarks.md`](benchmarks.md) for how it judges a run and how to read its report. The 24 h / 72 h / 168 h runs need a dedicated host. Not covered yet: failing builds and unhealthy releases mixed into the load, `kill -9` of the app, daemon idle CPU, and gRPC `GetStatus` latency.
 
 ---
 

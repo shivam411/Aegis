@@ -379,6 +379,15 @@ impl Managed {
         }
         let _ = self.log_tx.send(entry);
     }
+
+    /// Closes the log file; the next line written opens it again. Called
+    /// when the monitor and each output pipe finish, so a stopped process
+    /// doesn't hold a file handle for the rest of the daemon's life.
+    fn close_log(&self) {
+        if let Some(log) = self.log_file.lock().unwrap().as_mut() {
+            log.file = None;
+        }
+    }
 }
 
 fn write_log_line(log: &mut LogFile, entry: &LogLine, max_bytes: u64) {
@@ -557,12 +566,14 @@ impl ProcessSupervisor {
         let (first_tx, first_rx) = oneshot::channel();
         let inner = self.inner.clone();
         let for_monitor = managed.clone();
+        let for_close = managed.clone();
         let task = tokio::spawn(async move {
             monitor(inner.clone(), for_monitor.clone(), stop_rx, first_tx).await;
             let launcher = for_monitor.spec.lock().unwrap().launcher.clone();
             if let Some(launcher) = launcher {
                 let _ = tokio::time::timeout(Duration::from_secs(30), launcher.cleanup(&id)).await;
             }
+            for_close.close_log();
             if let Some(hook) = inner.hook.get() {
                 hook.finished(&id);
             }
@@ -814,7 +825,10 @@ where
         loop {
             buf.clear();
             match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) | Err(_) => break,
+                Ok(0) | Err(_) => {
+                    managed.close_log();
+                    break;
+                }
                 Ok(_) => {
                     buf.truncate(MAX_LINE_BYTES);
                     let line = String::from_utf8_lossy(&buf)
@@ -1331,6 +1345,17 @@ mod tests {
             saw_stop |= line.stream == LogStream::System && line.line.contains("Stopped");
         }
         assert!(saw_stop);
+        // The stopped process no longer holds its log file open.
+        let managed = supervisor.get_managed(&id).unwrap();
+        wait_until(|| {
+            managed
+                .log_file
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|log| log.file.is_none())
+        })
+        .await;
     }
 
     #[tokio::test]

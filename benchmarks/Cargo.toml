@@ -2,15 +2,45 @@
 name = "aegis-benchmarks"
 version = "0.1.0"
 edition = "2021"
+publish = false
+description = "Performance benchmarks for Aegis (see docs/benchmarks.md)"
 
 [dependencies]
 aegis-types = { path = "../core/types" }
+aegis-event-store = { path = "../core/event_store" }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
 aegis-event-bus = { path = "../core/event_bus" }
 aegis-projection = { path = "../core/projection" }
+aegis-ingress = { path = "../runtime/ingress" }
+aegis-control = { path = "../core/control" }
+aegis-process = { path = "../runtime/process" }
+aegis-resources = { path = "../runtime/resources" }
 tokio = { workspace = true }
-serde_json = { workspace = true }
-criterion = "0.5"
+tempfile = { workspace = true }
+futures-util = { workspace = true }
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+criterion = { version = "0.5", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 
+# Criterion: event bus publish, event store append and replay, projection
+# rebuild.
 [[bench]]
 name = "event_throughput"
+harness = false
+
+# Criterion: request latency through the built-in proxy (runtime/ingress)
+# versus straight to the app.
+[[bench]]
+name = "proxy_overhead"
+harness = false
+
+# Not Criterion: wall time of whole deployments and rollbacks of a tiny app
+# through the real deploy saga (Unix only; needs python3).
+[[bench]]
+name = "deploy_saga"
 harness = false

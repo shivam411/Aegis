@@ -1946,6 +1946,116 @@
         }
       }
     },
+    "/api/v1/system/update": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "update_status",
+        "responses": {
+          "200": {
+            "description": "Whether a newer release is available (cached; checked every `[update] interval_hours`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatusDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/update/apply": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "apply_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Started: backup, download and verification, binary swap, restart. Follow `phase` in GET /api/v1/system/update; the daemon restarts at the end",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatusDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins only (signed-in users, not API tokens)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing to apply, already running, checks disabled, or this machine needs the update run by an administrator (see the message)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/update/check": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "check_update",
+        "responses": {
+          "200": {
+            "description": "Checked GitHub now; a failed check is reported in `check_error`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatusDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins only (signed-in users, not API tokens)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Update checks are disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tokens": {
       "get": {
         "tags": [
@@ -2301,6 +2411,18 @@
   },
   "components": {
     "schemas": {
+      "ApplyUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version the operator confirmed (e.g. `v0.2.0`); refused if the\nlatest known release is a different one."
+          }
+        }
+      },
       "BackupDto": {
         "type": "object",
         "description": "A backup archive.",
@@ -2983,6 +3105,61 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "LastUpdateDto": {
+        "type": "object",
+        "description": "The last update this data directory saw.",
+        "required": [
+          "from_version",
+          "to_version",
+          "at",
+          "method"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "RFC 3339: when the new version first started."
+          },
+          "from_version": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "description": "`in_place`, `helper` or `external`."
+          },
+          "to_version": {
+            "type": "string"
+          }
+        }
+      },
+      "LatestReleaseDto": {
+        "type": "object",
+        "description": "The newest stable release found on GitHub.",
+        "required": [
+          "version",
+          "name",
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339."
+          },
+          "url": {
+            "type": "string",
+            "description": "The release page with its notes."
+          },
+          "version": {
+            "type": "string",
+            "description": "The release tag, e.g. `v0.2.0`."
           }
         }
       },
@@ -4028,6 +4205,102 @@
           },
           "scope": {
             "type": "string"
+          }
+        }
+      },
+      "UpdateStatusDto": {
+        "type": "object",
+        "description": "Update status.",
+        "required": [
+          "current_version",
+          "check_enabled",
+          "update_available",
+          "mode",
+          "mode_detail",
+          "can_apply",
+          "phase"
+        ],
+        "properties": {
+          "blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the available update can't be applied from here."
+          },
+          "can_apply": {
+            "type": "boolean",
+            "description": "`POST /api/v1/system/update/apply` would be accepted now."
+          },
+          "check_enabled": {
+            "type": "boolean",
+            "description": "`[update] check`: when false, Aegis makes no update requests."
+          },
+          "check_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last check failed (checks are retried later)."
+          },
+          "checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339, the last successful check."
+          },
+          "current_version": {
+            "type": "string",
+            "description": "The running version."
+          },
+          "last_update": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LastUpdateDto"
+              }
+            ]
+          },
+          "latest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LatestReleaseDto"
+              }
+            ]
+          },
+          "manual_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "description": "How an update is installed here: `in_place` (Aegis replaces its own\nbinary), `helper` (a root-owned helper service does), `manual` (an\nadministrator runs `manual_command`) or `unsupported`."
+          },
+          "mode_detail": {
+            "type": "string",
+            "description": "What applying means on this machine."
+          },
+          "phase": {
+            "type": "string",
+            "description": "`idle`, `downloading`, `backing_up`, `installing`,\n`waiting_for_helper`, `restarting` or `failed`."
+          },
+          "phase_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "update_available": {
+            "type": "boolean",
+            "description": "`latest` is newer than the running version."
           }
         }
       },
