@@ -1,0 +1,18 @@
+# Deploy with: aegis deploy (from this directory, after `aegis init` assigns an id)
+[project]
+name = "docker-app"
+
+[build]
+# Runs on the host before the image build; the Dockerfile copies www/.
+build_command = "echo $AEGIS_RELEASE_VERSION > www/version.txt"
+
+[deploy]
+port = 3400
+health_check_url = "http://127.0.0.1:3400/"
+
+[run]
+runtime = "docker"
+dockerfile = "Dockerfile"
+# The app listens on this port inside the container; Aegis publishes it on
+# 127.0.0.1:3400 (or on a port of its own behind the built-in proxy).
+container_port = 8080

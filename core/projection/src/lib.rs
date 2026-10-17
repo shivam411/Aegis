@@ -116,6 +116,15 @@ pub struct ProcessState {
     /// The port was allocated for the proxy (rather than the configured one).
     #[serde(default)]
     pub proxied: bool,
+    /// "docker" for container apps; `None` for plain processes.
+    #[serde(default)]
+    pub runtime: Option<String>,
+    /// The container's name, for container apps.
+    #[serde(default)]
+    pub container: Option<String>,
+    /// The image the container runs, for container apps.
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -501,6 +510,11 @@ impl ProjectionEngine {
                             .and_then(|v| v.as_bool())
                             .or(previous.as_ref().map(|p| p.proxied))
                             .unwrap_or(false),
+                        // Each start says how it runs; older events say nothing
+                        // (a plain process).
+                        runtime: string_field(&payload, "runtime").filter(|r| r != "process"),
+                        container: string_field(&payload, "container"),
+                        image: string_field(&payload, "image"),
                     },
                 );
                 // A candidate is a new release starting next to the live one

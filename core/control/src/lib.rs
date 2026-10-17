@@ -8,6 +8,7 @@
 pub mod backup;
 mod config_file;
 mod deploy;
+mod docker;
 mod domains;
 mod process;
 mod resources;
@@ -28,6 +29,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+pub use aegis_docker::DockerStatus;
 pub use aegis_secrets::SecretInfo;
 pub use config_file::ConfigPreview;
 pub use deploy::DeployRequest;
@@ -170,6 +172,8 @@ struct Inner {
     secrets: aegis_secrets::SecretStore,
     /// One backup at a time.
     backup_lock: tokio::sync::Mutex<()>,
+    /// Container apps (`[run] runtime = "docker"`).
+    docker: Arc<aegis_docker::Docker>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,6 +225,10 @@ impl ControlPlane {
             settings.metrics_retention,
         );
         let (metrics_tx, _) = tokio::sync::broadcast::channel(256);
+        let docker = Arc::new(aegis_docker::Docker::new(
+            settings.data_dir.join("run").join("docker"),
+            aegis_docker::Docker::instance_for(&settings.data_dir),
+        ));
         Ok(Self {
             inner: Arc::new(Inner {
                 store,
@@ -241,6 +249,7 @@ impl ControlPlane {
                 domain_lock: tokio::sync::Mutex::new(()),
                 secrets,
                 backup_lock: tokio::sync::Mutex::new(()),
+                docker,
             }),
         })
     }
@@ -277,6 +286,7 @@ impl ControlPlane {
         self.spawn_dispatcher();
         self.spawn_process_event_recorder();
         self.spawn_sampler();
+        self.spawn_docker_janitor();
     }
 
     pub fn store(&self) -> &EventStore {

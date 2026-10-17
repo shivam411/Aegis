@@ -89,6 +89,7 @@ version = "0.1.0"
 dependencies = [
  "aegis-artifact-store",
  "aegis-config",
+ "aegis-docker",
  "aegis-engine",
  "aegis-release",
  "aegis-types",
@@ -107,6 +108,7 @@ version = "0.1.0"
 dependencies = [
  "aegis-api",
  "aegis-config",
+ "aegis-docker",
  "aegis-engine",
  "aegis-projection",
  "aegis-types",
@@ -139,6 +141,7 @@ dependencies = [
  "aegis-artifact-store",
  "aegis-builder",
  "aegis-config",
+ "aegis-docker",
  "aegis-engine",
  "aegis-event-store",
  "aegis-health",
@@ -204,6 +207,17 @@ dependencies = [
 [[package]]
 name = "aegis-docker"
 version = "0.1.0"
+dependencies = [
+ "aegis-config",
+ "aegis-process",
+ "aegis-types",
+ "anyhow",
+ "async-trait",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "aegis-engine"
@@ -348,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "aegis-types",
  "anyhow",
+ "async-trait",
  "chrono",
  "libc",
  "tempfile",

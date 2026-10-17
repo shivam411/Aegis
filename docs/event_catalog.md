@@ -98,7 +98,7 @@ Each stage reports `Started`, then `Success`, `Skipped` (no command configured) 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
 | `ProcessStartRequested` / `ProcessStopRequested` / `ProcessRestartRequested` | An operator action (audit record) | `process_id`, `project_id` |
-| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd`, `port` (its `PORT`), `proxied` (port allocated for the proxy), `candidate` (a new release starting next to the live one) |
+| `ProcessStarted` | The supervisor spawned the process (also after each automatic restart) | `process_id`, `project_id`, `pid`, `restart_count`, `release_version`, `command`, `cwd`, `port` (its `PORT`), `proxied` (port allocated for the proxy), `candidate` (a new release starting next to the live one), `runtime` (`process` or `docker`), `container` and `image` (container apps; `pid` is then the container's main process and `command` is `docker: <image>`) |
 | `ProcessCrashed` | The process exited without being asked to | `process_id`, `project_id`, `exit_code`, `will_restart`, `restart_delay_ms` |
 | `ProcessFailed` | Crash loop or spawn failure; the supervisor stopped restarting it | `process_id`, `project_id`, `reason` |
 | `ProcessStopped` | The process was stopped | `process_id`, `project_id`, `reason` (`requested`, `replaced`, `restart`, `shutdown`), `exit_code` |

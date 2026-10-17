@@ -943,6 +943,9 @@ async function appPage(main, ctx, name, tab = 'deploy') {
     replace(header, h('div', { class: 'page-header' },
       h('h1', {}, project.name),
       processPill(project),
+      p && p.runtime === 'docker'
+        ? h('span', { 'data-runtime': 'docker', title: p.image || '' }, pill('Docker', 'info'))
+        : null,
       h('div', { class: 'spacer' }),
       processButtons(project, refreshProject, { small: false }),
       h('div', { class: 'subtitle muted small' },
@@ -950,7 +953,8 @@ async function appPage(main, ctx, name, tab = 'deploy') {
           project.current_release ? `Version ${project.current_release}` : 'Not deployed yet',
           p && p.status === 'Running' ? `up ${uptime(p)}` : null,
           p ? `${p.restart_count} restart${p.restart_count === 1 ? '' : 's'}` : null,
-          p && p.pid ? `pid ${p.pid}` : null,
+          p && p.pid ? `${p.runtime === 'docker' ? 'container pid' : 'pid'} ${p.pid}` : null,
+          p && p.runtime === 'docker' && p.image ? `image ${p.image}` : null,
           sourceText(project),
         ].filter(Boolean).join(' · '))));
   };
@@ -1742,6 +1746,10 @@ async function settingsTab(body, ctx) {
       h('dl', { class: 'facts' },
         h('div', {}, h('dt', {}, 'Project id'), h('dd', { class: 'mono small truncate', title: project.id }, project.id)),
         h('div', {}, h('dt', {}, 'Runtime'), h('dd', {}, project.runtime || 'auto')),
+        h('div', { 'data-fact': 'runs-as' }, h('dt', {}, 'Runs as'), h('dd', { class: 'truncate', title: project.process?.image || '' },
+          project.process?.runtime === 'docker'
+            ? `Docker container${project.process.image ? ` (${project.process.image})` : ''}`
+            : (project.process ? 'Process' : '–'))),
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
@@ -2084,11 +2092,11 @@ const RANGE_MS = { '5m': 300_000, '1h': 3_600_000, '24h': 86_400_000, '7d': 604_
 
 async function resourcesTab(body, ctx) {
   const project = ctx.project();
-  const [caps, current] = await Promise.all([
-    api('GET', '/resources'),
-    api('GET', `/projects/${enc(project.id)}/resources`),
-  ]);
+  const current = await api('GET', `/projects/${enc(project.id)}/resources`);
   if (!ctx.alive()) return;
+  // What this app can be limited by: the host's cgroups, or Docker for
+  // container apps.
+  const caps = current.capabilities;
   let limits = current.limits;
   let range = '5m';
   let raw = [];

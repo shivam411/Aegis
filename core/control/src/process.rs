@@ -166,6 +166,7 @@ impl ControlPlane {
                 restart_count,
             } => {
                 let info = self.inner.supervisor.get(&id);
+                let runtime = info.as_ref().and_then(|i| i.runtime.clone());
                 let release = self.inner.process_release.lock().unwrap().get(&id).cloned();
                 let port = self.inner.process_ports.lock().unwrap().get(&id).copied();
                 let candidate = self.inner.candidates.lock().unwrap().contains(&id);
@@ -182,6 +183,9 @@ impl ControlPlane {
                         "port": port.and_then(|p| p.port),
                         "proxied": port.is_some_and(|p| p.proxied),
                         "candidate": candidate,
+                        "runtime": runtime.as_ref().map_or("process", |r| r.kind),
+                        "container": runtime.as_ref().and_then(|r| r.container.clone()),
+                        "image": runtime.as_ref().and_then(|r| r.image.clone()),
                     }),
                 )
             }
@@ -242,6 +246,7 @@ impl ControlPlane {
     /// marks interrupted deployments as failed and restarts every app whose
     /// operator hasn't stopped it. Call after [`ControlPlane::start`].
     pub async fn recover(&self) -> usize {
+        self.remove_orphan_containers().await;
         for dep in self.inner.projection.get_deployments() {
             if matches!(dep.status.as_str(), "Queued" | "InProgress") {
                 let _ = self

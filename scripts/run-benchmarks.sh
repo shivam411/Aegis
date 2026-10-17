@@ -7,8 +7,9 @@
 #   tree defaults to this checkout. CI runs it twice on the same runner, for
 #   a PR's base commit (checked out in a worktree) and for the PR, then
 #   compares the two with scripts/bench_report.py. Benchmarks that don't
-#   exist in <tree> are skipped. CARGO_TARGET_DIR is shared, so the second
-#   run only recompiles what differs.
+#   exist in <tree> are skipped. Each tree needs its own CARGO_TARGET_DIR:
+#   cargo would treat the same crate in two checkouts as one, and reuse
+#   artifacts built from the other tree's source.
 #
 # Environment: BENCH_MEASUREMENT_SECS (default 4), BENCH_WARMUP_SECS (1),
 # AEGIS_BENCH_DEPLOYS (8).

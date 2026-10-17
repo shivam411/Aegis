@@ -26,5 +26,5 @@ This document tracks operating system platforms and polyglot runtime compatibili
 | **Node.js / Bun / Deno** | `package.json` | `npm install`, `npm run build` | Process / JS runtime | ✅ Node.js deploy-tested in CI |
 | **Go** | `go.mod` | `go mod download`, `go build` | Binary compilation | 🟡 Detected; not deploy-tested |
 | **Python** | `requirements.txt` / `pyproject.toml` | `pip install -r requirements.txt` | Virtualenv / Process | 🟡 Detected; not deploy-tested |
-| **Docker Container** | `Dockerfile` | `docker build`, `docker run` | Container image | ⚠️ Experimental |
+| **Docker Container** | `Dockerfile` + `[run] runtime = "docker"` | `docker build` (or a prebuilt `image`), supervised container | Container image per release | 🧪 Experimental; deploy-tested in CI against a real Docker daemon ([guide](docker_runtime.md)) |
 | **Generic CLI Executable** | User-defined | Custom build & start commands | Direct OS execution | ✅ Supported |

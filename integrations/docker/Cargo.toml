@@ -2,6 +2,17 @@
 name = "aegis-docker"
 version = "0.1.0"
 edition = "2021"
+description = "Docker runtime for Aegis apps: image builds, containers, live limits"
 
 [dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+aegis-types = { path = "../../core/types" }
+aegis-config = { path = "../../core/config" }
+aegis-process = { path = "../../runtime/process" }
 
+[dev-dependencies]
+tempfile = { workspace = true }

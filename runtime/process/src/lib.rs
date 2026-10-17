@@ -3,6 +3,12 @@
 //!
 //! Every app runs as `sh -c <command>` in its own process group, so stopping
 //! an app also stops whatever it spawned (`npm start` -> `node`, etc.).
+//!
+//! A [`Launcher`] can run the workload elsewhere (a container): the
+//! supervisor then runs the local command the launcher prepares (which
+//! stays attached to the workload and exits with it), asks the launcher to
+//! stop the workload, and lets it clean up. Restart policy, backoff, crash
+//! loops and logs work the same for both.
 
 use aegis_types::{ProcessId, ProjectId};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -41,13 +47,56 @@ impl RestartPolicy {
 #[derive(Debug, Clone)]
 pub struct ProcessSpec {
     pub project_id: ProjectId,
-    /// Shell command line, run via `sh -c` (`cmd /C` on Windows).
+    /// Shell command line, run via `sh -c` (`cmd /C` on Windows). With a
+    /// launcher, only a description for views.
     pub command: String,
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
     pub restart_policy: RestartPolicy,
     /// Where stdout/stderr are appended. `None` keeps logs in memory only.
     pub log_file: Option<PathBuf>,
+    /// Runs the workload somewhere else (e.g. a container). `None` runs
+    /// `command` as a local process.
+    pub launcher: Option<Arc<dyn Launcher>>,
+}
+
+/// What the supervisor runs for a launched workload: a local command that
+/// stays attached to it, streams its output and exits with its exit code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// Where a launched workload runs, for views and events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInfo {
+    /// "docker".
+    pub kind: &'static str,
+    pub container: Option<String>,
+    pub image: Option<String>,
+}
+
+/// Runs a process's workload somewhere other than a local child process.
+/// Methods are called by the supervisor's monitor task for one process id.
+// async-trait marks the boxed futures #[must_use] (clippy::double_must_use since Rust 1.99).
+#[allow(clippy::double_must_use)]
+#[async_trait::async_trait]
+pub trait Launcher: Send + Sync + std::fmt::Debug {
+    fn info(&self, id: &ProcessId) -> RuntimeInfo;
+    /// Called before every start (including automatic restarts). The
+    /// workload gets `spec.env`; the returned command does not. An error
+    /// fails the start like a spawn error.
+    async fn prepare(&self, id: &ProcessId, spec: &ProcessSpec) -> Result<Launch, String>;
+    /// Called once the command runs: the workload's main pid, as soon as
+    /// it is known (`None` if it ended or can't be found).
+    async fn started(&self, id: &ProcessId) -> Option<u32>;
+    /// Stops the workload, giving it `drain` to exit; the command from
+    /// `prepare` exits with it.
+    async fn stop(&self, id: &ProcessId, drain: Duration);
+    /// The process is gone for good (stopped, failed or exited): remove
+    /// whatever `prepare` created.
+    async fn cleanup(&self, id: &ProcessId);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +180,9 @@ pub struct ProcessInfo {
     pub restart_count: u32,
     pub last_exit_code: Option<i32>,
     pub started_at: Option<DateTime<Utc>>,
+    /// Set when a launcher runs the workload (e.g. a container); `pid` is
+    /// then the workload's main pid.
+    pub runtime: Option<RuntimeInfo>,
 }
 
 /// Lifecycle notifications, in the order they happen for a given process.
@@ -302,6 +354,7 @@ impl Managed {
             restart_count: state.restart_count,
             last_exit_code: state.last_exit_code,
             started_at: state.started_at,
+            runtime: spec.launcher.as_ref().map(|l| l.info(&self.id)),
         }
     }
 
@@ -515,7 +568,11 @@ impl ProcessSupervisor {
         let for_monitor = managed.clone();
         let for_close = managed.clone();
         let task = tokio::spawn(async move {
-            monitor(inner.clone(), for_monitor, stop_rx, first_tx).await;
+            monitor(inner.clone(), for_monitor.clone(), stop_rx, first_tx).await;
+            let launcher = for_monitor.spec.lock().unwrap().launcher.clone();
+            if let Some(launcher) = launcher {
+                let _ = tokio::time::timeout(Duration::from_secs(30), launcher.cleanup(&id)).await;
+            }
             for_close.close_log();
             if let Some(hook) = inner.hook.get() {
                 hook.finished(&id);
@@ -644,6 +701,22 @@ impl ProcessSupervisor {
     fn get_managed(&self, id: &ProcessId) -> Option<Arc<Managed>> {
         self.inner.processes.lock().unwrap().get(id).cloned()
     }
+}
+
+/// Starts the command a launcher prepared. The workload got the app's
+/// environment from the launcher; the command itself runs with the
+/// daemon's (e.g. `DOCKER_HOST`), never with the app's secrets.
+fn spawn_launch(launch: &Launch, cwd: &Path) -> std::io::Result<Child> {
+    let mut cmd = Command::new(&launch.program);
+    cmd.args(&launch.args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    cmd.spawn()
 }
 
 fn spawn_child(spec: &ProcessSpec, join_files: &[PathBuf]) -> std::io::Result<Child> {
@@ -804,18 +877,27 @@ async fn monitor(
     loop {
         let spec = managed.spec.lock().unwrap().clone();
         let project_id = spec.project_id;
-        let placement = inner
-            .hook
-            .get()
-            .map(|hook| hook.prepare(&id, &project_id))
-            .unwrap_or_default();
+        // A launched workload gets its limits from its launcher, not from a
+        // cgroup around the local command.
+        let placement = match (&spec.launcher, inner.hook.get()) {
+            (None, Some(hook)) => hook.prepare(&id, &project_id),
+            _ => Placement::default(),
+        };
         for warning in &placement.warnings {
             inner.system_log(&managed, warning.clone());
         }
-        let mut child = match spawn_child(&spec, &placement.join_files) {
+        let spawned = match &spec.launcher {
+            Some(launcher) => match launcher.prepare(&id, &spec).await {
+                Ok(launch) => spawn_launch(&launch, &spec.cwd)
+                    .map_err(|e| format!("Failed to run '{}': {}", launch.program, e)),
+                Err(e) => Err(e),
+            },
+            None => spawn_child(&spec, &placement.join_files)
+                .map_err(|e| format!("Failed to spawn '{}': {}", spec.command, e)),
+        };
+        let mut child = match spawned {
             Ok(child) => child,
-            Err(e) => {
-                let reason = format!("Failed to spawn '{}': {}", spec.command, e);
+            Err(reason) => {
                 managed.set_status(ProcessStatus::Failed);
                 inner.system_log(&managed, reason.clone());
                 match first_tx.take() {
@@ -835,10 +917,22 @@ async fn monitor(
             }
         };
 
-        let pid = child.id();
+        let child_pid = child.id();
+        if let Some(stdout) = child.stdout.take() {
+            pipe_output(inner.clone(), managed.clone(), stdout, LogStream::Stdout);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pipe_output(inner.clone(), managed.clone(), stderr, LogStream::Stderr);
+        }
+        // For a launched workload, show its own pid rather than the local
+        // command's.
+        let pid = match &spec.launcher {
+            Some(launcher) => launcher.started(&id).await,
+            None => child_pid,
+        };
         // The child joined its cgroups itself; make sure it worked (writing
         // the pid again is harmless) so a missing limit never goes unnoticed.
-        if let Some(pid) = pid {
+        if let Some(pid) = child_pid {
             for file in &placement.join_files {
                 if let Err(e) = std::fs::write(file, pid.to_string()) {
                     inner.system_log(
@@ -859,12 +953,6 @@ async fn monitor(
             state.started_at = Some(Utc::now());
             state.restart_count
         };
-        if let Some(stdout) = child.stdout.take() {
-            pipe_output(inner.clone(), managed.clone(), stdout, LogStream::Stdout);
-        }
-        if let Some(stderr) = child.stderr.take() {
-            pipe_output(inner.clone(), managed.clone(), stderr, LogStream::Stderr);
-        }
         tracing::info!(process_id = %id, pid = ?pid, command = %spec.command, "Process started");
         inner.emit(ProcessEvent::Started {
             id,
@@ -885,7 +973,24 @@ async fn monitor(
         match wake {
             Wake::Stop(reason, drain) => {
                 managed.set_status(ProcessStatus::Stopping);
-                let exit_code = terminate(&mut child, pid, drain).await;
+                let exit_code = match &spec.launcher {
+                    Some(launcher) => {
+                        launcher.stop(&id, drain).await;
+                        // The attached command exits with the workload and
+                        // reports its exit code; signal it only if it hangs.
+                        match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+                            Ok(status) => {
+                                #[cfg(unix)]
+                                signal_group(child_pid, libc::SIGKILL);
+                                status.ok().and_then(|s| s.code())
+                            }
+                            Err(_) => {
+                                terminate(&mut child, child_pid, Duration::from_secs(2)).await
+                            }
+                        }
+                    }
+                    None => terminate(&mut child, child_pid, drain).await,
+                };
                 managed.state.lock().unwrap().last_exit_code = exit_code;
                 managed.set_status(ProcessStatus::Stopped);
                 inner.system_log(&managed, format!("Stopped ({})", reason.as_str()));
@@ -900,7 +1005,7 @@ async fn monitor(
             }
             Wake::Exited(status) => {
                 #[cfg(unix)]
-                signal_group(pid, libc::SIGKILL);
+                signal_group(child_pid, libc::SIGKILL);
                 let exit_code = status.and_then(|s| s.code());
                 let success = status.map(|s| s.success()).unwrap_or(false);
                 managed.state.lock().unwrap().last_exit_code = exit_code;
@@ -1003,6 +1108,7 @@ mod tests {
             env: HashMap::new(),
             restart_policy: policy,
             log_file: None,
+            launcher: None,
         }
     }
 
@@ -1279,6 +1385,134 @@ mod tests {
         assert!(dir.path().join("app.log.1").exists());
         assert!(std::fs::metadata(&path).unwrap().len() <= 300);
         assert_eq!(read_log_tail(&path, 1)[0].line, "line 49");
+    }
+
+    /// Runs a shell loop that exits (with code 7) once `stop` drops a file,
+    /// like `docker start -a` exits when its container stops.
+    #[derive(Debug)]
+    struct FakeLauncher {
+        dir: PathBuf,
+        script: String,
+        fail: bool,
+        prepared: Mutex<u32>,
+        cleaned: Mutex<u32>,
+    }
+
+    impl FakeLauncher {
+        fn new(dir: &Path, script: &str) -> Arc<Self> {
+            Arc::new(Self {
+                dir: dir.to_path_buf(),
+                script: script.to_string(),
+                fail: false,
+                prepared: Mutex::new(0),
+                cleaned: Mutex::new(0),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Launcher for FakeLauncher {
+        fn info(&self, _id: &ProcessId) -> RuntimeInfo {
+            RuntimeInfo {
+                kind: "fake",
+                container: Some("box".into()),
+                image: None,
+            }
+        }
+        async fn prepare(&self, _id: &ProcessId, spec: &ProcessSpec) -> Result<Launch, String> {
+            if self.fail {
+                return Err("no such image".into());
+            }
+            *self.prepared.lock().unwrap() += 1;
+            let _ = std::fs::remove_file(self.dir.join("stop"));
+            // The workload would get spec.env; the local command must not.
+            assert!(spec.env.contains_key("SECRET"));
+            Ok(Launch {
+                program: "sh".into(),
+                args: vec!["-c".into(), self.script.clone()],
+            })
+        }
+        async fn started(&self, _id: &ProcessId) -> Option<u32> {
+            Some(4242)
+        }
+        async fn stop(&self, _id: &ProcessId, _drain: Duration) {
+            std::fs::write(self.dir.join("stop"), "").unwrap();
+        }
+        async fn cleanup(&self, _id: &ProcessId) {
+            *self.cleaned.lock().unwrap() += 1;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_launcher_runs_stops_and_cleans_up() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let launcher = FakeLauncher::new(
+            dir.path(),
+            "echo \"secret=${SECRET:-unset}\"; while [ ! -f stop ]; do sleep 0.05; done; exit 7",
+        );
+        let mut s = spec("ignored", RestartPolicy::Always);
+        s.cwd = dir.path().to_path_buf();
+        s.env.insert("SECRET".into(), "hunter2".into());
+        s.launcher = Some(launcher.clone());
+        let supervisor = ProcessSupervisor::new();
+        let mut events = supervisor.subscribe();
+        let id = supervisor.spawn(s).await.unwrap();
+        let info = supervisor.get(&id).unwrap();
+        assert_eq!(info.pid, Some(4242), "the workload's pid is shown");
+        assert_eq!(info.runtime.as_ref().unwrap().kind, "fake");
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            ProcessEvent::Started {
+                pid: Some(4242),
+                ..
+            }
+        ));
+        wait_until(|| {
+            supervisor
+                .logs(&id, 10)
+                .iter()
+                .any(|l| l.line.starts_with("secret="))
+        })
+        .await;
+        assert!(supervisor
+            .logs(&id, 10)
+            .iter()
+            .any(|l| l.line == "secret=unset"));
+
+        supervisor
+            .stop(&id, Duration::from_secs(5), StopReason::Requested)
+            .await
+            .unwrap();
+        let info = supervisor.get(&id).unwrap();
+        assert_eq!(info.status, ProcessStatus::Stopped);
+        assert_eq!(info.last_exit_code, Some(7));
+        assert_eq!(*launcher.cleaned.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_launcher_crash_restarts_and_prepares_again() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let launcher = FakeLauncher::new(dir.path(), "exit 3");
+        let mut s = spec("ignored", RestartPolicy::Always);
+        s.cwd = dir.path().to_path_buf();
+        s.env.insert("SECRET".into(), "x".into());
+        s.launcher = Some(launcher.clone());
+        let supervisor = ProcessSupervisor::with_config(fast_config());
+        let id = supervisor.spawn(s).await.unwrap();
+        wait_until(|| supervisor.get(&id).unwrap().status == ProcessStatus::Failed).await;
+        // Initial start plus crash_loop_max_restarts restarts, each prepared.
+        assert_eq!(*launcher.prepared.lock().unwrap(), 4);
+        assert_eq!(supervisor.get(&id).unwrap().last_exit_code, Some(3));
+        wait_until(|| *launcher.cleaned.lock().unwrap() == 1).await;
+
+        let failing = Arc::new(FakeLauncher {
+            fail: true,
+            ..Arc::try_unwrap(FakeLauncher::new(dir.path(), "true")).unwrap()
+        });
+        let mut s = spec("ignored", RestartPolicy::Always);
+        s.launcher = Some(failing);
+        let err = supervisor.spawn(s).await.unwrap_err();
+        assert!(err.to_string().contains("no such image"), "{err}");
     }
 
     #[test]

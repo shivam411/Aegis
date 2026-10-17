@@ -112,7 +112,11 @@ jobs:
             || git rev-parse --verify "$BASE_REF^{commit}")
           echo "BASE_SHA=$base" >> "$GITHUB_ENV"
           git worktree add --detach "$RUNNER_TEMP/base" "$base"
-          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+          # Its own target dir: cargo names a workspace crate's artifacts by
+          # its path relative to the workspace, so two checkouts sharing one
+          # target dir reuse each other's crates and the PR build can link
+          # the base's older code.
+          CARGO_TARGET_DIR="$RUNNER_TEMP/base-target" \
             scripts/run-benchmarks.sh bench-runs/base "$RUNNER_TEMP/base"
 
       - name: Benchmarks of this commit

@@ -57,6 +57,12 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | **aegis.toml diff before saving, webhook status and test delivery** | 🟡 Validated | `appconfig.rs`, Playwright settings step in [`ui-tests/tests/dashboard.spec.js`](../ui-tests/tests/dashboard.spec.js) |
 | **Zero-downtime cutover behind the proxy** | 🟡 Validated | [`core/control/tests/proxy_cutover.rs`](../core/control/tests/proxy_cutover.rs): no failed requests through deploys, a failed deploy, a rollback and a daemon restart |
 
+### Roadmap Phase 6
+
+| Feature | Status | Evidence |
+| :--- | :---: | :--- |
+| **Docker runtime** (`[run] runtime = "docker"`, [guide](docker_runtime.md)) | 🧪 Experimental | Unit tests for `[run]` validation, `docker` argument building (including that secrets never reach a command line) and limit mapping in [`core/config`](../core/config/src/lib.rs) and [`integrations/docker`](../integrations/docker/src/); supervisor tests with a fake launcher in [`runtime/process`](../runtime/process/src/lib.rs). [`core/control/tests/docker.rs`](../core/control/tests/docker.rs) runs against the real Docker daemon on CI's Ubuntu runner (`AEGIS_REQUIRE_DOCKER=1` makes a missing Docker a failure there). It covers the image build, the health check, a secret reaching the container, a redeploy through the proxy with no failed requests, live `docker update` limits, a killed container being restarted, an unhealthy release rolled back, a rollback that reuses the old image, image pruning, a daemon restart and a stop. [`docker_missing.rs`](../core/control/tests/docker_missing.rs) covers a host without Docker. Not used in production; dashboard display of the runtime is not browser-tested. |
+
 ### CLI and tools
 
 | Feature | Status | Evidence |
@@ -80,4 +86,4 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 
 ### Not implemented yet
 
-`core/ssh`, `core/state`, `deployment/analytics`, `git/action`, `integrations/github` and `integrations/docker` are stubs. Docker and fleet support come later ([roadmap](roadmap_web_control_plane.md) Phase 6).
+`core/ssh`, `core/state`, `deployment/analytics`, `git/action` and `integrations/github` are stubs. Fleet support comes later ([roadmap](roadmap_web_control_plane.md) Phase 6).
