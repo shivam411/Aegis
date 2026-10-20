@@ -6,8 +6,5 @@
 # rotating (docs/releasing.md). install.sh's RELEASE_KEYS must list the same
 # keys; a test checks that.
 #
-# PLACEHOLDER: no release signing key has been generated yet. Until a key is
-# added here, Aegis refuses to install releases from the dashboard, the
-# update helper, `aegis upgrade` and `aegis-daemon self-update` (unless run
-# with --allow-unsigned), and the release workflow refuses to publish.
-# See docs/releasing.md, "One-time setup".
+# Key ID D4076E6CBDB757CC, added 2026-10-20.
+RWTMV7e9bG4H1Hae4D0bgoQMtG0j0ycitWwS+NTOFmVV+XcIRQKPvjVP

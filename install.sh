@@ -50,9 +50,10 @@ ALLOW_UNSIGNED="${AEGIS_ALLOW_UNSIGNED:-0}"
 
 # The minisign public keys a release's SHA256SUMS may be signed with, one
 # quoted base64 key per line. The same list as core/update/keys/release.pub
-# (compiled into Aegis; a test checks that they match). Empty until the
-# maintainers generate the release key: see docs/releasing.md.
+# (compiled into Aegis; a test checks that they match). Rotation: see
+# docs/releasing.md.
 RELEASE_KEYS=(
+    "RWTMV7e9bG4H1Hae4D0bgoQMtG0j0ycitWwS+NTOFmVV+XcIRQKPvjVP"  # key ID D4076E6CBDB757CC
 )
 
 # ──────────────────────────────────────────────
