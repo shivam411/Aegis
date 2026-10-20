@@ -30,3 +30,16 @@ Instead, please report security issues privately via email:
 - **Acknowledgement**: Within 48 hours.
 - **Assessment & Fix Plan**: Within 7 business days.
 - **Security Release**: Issued as a patch update (`v0.3.x`).
+
+---
+
+## Verifying Releases
+
+Every release's `SHA256SUMS` is signed with the maintainers' minisign key (`SHA256SUMS.minisig`). Aegis's self-update, `aegis upgrade` and `install.sh` refuse releases without a valid signature by a key listed in [`core/update/keys/release.pub`](core/update/keys/release.pub). To check a download by hand:
+
+```sh
+minisign -Vm SHA256SUMS -x SHA256SUMS.minisig -P <key from core/update/keys/release.pub>
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+Key setup, rotation and what to do if the signing key leaks: [docs/releasing.md](docs/releasing.md); the trust model: [docs/security.md](docs/security.md#self-update).

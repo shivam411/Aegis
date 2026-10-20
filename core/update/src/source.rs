@@ -5,6 +5,7 @@ use crate::checksum;
 use crate::http::Fetcher;
 use crate::install::{self, DAEMON_BINARY, SIBLING_BINARIES};
 use crate::release::{self, Release, Target, CHECKSUMS_ASSET};
+use crate::signature::{Keyring, SignatureError, SignaturePolicy, SIGNATURE_ASSET};
 use crate::version::{parse_version, Version};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use std::time::Duration;
 
 const MAX_API_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SUMS_BYTES: usize = 256 * 1024;
+const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -23,6 +25,8 @@ pub struct Source {
     repo: String,
     /// The API base was overridden (tests): assets must come from it too.
     overridden: bool,
+    /// The keys `SHA256SUMS` must be signed with.
+    keyring: Keyring,
 }
 
 impl Source {
@@ -35,7 +39,19 @@ impl Source {
             api_base: api_base.unwrap_or_else(|| crate::DEFAULT_API_BASE.to_string()),
             repo: repo.to_string(),
             overridden,
+            keyring: Keyring::release().clone(),
         }
+    }
+
+    /// Verifies signatures against `keyring` instead of the compiled-in
+    /// release keys (tests).
+    pub fn with_keyring(mut self, keyring: Keyring) -> Self {
+        self.keyring = keyring;
+        self
+    }
+
+    pub fn keyring(&self) -> &Keyring {
+        &self.keyring
     }
 
     pub fn repo(&self) -> &str {
@@ -89,9 +105,50 @@ impl Source {
             .await
     }
 
-    /// Downloads this target's archive and the release's SHA256SUMS,
-    /// verifies the archive and unpacks the binaries.
-    pub async fn fetch_bundle(&self, release: &Release, target: &Target) -> anyhow::Result<Bundle> {
+    /// Checks the signature on `sums` (the release's SHA256SUMS). Returns
+    /// the signing key's ID, or `None` when an unsigned release is allowed.
+    async fn verify_sums(
+        &self,
+        release: &Release,
+        sums: &[u8],
+        policy: SignaturePolicy,
+    ) -> anyhow::Result<Option<String>> {
+        let asset = release.asset(SIGNATURE_ASSET);
+        let usable = !self.keyring.is_empty() && asset.is_some();
+        if !usable {
+            if policy == SignaturePolicy::AllowUnsigned {
+                tracing::warn!(
+                    tag = %release.tag,
+                    "Installing without a release signature (--allow-unsigned): only the SHA-256 checksums are checked"
+                );
+                return Ok(None);
+            }
+            return Err(if self.keyring.is_empty() {
+                SignatureError::NoTrustedKey
+            } else {
+                SignatureError::Missing {
+                    tag: release.tag.clone(),
+                }
+            }
+            .into());
+        }
+        let asset = asset.expect("checked above");
+        let signature = self.download(&asset.url, MAX_SIGNATURE_BYTES).await?;
+        let signature = String::from_utf8(signature)
+            .map_err(|_| SignatureError::Malformed("not text".into()))?;
+        let key_id = self.keyring.verify(sums, &signature, &release.tag)?;
+        Ok(Some(key_id))
+    }
+
+    /// Downloads this target's archive, the release's SHA256SUMS and its
+    /// signature; verifies the signature, then the archive, and unpacks the
+    /// binaries.
+    pub async fn fetch_bundle(
+        &self,
+        release: &Release,
+        target: &Target,
+        policy: SignaturePolicy,
+    ) -> anyhow::Result<Bundle> {
         let version = parse_version(&release.tag)
             .ok_or_else(|| anyhow::anyhow!("Release tag '{}' is not a version", release.tag))?;
         if !target.self_update_supported() {
@@ -112,6 +169,7 @@ impl Source {
             )
         })?;
         let sums_text = self.download(&sums_asset.url, MAX_SUMS_BYTES).await?;
+        let signed_by = self.verify_sums(release, &sums_text, policy).await?;
         let sums = checksum::parse_sums(&String::from_utf8_lossy(&sums_text))?;
         let archive = self.download(&archive_asset.url, MAX_ARCHIVE_BYTES).await?;
         checksum::verify(&archive, &archive_asset.name, &sums)?;
@@ -129,6 +187,7 @@ impl Source {
             version,
             tag: release.tag.clone(),
             archive_sha256: sha256,
+            signed_by,
             binaries,
         })
     }
@@ -140,6 +199,9 @@ pub struct Bundle {
     pub tag: String,
     /// Hex SHA-256 of the archive (as listed in SHA256SUMS).
     pub archive_sha256: String,
+    /// The release key that signed SHA256SUMS; `None` only when unsigned
+    /// releases were explicitly allowed.
+    pub signed_by: Option<String>,
     pub binaries: HashMap<String, Vec<u8>>,
 }
 

@@ -3144,9 +3144,14 @@
           "from_version",
           "to_version",
           "at",
-          "method"
+          "method",
+          "allow_unsigned"
         ],
         "properties": {
+          "allow_unsigned": {
+            "type": "boolean",
+            "description": "Installed with `aegis-daemon self-update --allow-unsigned`: the\nrelease signature was not checked."
+          },
           "at": {
             "type": "string",
             "description": "RFC 3339: when the new version first started."
@@ -3156,7 +3161,14 @@
           },
           "method": {
             "type": "string",
-            "description": "`in_place`, `helper` or `external`."
+            "description": "`in_place`, `helper`, `self-update` (an admin ran\n`aegis-daemon self-update`) or `external`."
+          },
+          "signed_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ID of the release key whose signature was verified, when known."
           },
           "to_version": {
             "type": "string"
@@ -4335,7 +4347,8 @@
           "mode",
           "mode_detail",
           "can_apply",
-          "phase"
+          "phase",
+          "release_keys"
         ],
         "properties": {
           "blocked_reason": {
@@ -4414,6 +4427,13 @@
               "string",
               "null"
             ]
+          },
+          "release_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IDs of the release signing keys this build verifies releases with.\nEmpty: this build has no key, so updates can't be installed from the\ndashboard (`blocked_reason` says what to do instead)."
           },
           "update_available": {
             "type": "boolean",
