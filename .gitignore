@@ -27,3 +27,6 @@ validation/artifacts/
 
 # The example container app ships its config.
 !examples/docker-app/aegis.toml
+
+#keys 
+keys/
