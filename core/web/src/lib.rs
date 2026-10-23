@@ -14,6 +14,7 @@ mod domains;
 pub mod dto;
 mod guard;
 mod resources;
+mod sources;
 pub mod tls;
 mod ui;
 pub mod update;
@@ -262,6 +263,9 @@ impl Modify for SecuritySchemes {
         appconfig::list_secrets, appconfig::set_secret, appconfig::delete_secret,
         appconfig::env_overview, appconfig::preview_env_import, appconfig::import_env,
         appconfig::preview_settings, appconfig::webhook_status, appconfig::test_webhook,
+        sources::get_deploy_key, sources::create_deploy_key, sources::delete_deploy_key,
+        sources::test_deploy_key, sources::check_access, sources::scan_info, sources::scan,
+        sources::import,
         backup::list_backups, backup::create_backup, backup::download_backup,
         backup::delete_backup,
         update::update_status, update::check_update, update::apply_update
@@ -283,12 +287,16 @@ impl Modify for SecuritySchemes {
         SetSecretRequest, SecretSaved, DiffLineDto, ConfigPreviewDto, WebhookDeliveryDto,
         WebhookStatusDto, backup::BackupDto, backup::CreateBackupRequest,
         update::UpdateStatusDto, update::LatestReleaseDto, update::LastUpdateDto,
-        update::ApplyUpdateRequest
+        update::ApplyUpdateRequest, sources::DeployKeyDto, sources::CreateDeployKeyRequest,
+        sources::AccessCheckDto, sources::CheckAccessRequest, sources::ScanInfoDto,
+        sources::ScanRequest, sources::ScanWarningDto, sources::StartHintDto,
+        sources::ScanCandidateDto, sources::ScanResultDto, sources::ImportAppRequest,
+        sources::ImportRequest, sources::ImportedAppDto, sources::ImportResultDto
     )),
     tags(
         (name = "auth"), (name = "users"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
-        (name = "domains"), (name = "secrets"), (name = "backups")
+        (name = "domains"), (name = "secrets"), (name = "backups"), (name = "sources")
     )
 )]
 pub struct ApiDoc;
@@ -367,6 +375,19 @@ pub fn router(state: AppState) -> Router {
             "/projects/:project/webhook/test",
             post(appconfig::test_webhook),
         )
+        .route(
+            "/projects/:project/deploy-key",
+            get(sources::get_deploy_key)
+                .post(sources::create_deploy_key)
+                .delete(sources::delete_deploy_key),
+        )
+        .route(
+            "/projects/:project/deploy-key/test",
+            post(sources::test_deploy_key),
+        )
+        .route("/apps/check-access", post(sources::check_access))
+        .route("/apps/scan", get(sources::scan_info).post(sources::scan))
+        .route("/apps/import", post(sources::import))
         .route("/projects/:project/releases", get(api::list_releases))
         .route(
             "/projects/:project/domains",

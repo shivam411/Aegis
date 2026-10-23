@@ -3,5 +3,12 @@ name = "aegis-ssh"
 version = "0.1.0"
 edition = "2021"
 
+# Per-app SSH deploy keys: key generation, git remote URL helpers, pinned
+# host keys and the short-lived key files git uses while it runs.
 [dependencies]
+ssh-key = { version = "0.6", features = ["ed25519", "rand_core", "std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
 
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -98,6 +98,28 @@ http.server.ThreadingHTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve
     '',
   ].join('\n'));
 
+  // A folder of existing checkouts, as on a server that ran them with PM2
+  // (sources.spec.js scans and imports it): a Next.js app with a hard-coded
+  // port in a checkout of a GitHub repository (git metadata written by
+  // hand, read without git), and a plain Python folder.
+  const scanDir = path.join(WORK, 'scan');
+  const imgMan = path.join(scanDir, 'img-man');
+  fs.mkdirSync(path.join(imgMan, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(imgMan, 'package.json'), JSON.stringify({
+    name: 'img-man',
+    scripts: { build: 'next build', start: 'next start -p 4000' },
+  }));
+  fs.writeFileSync(path.join(imgMan, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  fs.writeFileSync(path.join(imgMan, '.git', 'config'),
+    '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:acme/img-man.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n');
+  fs.writeFileSync(path.join(imgMan, '.env'), 'MONGODB_URI=mongodb://u:e2e-s3ntinel@db/img\n');
+  fs.mkdirSync(path.join(imgMan, 'node_modules', 'next'), { recursive: true });
+  fs.writeFileSync(path.join(imgMan, 'node_modules', 'next', 'package.json'), '{}');
+  const notes = path.join(scanDir, 'notes-api');
+  fs.mkdirSync(notes, { recursive: true });
+  fs.writeFileSync(path.join(notes, 'requirements.txt'), '');
+  fs.writeFileSync(path.join(notes, 'app.py'), 'print("notes")\n');
+
   const configPath = path.join(WORK, 'daemon.toml');
   fs.writeFileSync(configPath, `[daemon]
 host = "127.0.0.1"
@@ -116,6 +138,7 @@ check = true                # against the fake API below, never GitHub
 
 [apps]
 env_file_dirs = ['${envDir}']
+import_dirs = ['${scanDir}']
 `);
 
   // A fake GitHub releases API announcing v0.99.0 (no network access).
@@ -144,5 +167,5 @@ env_file_dirs = ['${envDir}']
 
   await waitFor(`${baseURL}/healthz`, 120_000);
   const password = fs.readFileSync(path.join(WORK, 'data', 'initial-admin-password'), 'utf8').trim();
-  fs.writeFileSync(path.join(WORK, 'env.json'), JSON.stringify({ repo, hog, envApp, envFile, password, baseURL }));
+  fs.writeFileSync(path.join(WORK, 'env.json'), JSON.stringify({ repo, hog, envApp, envFile, scanDir, password, baseURL }));
 };

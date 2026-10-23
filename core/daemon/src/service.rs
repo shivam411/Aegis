@@ -216,6 +216,7 @@ impl DaemonService {
                 branch: req.branch,
                 runtime: opt_string(req.runtime),
                 source_dir: opt_path(&req.source_dir),
+                source_subdir: None,
             })
             .await
             .map_err(status_from)?;

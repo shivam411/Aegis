@@ -81,6 +81,9 @@ pub struct ProjectDto {
     pub branch: String,
     pub runtime: Option<String>,
     pub source_dir: Option<String>,
+    /// The folder of the source that is built and run (monorepo apps).
+    #[serde(default)]
+    pub source_subdir: Option<String>,
     /// Version of the live release.
     pub current_release: Option<String>,
     pub created_at: String,
@@ -167,6 +170,9 @@ pub struct CreateProjectRequest {
     pub runtime: Option<String>,
     /// Directory on the server that deployments copy code from.
     pub source_dir: Option<String>,
+    /// Build and run only this folder of the source, e.g. `apps/web` in a
+    /// monorepo (relative, no `..`).
+    pub source_subdir: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
@@ -282,6 +288,7 @@ impl From<ProjectView> for ProjectDto {
             branch: p.branch,
             runtime: p.runtime,
             source_dir: p.source_dir,
+            source_subdir: p.source_subdir,
             current_release: p.current_release,
             created_at: p.created_at,
             schedule: p.schedule.map(Into::into),
@@ -522,6 +529,11 @@ pub struct DetectRequest {
     /// ...a git repository to clone (shallow) for detection.
     pub repository_url: Option<String>,
     pub branch: Option<String>,
+    /// Look inside this folder of the source (monorepo apps).
+    pub source_subdir: Option<String>,
+    /// A registered app (id or name) whose deploy key is used to clone,
+    /// and whose source folder is the default.
+    pub project: Option<String>,
 }
 
 /// The settings a deployment from this source would use.
@@ -536,6 +548,9 @@ pub struct DetectedDto {
     pub port: Option<u16>,
     pub health_check_url: Option<String>,
     pub strategy: String,
+    /// The package.json start script hard-codes its port: use
+    /// `suggested_start` (reads `$PORT`) as the start command, and `port`.
+    pub start_hint: Option<crate::sources::StartHintDto>,
 }
 
 impl From<aegis_engine::ResolvedProjectConfig> for DetectedDto {
@@ -550,6 +565,7 @@ impl From<aegis_engine::ResolvedProjectConfig> for DetectedDto {
             port: c.port,
             health_check_url: c.health_check_url,
             strategy: c.strategy,
+            start_hint: c.start_hint.map(Into::into),
         }
     }
 }

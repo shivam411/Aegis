@@ -2516,7 +2516,275 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info));
+}
+
+// --- Repository and deploy key (Settings tab, wizard) ------------------
+
+/** `img-man` from `git@github.com:acme/img-man.git` (or any URL/path). */
+function repoName(url) {
+  const last = String(url || '').replace(/\/+$/, '').split(/[/:]/).pop() || 'app';
+  return last.replace(/\.git$/, '') || 'app';
+}
+
+/**
+ * A project's SSH deploy key: generate, show the public key with the steps
+ * to add it to GitHub, test access, replace or delete. The private key
+ * never reaches the browser.
+ */
+function deployKeyPanel(project, ctx) {
+  const base = `/projects/${enc(project.id)}/deploy-key`;
+  const el = h('div', { class: 'grid', 'data-deploy-key': '' }, h('p', { class: 'muted small' }, 'Loading…'));
+  const result = h('div', { 'data-key-test': '' });
+  const alive = () => !ctx || ctx.alive();
+
+  const showTest = (c) => {
+    replace(result, h('div', { class: `alert ${c.ok ? 'ok' : 'warn'}`, role: 'status', 'data-access': c.ok ? 'ok' : 'denied' },
+      h('p', {}, c.ok
+        ? `Access works: Aegis can read ${c.url}${c.branches.length ? ` (${c.branches.length} branch${c.branches.length === 1 ? '' : 'es'})` : ''}.`
+        : `Aegis could not read ${c.url}.`),
+      c.error ? h('pre', { class: 'small mono' }, c.error) : null,
+      c.hint ? h('p', { class: 'small' }, c.hint) : null));
+  };
+
+  const draw = (key) => {
+    const genBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'generate-key' }, key ? 'Generate a new key' : 'Generate deploy key');
+    genBtn.addEventListener('click', async () => {
+      if (key) {
+        const ok = await confirmDialog({
+          title: 'Replace the deploy key?',
+          message: 'A new key pair is generated and the old private key is deleted. Add the new public key to the repository and remove the old one there.',
+          confirmLabel: 'Replace key',
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      const res = await run(genBtn, () => api('POST', base, { replace: !!key }), key ? 'New deploy key generated' : 'Deploy key generated');
+      if (res && alive()) draw(res);
+    });
+    if (!key) {
+      replace(el,
+        h('p', { class: 'muted small' }, 'No deploy key. For a private repository, generate one: Aegis keeps the private key encrypted on this server and shows you the public key to add to the repository.'),
+        h('div', { class: 'form-actions' }, genBtn));
+      return;
+    }
+    const testBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'test-key' }, 'Test access');
+    testBtn.addEventListener('click', async () => {
+      const c = await run(testBtn, () => api('POST', `${base}/test`, {}));
+      if (c && alive()) showTest(c);
+    });
+    const delBtn = h('button', { class: 'btn danger', type: 'button', 'data-action': 'delete-key' }, 'Delete key');
+    delBtn.addEventListener('click', async () => {
+      const ok = await confirmDialog({
+        title: 'Delete the deploy key?',
+        message: 'Deployments of a private repository fail until a new key is added. Also remove the key from the repository\'s deploy keys.',
+        confirmLabel: 'Delete key',
+        danger: true,
+      });
+      if (!ok) return;
+      const done = await run(delBtn, () => api('DELETE', base), 'Deploy key deleted');
+      if (done !== undefined && alive()) draw(null);
+    });
+    const https = /^https?:\/\//.test(project.repository_url || '');
+    replace(el,
+      h('div', { class: 'field' },
+        h('span', { class: 'small muted' }, 'Public key'),
+        h('div', { class: 'secret', 'aria-label': 'Public key', 'data-public-key': '' }, h('code', {}, key.public_key), copyButton(key.public_key))),
+      h('dl', { class: 'facts' },
+        h('div', {}, h('dt', {}, 'Fingerprint'), h('dd', { class: 'mono small', 'data-fingerprint': '' }, key.fingerprint)),
+        h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(key.created_at)))),
+      key.clone_url
+        ? (https ? h('p', { class: 'small muted' }, 'Deploy keys only work over SSH, so deployments clone ', h('code', {}, key.clone_url), ' with this key.') : null)
+        : h('div', { class: 'alert warn' }, 'This app\'s source is not an SSH or GitHub repository URL, so the key is not used. Use an ssh://… or git@host:owner/repo.git URL.'),
+      h('ol', { class: 'update-steps small' },
+        h('li', {}, 'Open ', key.add_key_url
+          ? h('a', { href: key.add_key_url, target: '_blank', rel: 'noopener noreferrer', 'data-add-key-link': '' }, 'the repository\'s "Add deploy key" page')
+          : 'the repository\'s deploy key settings', '.'),
+        h('li', {}, 'Title: e.g. ', h('code', {}, `Aegis ${project.name}`), '. Key: paste the public key above (Copy).'),
+        h('li', {}, 'Leave "Allow write access" unticked (Aegis only reads), then click Add key.'),
+        h('li', {}, 'Click Test access below.')),
+      h('div', { class: 'form-actions' }, testBtn, genBtn, delBtn),
+      result);
+  };
+
+  api('GET', base)
+    .then((key) => alive() && draw(key))
+    .catch((err) => {
+      if (!alive()) return;
+      if (err.status === 404) draw(null);
+      else replace(el, errorBox(err));
+    });
+  return el;
+}
+
+/** Settings → Repository: the app's source and its deploy key. */
+function repositoryCard(ctx) {
+  const project = ctx.project();
+  const facts = h('dl', { class: 'facts' },
+    h('div', {}, h('dt', {}, 'Source'), h('dd', { class: 'mono small truncate', title: sourceText(project) }, sourceText(project))),
+    project.source_subdir ? h('div', {}, h('dt', {}, 'App folder'), h('dd', { class: 'mono small' }, project.source_subdir)) : null);
+  return h('section', { class: 'card', id: 'repository', 'data-card': 'repository' },
+    cardHeader('Repository', 'app.repository'),
+    h('div', { class: 'card-body' },
+      facts,
+      project.repository_url
+        ? h('div', {}, h('h3', {}, 'Deploy key'), deployKeyPanel(project, ctx))
+        : h('p', { class: 'muted small' }, 'Deployments copy the directory above, so no deploy key is needed.')));
+}
+
+// --- Scan a folder (wizard) ---------------------------------------------
+
+const SCAN_WARNING_KIND = {
+  port_in_use: 'bad',
+  env_unreadable: 'bad',
+  ssh_remote: 'warn',
+  private_repo: 'warn',
+  hardcoded_port: 'info',
+  credentials_in_url: 'warn',
+  env_outside_allowed: 'warn',
+};
+
+/** The folder form; results (and the import) render into `out`. */
+async function scanForm(ctx, panel, out) {
+  const info = await api('GET', '/apps/scan');
+  if (!ctx.alive()) return;
+  if (!info.allowed_dirs.length) {
+    replace(panel, h('div', { class: 'alert warn', 'data-scan-off': '' },
+      'Scanning is turned off on this server. List the folders it may look in in the daemon configuration (/etc/aegis/aegis.toml), e.g. ',
+      h('code', {}, '[apps] import_dirs = ["/opt/github"]'), ', then restart Aegis.'));
+    return;
+  }
+  const pathIn = h('input', { id: 'scan-path', class: 'mono', value: info.allowed_dirs[0], autocomplete: 'off', spellcheck: 'false' });
+  const scanBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'scan' }, 'Scan →');
+  const doScan = async () => {
+    const res = await run(scanBtn, () => api('POST', '/apps/scan', { path: pathIn.value.trim() }));
+    if (res && ctx.alive()) drawScanResults(ctx, out, res, info);
+  };
+  scanBtn.addEventListener('click', doScan);
+  pathIn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      doScan();
+    }
+  });
+  replace(panel,
+    h('div', { class: 'field' }, h('label', { for: 'scan-path' }, 'Folder on this server'), pathIn,
+      h('span', { class: 'hint' }, 'Allowed: ', info.allowed_dirs.map((d, i) => [i ? ', ' : '', h('code', {}, d)]),
+        '. Aegis looks two levels deep for apps (package.json, pyproject.toml, requirements.txt, Cargo.toml, go.mod, pom.xml, build.gradle, Dockerfile, aegis.toml), including monorepo apps in apps/, packages/ and services/. It only reads; .env values are never shown.')),
+    h('div', { class: 'form-actions' }, scanBtn));
+}
+
+function drawScanResults(ctx, out, res, info) {
+  const rows = res.candidates.map((c, i) => {
+    const fresh = !c.registered_as;
+    const pick = h('input', { type: 'checkbox', checked: fresh, disabled: !fresh, 'aria-label': `Import ${c.name}` });
+    const nameIn = h('input', { class: 'mono', value: c.name, 'aria-label': `Name for ${c.path}`, disabled: !fresh });
+    const startIn = h('input', { class: 'mono', value: c.start_command, 'aria-label': `Start command for ${c.name}`, disabled: !fresh });
+    const portIn = h('input', { type: 'number', min: 1, max: 65535, value: c.port ?? '', 'aria-label': `Port for ${c.name}`, disabled: !fresh, class: 'port-input' });
+    const useEnv = h('input', { type: 'checkbox', checked: c.env_file_allowed, disabled: !fresh || !c.env_file_allowed, 'aria-label': `Use ${c.env_file || '.env'} as the Env file` });
+    const sourceSel = h('select', { 'aria-label': `Source for ${c.name}`, disabled: !fresh || !c.repository_url },
+      c.repository_url ? h('option', { value: 'git' }, 'Clone the repository') : null,
+      h('option', { value: 'dir' }, 'Copy this folder'));
+    const access = h('div', { class: 'small' });
+    const checkBtn = c.remote_kind === 'github' && fresh
+      ? h('button', { class: 'btn small', type: 'button', 'data-action': 'check-access' }, 'Check')
+      : null;
+    if (checkBtn) {
+      checkBtn.addEventListener('click', async () => {
+        const r = await run(checkBtn, () => api('POST', '/apps/check-access', { repository_url: c.repository_url, branch: c.branch }));
+        if (!r) return;
+        replace(access, r.ok
+          ? pill('Public', 'ok')
+          : [pill('Private: deploy key needed', 'warn'), h('div', { class: 'muted' }, r.hint || '')]);
+      });
+    }
+    const warnings = c.warnings.map((w) => h('li', { 'data-warning': w.code, class: SCAN_WARNING_KIND[w.code] === 'bad' ? 'bad' : '' }, w.message));
+    const tr = h('tr', { 'data-candidate': c.path, 'data-registered': c.registered_as ? 'yes' : 'no' },
+      h('td', {}, pick),
+      h('td', { 'data-label': 'Name' }, nameIn, h('div', { class: 'small muted' }, c.runtime)),
+      h('td', { 'data-label': 'Source', class: 'small' },
+        h('div', { class: 'mono truncate', title: c.path }, c.path),
+        c.repository_url ? h('div', { class: 'mono truncate', title: c.repository_url }, `${c.repository_url} @ ${c.branch || 'main'}`) : null,
+        c.source_subdir ? h('div', {}, 'App folder: ', h('code', {}, c.source_subdir)) : null,
+        c.registered_as ? pill(`Already imported as ${c.registered_as}`, '') : sourceSel,
+        checkBtn, access),
+      h('td', { 'data-label': 'Start command' }, startIn),
+      h('td', { 'data-label': 'Port' }, portIn),
+      h('td', { 'data-label': 'Env file', class: 'small' },
+        c.env_file
+          ? [useEnv, ' ', h('span', { class: 'mono' }, '.env'), c.env_names.length ? h('div', { class: 'muted' }, c.env_names.join(', ')) : null]
+          : h('span', { class: 'muted' }, 'none')),
+      h('td', { 'data-label': 'Warnings', class: 'small' }, warnings.length ? h('ul', { class: 'scan-warnings' }, warnings) : h('span', { class: 'muted' }, '–')));
+    return { c, tr, pick, nameIn, startIn, portIn, useEnv, sourceSel, i };
+  });
+
+  const importBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'import-selected' }, 'Import selected');
+  const outcome = h('div');
+  importBtn.addEventListener('click', async () => {
+    const chosen = rows.filter((r) => r.pick.checked);
+    if (!chosen.length) {
+      toast('Select at least one app', 'bad');
+      return;
+    }
+    const apps = chosen.map(({ c, nameIn, startIn, portIn, useEnv, sourceSel }) => {
+      const app = { name: nameIn.value.trim(), runtime: c.runtime };
+      if (sourceSel.value === 'git' && c.repository_url) {
+        app.repository_url = c.repository_url;
+        app.branch = c.branch || 'main';
+        if (c.source_subdir) app.source_subdir = c.source_subdir;
+      } else {
+        app.source_dir = c.path;
+      }
+      const settings = {};
+      const start = startIn.value.trim();
+      if (start && (start !== c.start_command || c.start_hint)) settings.start_command = start;
+      const port = portIn.value ? Number(portIn.value) : null;
+      if (port && (port !== c.port || c.start_hint)) {
+        settings.port = port;
+        if (c.health_check_url) settings.health_check_url = c.health_check_url.replace(`:${c.port}`, `:${port}`);
+      }
+      if (useEnv.checked && c.env_file) settings.env_file = c.env_file;
+      if (Object.keys(settings).length) app.settings = settings;
+      return app;
+    });
+    const result = await run(importBtn, () => api('POST', '/apps/import', { apps }));
+    if (!result || !ctx.alive()) return;
+    const ok = result.apps.filter((a) => a.project_id).length;
+    toast(`${ok} app${ok === 1 ? '' : 's'} imported (not deployed)`);
+    replace(outcome, h('section', { class: 'card', 'data-import-result': '' },
+      h('div', { class: 'card-header' }, h('h2', {}, 'Imported — next steps')),
+      h('div', { class: 'card-body grid' },
+        result.apps.map((a) => h('div', { 'data-imported': a.name },
+          a.project_id
+            ? h('h3', {}, h('a', { href: `#/apps/${enc(a.name)}/settings` }, a.name), ' ', pill('Imported', 'ok'))
+            : h('h3', {}, a.name, ' ', pill('Not imported', 'bad')),
+          a.error ? errorBox({ message: a.error }) : null,
+          a.next_steps.length ? h('ol', { class: 'update-steps small' }, a.next_steps.map((s) => h('li', {}, s))) : null)))));
+    state.projects = await api('GET', '/projects').catch(() => state.projects);
+    for (const r of rows) {
+      if (result.apps.some((a) => a.project_id && a.name === r.nameIn.value.trim())) {
+        r.pick.checked = false;
+        r.pick.disabled = true;
+      }
+    }
+  });
+
+  const fresh = rows.filter((r) => !r.c.registered_as).length;
+  replace(out, h('section', { class: 'card', 'data-scan-results': '' },
+    h('div', { class: 'card-header' }, h('h2', {}, `Found ${res.candidates.length} app${res.candidates.length === 1 ? '' : 's'} in ${res.root}`), helpButton('wizard.scan')),
+    h('div', { class: 'card-body' },
+      h('p', { class: 'muted small' },
+        `${fresh} not imported yet. Imported apps are registered without deploying; each gets its next steps. `,
+        info.env_files_enabled ? '' : 'Env files are off ([apps] env_file_dirs), so .env files can only be imported on each app\'s Environment card. '),
+      res.truncated ? h('div', { class: 'alert warn' }, 'The scan stopped at its limit; scan a narrower folder to see the rest.') : null,
+      res.skipped.length ? h('details', { class: 'small' }, h('summary', {}, `${res.skipped.length} folder(s) skipped`), h('ul', {}, res.skipped.map((s) => h('li', { class: 'mono' }, s)))) : null),
+    rows.length
+      ? h('div', { class: 'table-wrap' }, h('table', { class: 'stack scan-table' },
+        h('thead', {}, h('tr', {}, ['', 'Name', 'Source', 'Start command', 'Port', 'Env file', 'Warnings'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, rows.map((r) => r.tr))))
+      : h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'No apps found here.')),
+    rows.length ? h('div', { class: 'card-body' }, h('div', { class: 'form-actions' }, importBtn)) : null),
+  outcome);
 }
 
 // --- Domains (Settings tab) --------------------------------------------
@@ -3405,28 +3673,71 @@ async function wizardPage(main, ctx) {
   // Step 1: where the code comes from.
   const kindGit = h('input', { type: 'radio', name: 'kind', value: 'git', checked: true });
   const kindDir = h('input', { type: 'radio', name: 'kind', value: 'dir' });
+  const kindScan = h('input', { type: 'radio', name: 'kind', value: 'scan', 'data-kind': 'scan' });
   const repo = h('input', { id: 'wiz-repo', class: 'mono', placeholder: 'https://github.com/you/app.git', autocomplete: 'off' });
   const branch = h('input', { id: 'wiz-branch', class: 'mono', value: 'main' });
   const dir = h('input', { id: 'wiz-dir', class: 'mono', placeholder: '/srv/apps/my-app' });
+  const subdir = h('input', { id: 'wiz-subdir', class: 'mono', placeholder: 'apps/web', autocomplete: 'off' });
   const name = h('input', { id: 'wiz-name', placeholder: 'from the repository', autocomplete: 'off' });
   const gitFields = h('div', { class: 'row' },
-    h('div', { class: 'field' }, h('label', { for: 'wiz-repo' }, 'Repository URL'), repo, h('span', { class: 'hint' }, 'https, ssh or a path readable by the daemon')),
+    h('div', { class: 'field' }, h('label', { for: 'wiz-repo' }, 'Repository URL'), repo,
+      h('span', { class: 'hint' }, 'https, ssh or a path readable by the daemon. Private GitHub repository? Aegis offers a deploy key if it can\'t read it.')),
     h('div', { class: 'field' }, h('label', { for: 'wiz-branch' }, 'Branch'), branch));
   const dirFields = h('div', { class: 'field' }, h('label', { for: 'wiz-dir' }, 'Directory on this server'), dir);
+  const subdirField = h('div', { class: 'field' }, h('label', { for: 'wiz-subdir' }, 'App folder in the source (optional)'), subdir,
+    h('span', { class: 'hint' }, 'For monorepos: only this folder is built and run, e.g. apps/web. Files outside it are not part of the release.'));
+  const nameField = h('div', { class: 'field' }, h('label', { for: 'wiz-name' }, 'App name'), name, h('span', { class: 'hint' }, 'Optional; used in URLs and the CLI'));
+  const scanPanel = h('div', { 'data-scan-panel': '' });
+  const error = h('div');
+  const detectBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'detect' }, 'Detect settings →');
+  const detectActions = h('div', { class: 'form-actions' }, detectBtn);
+  const scanResults = h('div');
+  let scanLoaded = false;
   const syncKind = () => {
+    const scan = kindScan.checked;
     gitFields.hidden = !kindGit.checked;
-    dirFields.hidden = kindGit.checked;
+    dirFields.hidden = !kindDir.checked;
+    subdirField.hidden = scan;
+    nameField.hidden = scan;
+    detectActions.hidden = scan;
+    scanPanel.hidden = !scan;
+    scanResults.hidden = !scan;
+    if (scan && !scanLoaded) {
+      scanLoaded = true;
+      scanForm(ctx, scanPanel, scanResults).catch((err) => replace(scanPanel, errorBox(err)));
+    }
   };
   kindGit.addEventListener('change', syncKind);
   kindDir.addEventListener('change', syncKind);
+  kindScan.addEventListener('change', syncKind);
   syncKind();
-  const error = h('div');
-  const detectBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'detect' }, 'Detect settings →');
+
+  /** After a failed detect of a GitHub URL: is it private? Offer a deploy key. */
+  const offerDeployKey = async (source) => {
+    let check;
+    try {
+      check = await api('POST', '/apps/check-access', { repository_url: source.repository_url, branch: source.branch });
+    } catch {
+      return; // not a GitHub URL
+    }
+    if (!ctx.alive() || check.ok) return;
+    const setupBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'setup-deploy-key' }, 'Create the app and set up a deploy key');
+    setupBtn.addEventListener('click', async () => {
+      const appName = name.value.trim() || repoName(source.repository_url);
+      const created = await run(setupBtn, () => api('POST', '/projects', { name: appName, ...source, ...(subdir.value.trim() ? { source_subdir: subdir.value.trim() } : {}) }));
+      if (!created || !ctx.alive()) return;
+      showKeyStep(created, source);
+    });
+    append(error, h('div', { class: 'alert warn', 'data-private-repo': '' },
+      h('p', {}, 'Aegis can\'t read this repository without credentials: it is private (or doesn\'t exist). Private repositories are cloned with a deploy key: a key pair made for this app whose public half you add to the repository, read-only.'),
+      h('div', { class: 'form-actions' }, setupBtn)));
+  };
 
   const step1 = h('form', {
     class: 'card',
     onsubmit: async (e) => {
       e.preventDefault();
+      if (kindScan.checked) return;
       replace(error);
       const source = kindGit.checked
         ? { repository_url: repo.value.trim(), branch: branch.value.trim() || 'main' }
@@ -3435,6 +3746,7 @@ async function wizardPage(main, ctx) {
         append(error, errorBox({ message: kindGit.checked ? 'Enter a repository URL' : 'Enter a directory' }));
         return;
       }
+      if (subdir.value.trim()) source.source_subdir = subdir.value.trim();
       detectBtn.textContent = 'Detecting…';
       try {
         detectBtn.disabled = true;
@@ -3442,6 +3754,7 @@ async function wizardPage(main, ctx) {
         if (ctx.alive()) showStep2(source, detected);
       } catch (err) {
         append(error, errorBox(err));
+        if (source.repository_url) offerDeployKey(source);
       } finally {
         detectBtn.disabled = false;
         detectBtn.textContent = 'Detect settings →';
@@ -3455,16 +3768,47 @@ async function wizardPage(main, ctx) {
       h('span', { class: 'sr-only' }, 'Source type'),
       h('div', { class: 'choice' },
         h('label', {}, kindGit, 'Git repository'),
-        h('label', {}, kindDir, 'Directory on this server'))),
+        h('label', {}, kindDir, 'Directory on this server'),
+        h('label', {}, kindScan, 'Scan a folder on the server'))),
     gitFields,
     dirFields,
-    h('div', { class: 'field' }, h('label', { for: 'wiz-name' }, 'App name'), name, h('span', { class: 'hint' }, 'Optional; used in URLs and the CLI')),
-    h('div', { class: 'form-actions' }, detectBtn)));
-  append(body, step1);
+    subdirField,
+    nameField,
+    scanPanel,
+    detectActions));
+  append(body, step1, scanResults);
 
-  const showStep2 = (source, detected) => {
-    const appName = h('input', { id: 'wiz-app-name', required: true, value: name.value.trim() || detected.name });
+  // A private repository: the app exists; add its deploy key, then detect.
+  const showKeyStep = (created, source) => {
+    const err = h('div');
+    const nextBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'detect-with-key' }, 'Detect settings →');
+    nextBtn.addEventListener('click', async () => {
+      replace(err);
+      const detected = await run(nextBtn, () => api('POST', '/detect', { ...source, project: created.id }));
+      if (detected && ctx.alive()) showStep2(source, detected, created);
+    });
+    const card = h('section', { class: 'card' },
+      h('div', { class: 'card-header' }, h('h2', {}, `1b. Deploy key for ${created.name}`), helpButton('app.repository')),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, `${created.name} was created (nothing is deployed yet). Generate its deploy key, add it to the repository, test access, then continue.`),
+        deployKeyPanel(created, ctx),
+        err,
+        h('div', { class: 'form-actions' }, nextBtn)));
+    replace(body, card);
+  };
+
+  const showStep2 = (source, detected, existing = null) => {
+    const appName = h('input', { id: 'wiz-app-name', required: true, value: existing ? existing.name : (name.value.trim() || detected.name), disabled: !!existing });
     const { inputs, layout } = settingsInputs(detected);
+    const hint = detected.start_hint;
+    if (hint) {
+      // The start script fixes the port: run the same command with $PORT.
+      inputs.start_command.value = hint.suggested_start;
+      if (detected.port && detected.health_check_url) {
+        inputs.health_check_url.value = detected.health_check_url.replace(`:${detected.port}`, `:${hint.port}`);
+      }
+      inputs.port.value = hint.port;
+    }
     const deployNow = h('input', { type: 'checkbox', id: 'wiz-deploy', checked: true });
     const createBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create' }, 'Create app');
     const err2 = h('div');
@@ -3475,7 +3819,7 @@ async function wizardPage(main, ctx) {
         replace(err2);
         createBtn.disabled = true;
         try {
-          const created = await api('POST', '/projects', {
+          const created = existing || await api('POST', '/projects', {
             name: appName.value.trim(),
             runtime: detected.runtime,
             ...source,
@@ -3508,6 +3852,8 @@ async function wizardPage(main, ctx) {
     h('div', { class: 'card-body' },
       err2,
       h('div', { class: 'field' }, h('label', { for: 'wiz-app-name' }, 'App name'), appName),
+      hint ? h('div', { class: 'alert info', 'data-start-hint': '' },
+        `The start script (${hint.script}) fixes port ${hint.port}. Aegis tells each release its port in $PORT (behind the proxy every release gets its own), so the start command below runs the same thing with $PORT, and the port is set to ${hint.port}.`) : null,
       layout,
       h('label', { class: 'small', for: 'wiz-deploy' }, deployNow, ' Deploy right away'),
       h('div', { class: 'form-actions' },

@@ -9,6 +9,154 @@
     "version": "1"
   },
   "paths": {
+    "/api/v1/apps/check-access": {
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "check_access",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckAccessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Whether the GitHub repository can be read without credentials (`ok` false: private, or doesn't exist)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessCheckDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a GitHub repository URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/apps/import": {
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "import",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Registered (not deployed); per-app errors and next steps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResultDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/apps/scan": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "scan_info",
+        "responses": {
+          "200": {
+            "description": "The folders scans may look in (empty: scanning is off)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanInfoDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "scan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Apps found (at most 2 levels deep); nothing is changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanResultDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not inside an allowed folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Scanning is off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -1043,6 +1191,180 @@
           },
           "404": {
             "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/deploy-key": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "get_deploy_key",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The public key (the private key is never returned)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployKeyDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No deploy key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "create_deploy_key",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDeployKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Generated (Ed25519); add the public key to the repository, read-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployKeyDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app already has a key; send replace: true",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "delete_deploy_key",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted; also remove it from the repository's deploy keys"
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/deploy-key/test": {
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "operationId": "test_deploy_key",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`git ls-remote` with the key; `ok` false carries git's error and a hint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessCheckDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No deploy key, or the source can't use one",
             "content": {
               "application/json": {
                 "schema": {
@@ -2544,6 +2866,56 @@
   },
   "components": {
     "schemas": {
+      "AccessCheckDto": {
+        "type": "object",
+        "description": "Whether a repository could be read (`git ls-remote`).",
+        "required": [
+          "ok",
+          "url",
+          "with_deploy_key",
+          "branches"
+        ],
+        "properties": {
+          "branch_found": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the app's branch exists (when known)."
+          },
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Branches seen (when `ok`)."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "git's error message (never key material)."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What to do next."
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL that was checked."
+          },
+          "with_deploy_key": {
+            "type": "boolean"
+          }
+        }
+      },
       "ApplyUpdateRequest": {
         "type": "object",
         "properties": {
@@ -2668,6 +3040,24 @@
         },
         "additionalProperties": false
       },
+      "CheckAccessRequest": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "repository_url": {
+            "type": "string",
+            "description": "A GitHub repository URL (any form).",
+            "default": ""
+          }
+        },
+        "additionalProperties": false
+      },
       "ConfigPreviewDto": {
         "type": "object",
         "description": "The project's aegis.toml with current and proposed settings applied.",
@@ -2712,6 +3102,17 @@
           }
         }
       },
+      "CreateDeployKeyRequest": {
+        "type": "object",
+        "properties": {
+          "replace": {
+            "type": "boolean",
+            "description": "Replace an existing key (it stops working once removed from the\nrepository). Without it, an existing key makes this a 409.",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateProjectRequest": {
         "type": "object",
         "properties": {
@@ -2754,6 +3155,14 @@
               "null"
             ],
             "description": "Directory on the server that deployments copy code from.",
+            "default": null
+          },
+          "source_subdir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Build and run only this folder of the source, e.g. `apps/web` in a\nmonorepo (relative, no `..`).",
             "default": null
           }
         },
@@ -2814,6 +3223,42 @@
           },
           "project_name": {
             "type": "string"
+          }
+        }
+      },
+      "DeployKeyDto": {
+        "type": "object",
+        "description": "A deploy key's public half. The private key is never returned.",
+        "required": [
+          "public_key",
+          "fingerprint",
+          "created_at"
+        ],
+        "properties": {
+          "add_key_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where to add the key, for GitHub repositories."
+          },
+          "clone_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The URL deployments clone with this key (GitHub HTTPS URLs are\nconverted to SSH); `null` when the app's source can't use a key."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "`SHA256:...`, as GitHub shows it."
+          },
+          "public_key": {
+            "type": "string",
+            "description": "One line, `ssh-ed25519 AAAA... aegis:<app>`: add it to the\nrepository's deploy keys (read-only)."
           }
         }
       },
@@ -2944,6 +3389,14 @@
             ],
             "default": null
           },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A registered app (id or name) whose deploy key is used to clone,\nand whose source folder is the default.",
+            "default": null
+          },
           "repository_url": {
             "type": [
               "string",
@@ -2958,6 +3411,14 @@
               "null"
             ],
             "description": "A directory on the server, or...",
+            "default": null
+          },
+          "source_subdir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Look inside this folder of the source (monorepo apps).",
             "default": null
           }
         },
@@ -3007,6 +3468,17 @@
           },
           "start_command": {
             "type": "string"
+          },
+          "start_hint": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StartHintDto",
+                "description": "The package.json start script hard-codes its port: use\n`suggested_start` (reads `$PORT`) as the start command, and `port`."
+              }
+            ]
           },
           "strategy": {
             "type": "string"
@@ -3454,6 +3926,125 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "ImportAppRequest": {
+        "type": "object",
+        "description": "One app to import. Give a `repository_url` (cloned at each deployment)\nor a `source_dir` (copied at each deployment).",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "name": {
+            "type": "string",
+            "default": ""
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "runtime": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "settings": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectSettingsDto",
+                "description": "Dashboard settings to save with the app (start command, port, env\nfile, ...); omitted fields follow aegis.toml and detection."
+              }
+            ],
+            "default": null
+          },
+          "source_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "source_subdir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Build and run only this folder of the source (monorepo apps).",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportRequest": {
+        "type": "object",
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportAppRequest"
+            },
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportResultDto": {
+        "type": "object",
+        "required": [
+          "apps"
+        ],
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportedAppDto"
+            },
+            "description": "One entry per requested app, in order. Imported apps are not deployed."
+          }
+        }
+      },
+      "ImportedAppDto": {
+        "type": "object",
+        "required": [
+          "name",
+          "next_steps"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "next_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What to do before the first deployment."
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the app was registered."
           }
         }
       },
@@ -3919,6 +4510,13 @@
               "string",
               "null"
             ]
+          },
+          "source_subdir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The folder of the source that is built and run (monorepo apps)."
           },
           "standby": {
             "oneOf": [
@@ -4421,6 +5019,228 @@
           }
         }
       },
+      "ScanCandidateDto": {
+        "type": "object",
+        "description": "An app found by a scan, with the settings an import would use.",
+        "required": [
+          "path",
+          "name",
+          "runtime",
+          "start_command",
+          "remote_kind",
+          "deploy_key",
+          "env_file_readable",
+          "env_names",
+          "env_file_allowed",
+          "warnings"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "build_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deploy_key": {
+            "type": "string",
+            "description": "`required` (SSH remote), `check` (GitHub over HTTPS: may be\nprivate), `unknown` or `no`."
+          },
+          "env_file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's `.env`, if there is one."
+          },
+          "env_file_allowed": {
+            "type": "boolean",
+            "description": "The `.env` may be used as the Env file (it is in `env_file_dirs`)."
+          },
+          "env_file_readable": {
+            "type": "boolean"
+          },
+          "env_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Variable names in the `.env` (values are never read out)."
+          },
+          "health_check_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "install_command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "port_in_use": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What listens on the app's port right now."
+          },
+          "registered_as": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The registered app with the same source (skip it)."
+          },
+          "remote_kind": {
+            "type": "string",
+            "description": "`github`, `ssh`, `https` or `none`."
+          },
+          "repo_root": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The git checkout the app is in."
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The checkout's `origin` remote (credentials removed)."
+          },
+          "runtime": {
+            "type": "string"
+          },
+          "source_subdir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's folder inside the checkout (monorepo apps)."
+          },
+          "start_command": {
+            "type": "string"
+          },
+          "start_hint": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StartHintDto"
+              }
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScanWarningDto"
+            }
+          }
+        }
+      },
+      "ScanInfoDto": {
+        "type": "object",
+        "description": "Whether scanning is on, and where.",
+        "required": [
+          "allowed_dirs",
+          "env_files_enabled"
+        ],
+        "properties": {
+          "allowed_dirs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[apps] import_dirs` plus `[apps] env_file_dirs`."
+          },
+          "env_files_enabled": {
+            "type": "boolean",
+            "description": "Env files are on (`[apps] env_file_dirs` is set)."
+          }
+        }
+      },
+      "ScanRequest": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "An absolute path inside one of the allowed folders.",
+            "default": ""
+          }
+        },
+        "additionalProperties": false
+      },
+      "ScanResultDto": {
+        "type": "object",
+        "required": [
+          "root",
+          "candidates",
+          "truncated",
+          "skipped"
+        ],
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScanCandidateDto"
+            }
+          },
+          "root": {
+            "type": "string",
+            "description": "The scanned folder, resolved."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Folders not looked into, and why."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The scan stopped at its depth or entry limit."
+          }
+        }
+      },
+      "ScanWarningDto": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "`private_repo`, `ssh_remote`, `credentials_in_url`, `port_in_use`,\n`hardcoded_port`, `env_unreadable`, `env_outside_allowed`,\n`no_remote` or `detached_head`."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
       "ScheduleDto": {
         "type": "object",
         "required": [
@@ -4627,6 +5447,30 @@
           },
           "version": {
             "type": "string"
+          }
+        }
+      },
+      "StartHintDto": {
+        "type": "object",
+        "description": "A start script that fixes the app's port, and its `$PORT` form.",
+        "required": [
+          "port",
+          "script",
+          "suggested_start"
+        ],
+        "properties": {
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "script": {
+            "type": "string",
+            "description": "The package.json `start` script."
+          },
+          "suggested_start": {
+            "type": "string",
+            "description": "The proposed start command, e.g. `npx next start -p $PORT`."
           }
         }
       },
@@ -5041,6 +5885,9 @@
     },
     {
       "name": "backups"
+    },
+    {
+      "name": "sources"
     }
   ]
 }

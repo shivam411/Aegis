@@ -25,6 +25,16 @@ Buttons in the card header:
 
 **Save settings** first shows the change as a diff of `aegis.toml` (green lines added, red lines removed). Confirm with **Save settings** in that dialog. Settings apply to the **next** deployment; releases that are already built keep the settings they were built with.
 
+## Repository
+
+Where deployments get the code (the repository URL and branch, or the directory, and the **App folder** of a monorepo app), and the app's **deploy key** for a private repository. Admins only.
+
+- **Generate deploy key** creates an Ed25519 key pair for this app. The private key never leaves the server: it is stored encrypted (with the secrets key) and written to a temporary file readable only by Aegis while git runs. The card shows the **public key** (with **Copy**), its **fingerprint** (`SHA256:…`, as GitHub lists it) and when it was created.
+- **Adding it on GitHub:** open the link to the repository's *Add deploy key* page (`https://github.com/<owner>/<repo>/settings/keys/new`), give it a title such as `Aegis my-app`, paste the key, leave **Allow write access** unticked (Aegis only reads), and click **Add key**.
+- **Test access** runs `git ls-remote` with the key and shows whether it worked, with git's error and what to do when it didn't (key not added yet, wrong repository, unknown host key).
+- With a key, an `https://github.com/…` URL is cloned over SSH (`git@github.com:…`); the card says so. Other HTTPS URLs and local directories can't use a key. Every deployment uses the key: from the dashboard, the CLI, webhooks and the daily schedule.
+- **Generate a new key** replaces the key (the old one stops being used; remove it on GitHub too). **Delete key** removes it; deployments of a private repository then fail until a new key is added.
+
 ## Environment
 
 Where each of the app's environment variables comes from, and the app's **env file** on the server. Every role sees this card; only admins can change it. It shows names, never values.

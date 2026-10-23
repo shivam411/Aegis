@@ -6,6 +6,9 @@
 //! project and name (as associated data), so sealed values can't be swapped
 //! between slots. Decrypted values only exist in memory, when a process is
 //! started.
+//!
+//! The same key seals each app's SSH deploy key ([`SecretStore::set_deploy_key`]),
+//! bound to its project. Its public half and fingerprint are stored in clear.
 
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305, NONCE_LEN};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -30,6 +33,27 @@ pub struct SecretInfo {
     pub updated_at: String,
 }
 
+/// A deploy key's public half. The private key is never returned by queries;
+/// see [`SecretStore::deploy_key_private`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DeployKeyInfo {
+    /// `ssh-ed25519 AAAA... comment`
+    pub public_key: String,
+    /// `SHA256:...`
+    pub fingerprint: String,
+    pub created_at: String,
+}
+
+#[derive(Clone)]
+struct SealedKey {
+    info: DeployKeyInfo,
+    sealed: Vec<u8>,
+}
+
+/// The associated data of a project's deploy key. Secret names can't
+/// contain NUL, so this never matches a secret's slot.
+const DEPLOY_KEY_SLOT: &str = "\0deploy-key";
+
 #[derive(Clone)]
 struct Sealed {
     bytes: Vec<u8>,
@@ -42,6 +66,8 @@ struct Inner {
     rng: SystemRandom,
     /// project id -> name -> sealed value; mirrors the `secrets` table.
     cache: Mutex<HashMap<String, BTreeMap<String, Sealed>>>,
+    /// project id -> deploy key; mirrors the `deploy_keys` table.
+    deploy_keys: Mutex<HashMap<String, SealedKey>>,
 }
 
 #[derive(Clone)]
@@ -162,12 +188,32 @@ impl SecretStore {
                 },
             );
         }
+        let mut deploy_keys = HashMap::new();
+        for row in sqlx::query(
+            "SELECT project_id, public_key, fingerprint, sealed, created_at FROM deploy_keys",
+        )
+        .fetch_all(&pool)
+        .await?
+        {
+            deploy_keys.insert(
+                row.try_get("project_id")?,
+                SealedKey {
+                    info: DeployKeyInfo {
+                        public_key: row.try_get("public_key")?,
+                        fingerprint: row.try_get("fingerprint")?,
+                        created_at: row.try_get("created_at")?,
+                    },
+                    sealed: row.try_get("sealed")?,
+                },
+            );
+        }
         let store = Self {
             inner: Arc::new(Inner {
                 pool,
                 key,
                 rng,
                 cache: Mutex::new(cache),
+                deploy_keys: Mutex::new(deploy_keys),
             }),
         };
         // Fail now, not at the next deploy, if the key file was replaced.
@@ -182,6 +228,15 @@ impl SecretStore {
                     )
                 })?;
             }
+        }
+        for (project, key) in store.inner.deploy_keys.lock().unwrap().iter() {
+            store.open_bytes(project, DEPLOY_KEY_SLOT, &key.sealed).map_err(|_| {
+                anyhow::anyhow!(
+                    "The deploy key of project {} can't be decrypted with {}; was the key file replaced?",
+                    project,
+                    key_path.display()
+                )
+            })?;
         }
         Ok(store)
     }
@@ -207,10 +262,14 @@ impl SecretStore {
     }
 
     fn open_value(&self, project_id: &str, name: &str, sealed: &Sealed) -> Result<String, ()> {
-        if sealed.bytes.len() < NONCE_LEN {
+        self.open_bytes(project_id, name, &sealed.bytes)
+    }
+
+    fn open_bytes(&self, project_id: &str, name: &str, sealed: &[u8]) -> Result<String, ()> {
+        if sealed.len() < NONCE_LEN {
             return Err(());
         }
-        let (nonce, data) = sealed.bytes.split_at(NONCE_LEN);
+        let (nonce, data) = sealed.split_at(NONCE_LEN);
         let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| ())?;
         let mut data = data.to_vec();
         let plain = self
@@ -305,6 +364,86 @@ impl SecretStore {
     }
 }
 
+impl SecretStore {
+    /// Stores (or replaces) a project's deploy key. `private_key` is sealed;
+    /// the public key and fingerprint are kept in clear.
+    pub async fn set_deploy_key(
+        &self,
+        project_id: &str,
+        private_key: &str,
+        public_key: &str,
+        fingerprint: &str,
+    ) -> Result<DeployKeyInfo, anyhow::Error> {
+        let sealed = self.seal(project_id, DEPLOY_KEY_SLOT, private_key)?;
+        let info = DeployKeyInfo {
+            public_key: public_key.to_string(),
+            fingerprint: fingerprint.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        sqlx::query(
+            "INSERT INTO deploy_keys (project_id, public_key, fingerprint, sealed, created_at) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (project_id) DO UPDATE SET public_key = excluded.public_key,
+               fingerprint = excluded.fingerprint, sealed = excluded.sealed, created_at = excluded.created_at",
+        )
+        .bind(project_id)
+        .bind(&info.public_key)
+        .bind(&info.fingerprint)
+        .bind(&sealed)
+        .bind(&info.created_at)
+        .execute(&self.inner.pool)
+        .await?;
+        self.inner.deploy_keys.lock().unwrap().insert(
+            project_id.to_string(),
+            SealedKey {
+                info: info.clone(),
+                sealed,
+            },
+        );
+        Ok(info)
+    }
+
+    /// A project's deploy key (public half), if it has one.
+    pub fn deploy_key(&self, project_id: &str) -> Option<DeployKeyInfo> {
+        self.inner
+            .deploy_keys
+            .lock()
+            .unwrap()
+            .get(project_id)
+            .map(|k| k.info.clone())
+    }
+
+    /// The decrypted private key, for the duration of a git command.
+    pub fn deploy_key_private(
+        &self,
+        project_id: &str,
+    ) -> Option<(zeroize::Zeroizing<String>, DeployKeyInfo)> {
+        let keys = self.inner.deploy_keys.lock().unwrap();
+        let key = keys.get(project_id)?;
+        let private = self
+            .open_bytes(project_id, DEPLOY_KEY_SLOT, &key.sealed)
+            .ok()?;
+        Some((zeroize::Zeroizing::new(private), key.info.clone()))
+    }
+
+    /// Deletes a project's deploy key; returns it if there was one.
+    pub async fn remove_deploy_key(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<DeployKeyInfo>, anyhow::Error> {
+        sqlx::query("DELETE FROM deploy_keys WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&self.inner.pool)
+            .await?;
+        Ok(self
+            .inner
+            .deploy_keys
+            .lock()
+            .unwrap()
+            .remove(project_id)
+            .map(|k| k.info))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +527,49 @@ mod tests {
         assert!(SecretStore::open(pool, &dir.path().join("k"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn deploy_keys_are_sealed_and_bound_to_their_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let key = dir.path().join("secrets.key");
+        let pool = pool().await;
+        let store = SecretStore::open(pool.clone(), &key).await.unwrap();
+        let private = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAs3cr3t\n-----END OPENSSH PRIVATE KEY-----\n";
+        let info = store
+            .set_deploy_key("p1", private, "ssh-ed25519 AAAA aegis:p1", "SHA256:abc")
+            .await
+            .unwrap();
+        assert_eq!(store.deploy_key("p1"), Some(info.clone()));
+        assert_eq!(store.deploy_key("p2"), None);
+        assert_eq!(&*store.deploy_key_private("p1").unwrap().0, private);
+        // It is not a secret variable.
+        assert!(store.env("p1").is_empty());
+        assert!(store.list("p1").is_empty());
+
+        // The database holds no plaintext private key.
+        let blobs: Vec<Vec<u8>> = sqlx::query_scalar("SELECT sealed FROM deploy_keys")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&blobs[0]).contains("s3cr3t"));
+
+        // Survives a reopen; a sealed key copied to another project doesn't open.
+        let reopened = SecretStore::open(pool.clone(), &key).await.unwrap();
+        assert_eq!(&*reopened.deploy_key_private("p1").unwrap().0, private);
+        sqlx::query("INSERT INTO deploy_keys SELECT 'p2', public_key, fingerprint, sealed, created_at FROM deploy_keys")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(SecretStore::open(pool.clone(), &key).await.is_err());
+        sqlx::query("DELETE FROM deploy_keys WHERE project_id = 'p2'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(reopened.remove_deploy_key("p1").await.unwrap(), Some(info));
+        assert_eq!(reopened.remove_deploy_key("p1").await.unwrap(), None);
+        assert!(reopened.deploy_key_private("p1").is_none());
     }
 
     #[test]

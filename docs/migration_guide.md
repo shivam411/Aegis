@@ -58,18 +58,48 @@ Other directives (resource limits, sandboxing) are ignored. Limits can be set pe
 
 - **Secrets don't belong in `aegis.toml`.** It is copied into every release. Move passwords, keys and connection strings out of `[env]` into the dashboard's Settings → Secrets (multi-line values such as PEM keys can be pasted as they are).
 - **Secrets are not available at build time.** Only the running app gets them. Anything the build reads must be a plain variable (`[env]` or the dashboard's Environment variables), for example Next.js `NEXT_PUBLIC_*` values, which are inlined into the bundle by `next build`.
-- **Files your app reads that git ignores are not copied.** A deployment copies tracked files plus untracked files that aren't ignored. A `.env`, `.env.local` or `.env.production` that is in `.gitignore` is not part of the release. Point the app's **Env file** at the existing file on the server (section 4.4), or import it into Variables and Secrets.
+- **Files your app reads that git ignores are not copied.** A deployment copies tracked files plus untracked files that aren't ignored. A `.env`, `.env.local` or `.env.production` that is in `.gitignore` is not part of the release. Point the app's **Env file** at the existing file on the server (section 5.4), or import it into Variables and Secrets.
 - **Leave `NODE_ENV` unset for the build** unless you know the build works with it. With `NODE_ENV=production`, `npm ci`/`npm install` skip `devDependencies`, and a typical Next.js or TypeScript build needs them (`typescript`, `@types/*`, `eslint`, Tailwind/PostCSS plugins), so it fails with "Cannot find module" or "It looks like you're trying to use TypeScript but do not have the required package(s) installed". `next build` and `next start` set `NODE_ENV=production` themselves. Every source in the [precedence table](configuration.md#env-file-on-the-server) except Secrets reaches the build, so if the PM2 `.env`, or the `[env]` that `aegis migrate` copied from the ecosystem file, sets `NODE_ENV=production`, remove that line (or make the install command `npm ci --include=dev`). If the app needs it at runtime only, set it in the start command: `NODE_ENV=production npm start`.
 - **Listen on `$PORT`.** Once the app has a domain on the built-in proxy, every release gets its own port in `PORT`, and `deploy.port` is only the default for apps without a domain. A start command with a fixed port (`next start -p 3000`, `--port 8080`) must use `$PORT` instead (`next start -p $PORT`). Check `package.json` scripts too.
 - **Apps without a domain have a short gap on every deployment**: the old process is stopped before the new one starts on the same port. Map a domain on the built-in proxy to get zero-downtime switches.
 
 ---
 
-## 4. Example: a PM2 app behind nginx
+## 4. Many PM2 apps at once: scan the server
+
+When the apps are git checkouts in one folder on the server, say `/opt/github/<repo>` (kept up to date by `git pull` as root), the dashboard can find and register them all.
+
+1. **Allow the folder** in `/etc/aegis/aegis.toml`, then `sudo systemctl restart aegis`:
+
+   ```toml
+   [apps]
+   import_dirs = ["/opt/github"]        # scanning
+   env_file_dirs = ["/opt/github"]      # optional: use each app's .env as its Env file (this alone allows scanning too)
+   ```
+
+   The `aegis` user must be able to enter the folders and read the files (`namei -l /opt/github/img-man/package.json`). Checkouts owned by root are fine as long as they are world- or group-readable; git's "dubious ownership" check doesn't matter, because Aegis reads `.git/config` and `.git/HEAD` itself.
+
+2. **Scan.** Dashboard → **+ New app** → **Scan a folder on the server**, folder `/opt/github`, **Scan**. Each app found (also `apps/*`, `packages/*`, `services/*` of a monorepo, with their folder) is listed with what an import would use: name, runtime, start command, port, the checkout's `origin` and branch, its `.env` (names only), and warnings:
+   - *port in use (probably the current deployment)*: PM2 still runs it. That's expected; see step 5.
+   - *start script fixes the port*: e.g. `next start -p 4000`; the start command is changed to `npx next start -p $PORT` and the port kept at 4000.
+   - *needs a deploy key*: an SSH remote, or a private GitHub repository (**Check** asks GitHub without credentials).
+   - *.env not readable*: with the `chgrp aegis … && chmod 640 …` command that fixes it.
+
+   Apps already registered (same repository, branch and folder) are shown but can't be selected again.
+
+3. **Import selected.** The apps are registered **without deploying**, and each gets its next steps.
+
+4. **Deploy keys for private repositories.** For each such app: **Settings → Repository → Generate deploy key**, copy the public key, open the link to the repository's *Add deploy key* page on GitHub (`https://github.com/<owner>/<repo>/settings/keys/new`), paste it, leave **Allow write access** unticked, **Add key**, then **Test access** in Aegis. GitHub HTTPS remotes are cloned over SSH automatically once there is a key.
+
+5. **Ports.** Before the first deployment of an app, either map its domain (each release then gets a port of its own, so it starts next to PM2; see 5.3 below), or stop the PM2 copy (`pm2 stop <name>`). Otherwise the deployment stops with *port N is already in use* and nothing changes.
+
+Then continue with variables/secrets, deploying and switching traffic as in the example below.
+
+## 5. Example: a PM2 app behind nginx
 
 A common setup: nginx terminates TLS on ports 80/443 and forwards `app.example.com` to a Next.js app that PM2 runs on port 3000. The plan is to keep nginx in front, run the app under Aegis behind Aegis's own proxy on a loopback port, and switch nginx over once the Aegis copy works. PM2 keeps serving until then.
 
-### 4.1 Configure the Aegis proxy behind nginx
+### 5.1 Configure the Aegis proxy behind nginx
 
 In the daemon's configuration (`/etc/aegis/aegis.toml` for a `--server` install):
 
@@ -87,7 +117,7 @@ Leave `[proxy.acme]` off: nginx has the certificates. Then `sudo systemctl resta
 
 Without `trusted_proxies`, Aegis overwrites `X-Forwarded-Proto` with `http` (it only sees nginx's plain-HTTP connection), which breaks apps that build absolute URLs or decide on Secure cookies from it. See [Security](security.md#forwarded-headers-and-trusted-proxies) for what trusting a proxy means.
 
-### 4.2 Create the app
+### 5.2 Create the app
 
 In the app's directory on the server (owned by a user the daemon can read; with a `--server` install, the `aegis` user):
 
@@ -104,15 +134,15 @@ Check the generated `aegis.toml`:
 - `build.start_command` must listen on `$PORT`. For Next.js: `start_command = "npx next start -p $PORT"` (or `npm start` with `"start": "next start -p $PORT"` in `package.json`; `next start` also reads `PORT` when `-p` is not given).
 - Move secrets from `[env]` to the dashboard (below).
 
-### 4.3 Map the domain before the first deployment
+### 5.3 Map the domain before the first deployment
 
 With the app registered (previous step), in the dashboard open the app's **Settings** tab and, under **Domains**, add `app.example.com` with TLS **HTTP only**. (The API equivalent is `POST /api/v1/projects/my-app/domains` with `{"domain": "app.example.com", "tls": "off"}`, from a signed-in session; API tokens can't change domains.)
 
-Do this **before** the first `aegis deploy`: with a domain, each release gets a free port of its own, so the Aegis copy can start while PM2 still holds port 3000. Without a domain it would try to use `deploy.port` (3000) and fail its health check.
+Do this **before** the first `aegis deploy`: with a domain, each release gets a free port of its own, so the Aegis copy can start while PM2 still holds port 3000. Without a domain it would try to use `deploy.port` (3000), which PM2 holds: the deployment fails at once with `port 3000 is already in use by another process …` and nothing is promoted. (Before this check existed, the new process crashed with `EADDRINUSE` while PM2's copy answered the health check, so the broken release went live; see [Ports and health checks](configuration.md#domains-and-the-built-in-reverse-proxy-proxy).)
 
 Use TLS `off` because nginx terminates HTTPS. (With `acme` or `files`, requests nginx marks as `X-Forwarded-Proto: https` are served without a redirect, so there is no loop, but the certificate would go unused.)
 
-### 4.4 Variables and secrets
+### 5.4 Variables and secrets
 
 The app's settings are in the `.env` PM2 used, say `/opt/github/my-app/.env`. The simplest move is to keep using that file:
 
@@ -146,7 +176,7 @@ If you'd rather not keep the file, use **Settings → Environment → Import .en
 - **Variables**: everything the build needs, including all `NEXT_PUBLIC_*` values, plus non-secret settings.
 - **Secrets**: passwords, API keys, `DATABASE_URL`, private keys. They reach the running app, not the build.
 
-### 4.5 Deploy and test through the Aegis proxy
+### 5.5 Deploy and test through the Aegis proxy
 
 ```bash
 aegis deploy
@@ -156,7 +186,7 @@ aegis logs -f
 
 The `curl` goes to Aegis's proxy exactly as nginx will. Fix anything here while PM2 is still serving the real traffic.
 
-### 4.6 Switch nginx
+### 5.6 Switch nginx
 
 In the site's `server` block for `app.example.com`, point the upstream at Aegis's proxy instead of the app:
 
@@ -188,7 +218,7 @@ pm2 save
 
 From now on, deploy with `aegis deploy` (or a webhook or schedule); the switch to each new release happens in Aegis's proxy without dropped requests.
 
-### 4.7 The way back
+### 5.7 The way back
 
 If something is wrong after the switch:
 

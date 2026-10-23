@@ -57,9 +57,9 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /system/update` | Whether a newer Aegis release is available (cached result of the periodic check), how it would be installed here (`mode`), the release signing keys this build trusts (`release_keys`), and update progress (`phase`) |
 | `POST /system/update/check` | Admins, signed in (not API tokens): ask GitHub now. Refused (409) with `[update] check = false` |
 | `POST /system/update/apply` | Admins, signed in: back up, download, verify (release signature, then SHA-256) and install the latest release, then restart (202; follow `phase`). `{"version"?}` must match the latest known release. 409 with the command to run when the daemon can't replace its own binary, or when this build has no release signing key. See [upgrading.md](upgrading.md) |
-| `POST /detect` | Detect runtime and default commands: `{"source_dir"}` or `{"repository_url", "branch"?}` (shallow clone into scratch space) |
+| `POST /detect` | Detect runtime and default commands: `{"source_dir"}` or `{"repository_url", "branch"?}` (shallow clone into scratch space), plus `"source_subdir"?` (look inside that folder) and `"project"?` (an existing app: clone with its deploy key, default to its folder). `start_hint` is set when the package.json start script hard-codes its port: `{"port", "script", "suggested_start"}` (e.g. `npx next start -p $PORT`) |
 | `GET /projects` | Projects with their live release, schedule and process, plus `instances` (every instance of the live release with its process, CPU and memory; one entry for single-instance apps) and `standby` (a BlueGreen previous release kept running, or `null`) |
-| `POST /projects` | Register a project: `{"name", "source_dir"?, "repository_url"?, "branch"?, "project_id"?}` |
+| `POST /projects` | Register a project: `{"name", "source_dir"?, "repository_url"?, "branch"?, "project_id"?, "source_subdir"?}`. `source_subdir` (e.g. `apps/web`, relative, no `..`) builds and runs only that folder of the source |
 | `GET /projects/{project}` | One project |
 | `POST /projects/{project}/deploy` | Queue a deployment (**202**): `{"version"?, "strategy"?, "branch"?, "commit"?, "source_dir"?, "repository_url"?}`. `strategy` is `GracefulSwitch`, `Immediate`, `Rolling` or `BlueGreen`; the last two need a domain on the built-in proxy (else **400**). |
 | `POST /projects/{project}/rollback` | Switch to the previous (or `{"version"}`) release; returns once it's live |
@@ -89,6 +89,14 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /users` · `POST /users` | List users; create one (**201**): `{"username", "password", "role"}` (admins only) |
 | `PUT /users/{name}` · `DELETE /users/{name}` | Change `role` and/or set a new `password` (signs them out); delete (**204**). The last admin can't be demoted or deleted; you can't delete yourself (**409**). Admins only |
 | `POST /projects/{project}/webhook` | Create or replace the GitHub webhook secret (users only; shown once) |
+| `GET /projects/{project}/deploy-key` | The app's SSH deploy key: `{"public_key", "fingerprint", "created_at", "clone_url", "add_key_url"}` (**404** without one). The private key is never returned. Admins, signed in (API tokens get 403) |
+| `POST /projects/{project}/deploy-key` | Generate an Ed25519 deploy key (**201**, same body). `{"replace": true}` replaces an existing key (else **409**). Admins, signed in |
+| `DELETE /projects/{project}/deploy-key` | Delete it (**204**). Admins, signed in |
+| `POST /projects/{project}/deploy-key/test` | `git ls-remote` with the key: `{"ok", "url", "with_deploy_key", "branches", "branch_found", "error", "hint"}`; `error` is git's message (never key material). **409** without a key. Admins, signed in |
+| `POST /apps/check-access` | Whether a GitHub repository can be read without credentials: `{"repository_url", "branch"?}` returns the same body as the test above (`ok: false`: private or missing). Only GitHub URLs (**400** otherwise). Admins, signed in |
+| `GET /apps/scan` | The folders scans may look in (`allowed_dirs`: `[apps] import_dirs` plus `env_file_dirs`) and whether env files are on. Admins, signed in |
+| `POST /apps/scan` | Look for apps in a server folder: `{"path"}` (inside an allowed folder, else **400**; **409** when scanning is off). Returns `{"root", "candidates", "truncated", "skipped"}`; each candidate has the proposed name, runtime, commands, port, health check, `repository_url`/`branch` (from `.git`, credentials removed), `source_subdir` (monorepo apps), `deploy_key` (`required`, `check`, `unknown` or `no`), the `.env` path and its variable **names**, `start_hint`, `port_in_use`, `registered_as` and `warnings` (`{"code", "message"}`). Read-only. Admins, signed in |
+| `POST /apps/import` | Register apps without deploying them: `{"apps": [{"name", "repository_url"? or "source_dir"?, "branch"?, "source_subdir"?, "runtime"?, "settings"?}]}` (`settings` as for `PUT /projects/{p}/settings`; at most 100 apps). Returns `{"apps": [{"name", "project_id", "error", "next_steps"}]}`, one entry per app: one failing doesn't stop the others. Admins, signed in |
 
 Outside `/api/v1`:
 

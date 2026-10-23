@@ -132,6 +132,8 @@ Builds also get `AEGIS_RELEASE_VERSION`. A name that is both a Secret and in the
 
 - With `aegis deploy` in a project directory, Aegis copies that directory. In a git work tree it copies tracked files plus untracked files that aren't ignored, and always includes `aegis.toml`. Outside git, it skips `.git`, `node_modules`, `target`, virtualenvs, `__pycache__` and `*.db` files.
 - With `aegis deploy --repo <url> [--branch b | --commit sha]`, Aegis clones the repository instead.
+- An app with an **app folder** (`source_subdir`, e.g. `apps/web`; set when the app is created in the wizard, by a folder scan, or with `"source_subdir"` in `POST /api/v1/projects`) builds and runs only that folder of its repository or directory: the clone (or copy) is made in full, then only the folder becomes the release. Files outside it (a monorepo's root lockfile, shared workspace packages) are not part of the release, so the folder must build on its own. The path is relative, without `..`; a folder that doesn't exist (or a symbolic link leading out of the checkout) fails the Clone stage. A deployment that copies an explicitly given directory (`aegis deploy` in a project directory) is not narrowed.
+- **Private repositories** are cloned with the app's SSH deploy key (Settings → Repository; see [`security.md`](security.md#deploy-keys)). With a key, a GitHub HTTPS URL is cloned over SSH (`git@github.com:owner/repo.git`), because deploy keys only work there; SSH URLs (`ssh://git@host/owner/repo.git`, `git@host:owner/repo.git`) are used as they are. Webhook and scheduled deployments use the key too.
 - A `.env` in the project directory is part of the release only if it would be copied by these rules (for example, not git-ignored). Use an [env file on the server](#env-file-on-the-server) to keep it out of releases while the app still gets its values.
 
 ---
@@ -299,6 +301,12 @@ A deployment (or rollback):
 
 If the new release never becomes healthy, it is stopped and the old one goes on serving untouched. Apps without a domain keep the previous behaviour: they use their configured port, and the old process stops before the new one starts. The port of every process is recorded in its events, so routes come back on a daemon restart.
 
+**Ports and health checks.** A health check only proves something if the new release is the one answering it. So, for every strategy and runtime (including a container's published port):
+
+- Before a release's process starts, its port must be free: nothing bound to it on 127.0.0.1, 0.0.0.0 or `[::]`, and nothing accepting connections on 127.0.0.1 (a just-stopped release, or its container, gets 3 seconds to let go of it). Otherwise the deployment fails at the Promote stage, or the Start/Restart is refused, with for example `port 4000 is already in use by another process (pid 812 (node)); map a domain so each release gets its own port, or stop the other process`. The process is named when the daemon's user can see it (not for another user's processes; `sudo ss -ltnp 'sport = :4000'` shows those). Nothing is promoted. This is what happens when an app's previous manager (PM2, a systemd unit) still runs it on the same port.
+- After the health check passes, the release must keep running, without exiting or being restarted, for the liveness window (3 seconds, or the health check timeout if shorter). A release that crashes in that window fails the deployment, and the previous release is started again.
+- On Linux, for process apps, the socket listening on the probed port must belong to the release's process tree (matched by socket inode in `/proc/net/tcp*` and `/proc/<pid>/fd`). A health check answered by another process fails the deployment. Container apps are reached through Docker's port publishing, so this last check doesn't apply to them; the first two do.
+
 ### Deployment strategies and instances
 
 *Experimental.* An app can run several **instances** (`[run] instances = N`, or *Instances* in the dashboard's Settings tab), up to 16. Each instance is a supervised process of the live release with its own `PORT`, its own log file (`<data_dir>/projects/<id>/logs/<process-id>.log`), the app's restart policy, and its own cgroup. **Resource limits apply to each instance on its own**: a 1-core, 512 MiB limit lets three instances use up to 3 cores and 1.5 GiB in total. The app's usage figures are the sum over its instances, and the dashboard lists each instance with its own CPU and memory. Limit changes apply to every running instance at once.
@@ -368,7 +376,10 @@ The result is shown to every signed-in user (`GET /api/v1/system/update`, the da
 ```toml
 [apps]
 env_file_dirs = ["/opt/apps", "/etc/aegis/env"]   # where apps' env files may be; default [] = env files off
+import_dirs = ["/opt/github"]                     # where "Scan a folder on the server" may look; default []
 ```
+
+`import_dirs` lists the folders the new app wizard's **Scan a folder on the server** (`POST /api/v1/apps/scan`) may look in for apps to import. The folders in `env_file_dirs` may be scanned too, so a server that already lists `/opt/github` there needs nothing more. With both empty (the default) scanning is off. The same rules apply as for `env_file_dirs`: absolute paths without `..`, `/` refused, symbolic links resolved before the check (a link inside an allowed folder that leads outside it is not followed), and only what the daemon's user can read is seen. A scan goes at most two levels below the folder it is given and looks at no more than 5000 directory entries; it skips `node_modules`, `.git`, `target`, `dist`, `build`, `.next`, `.nuxt`, virtualenvs and hidden folders, and doesn't search inside an app it found (except `apps/*`, `packages/*` and `services/*` of a monorepo). What it reads is listed in [`security.md`](security.md#scanning-folders-on-the-server). Scanning and importing are for signed-in admins only.
 
 `env_file_dirs` lists the directories an app's env file ([Env file on the server](#env-file-on-the-server)) may be in, at any depth, after symbolic links are resolved. Each must be an absolute path without `..`, and `/` is refused. Only admins can point an app at a file, but any file the daemon's user can read in these directories can be chosen, so list only directories that hold env files for apps on this server. A directory that doesn't exist is logged at startup and allows nothing.
 
@@ -382,12 +393,22 @@ namei -l /opt/apps/my-app/.env      # every directory needs x for aegis (via gro
 
 Alternatively keep env files in a directory only root and `aegis` can read: `sudo install -d -m 750 -o root -g aegis /etc/aegis/env`, then `sudo install -m 640 -o root -g aegis /opt/apps/my-app/.env /etc/aegis/env/my-app.env`.
 
+### Git servers (`[git]`)
+
+```toml
+[git]
+known_hosts_file = "/etc/aegis/known_hosts"   # SSH host keys of git servers other than GitHub; default: none
+```
+
+Deploy keys are used over SSH with `StrictHostKeyChecking=yes`: a server whose host key Aegis doesn't know is refused, never trusted on first use. GitHub's published host keys (Ed25519, ECDSA and RSA, from [GitHub's SSH key fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)) are built in. For another server (GitLab, Gitea, a self-hosted git), put its keys in a file in `known_hosts` format and name it here; it is read at every clone, so it can be edited without a restart. Get the keys from the server's administrator, or with `ssh-keyscan -t ed25519 git.example.com` and compare the fingerprint (`ssh-keygen -lf`) with one from a trusted source. The path must be absolute and readable by the daemon's user. The system-wide `/etc/ssh/ssh_known_hosts` is consulted too, as ssh always does.
+
 ### Data directory layout
 
 ```
 <data_dir>/
 ├── aegis.lock                   # held by the running daemon
-├── secrets.key                  # encryption key for app secrets (0600); back it up with the database
+├── secrets.key                  # encryption key for app secrets and deploy keys (0600); back it up with the database
+├── run/ssh/key-<random>/        # a deploy key (0600) and known_hosts while one git command runs (0700); removed after it
 ├── backups/                     # aegis-backup-<timestamp>.tar.gz (0700 / 0600)
 ├── update/                      # state.json (last check, pending update); request.json/result.json for the root helper
 ├── pre-restore-<timestamp>/     # what a restore replaced; delete when no longer needed

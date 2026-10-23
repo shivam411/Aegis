@@ -696,3 +696,11 @@ ol.update-steps { margin: 8px 0; padding-left: 20px; display: grid; gap: 6px; }
 .tour-actions { display: flex; align-items: center; gap: 8px; }
 .tour-actions .spacer { flex: 1; }
 .tour-actions .btn.ghost { padding: 0 6px; color: var(--text-muted); }
+
+/* Scan a folder (new app wizard) and deploy keys */
+.scan-table td { vertical-align: top; }
+.scan-table input.mono { min-width: 12em; }
+.scan-table input.port-input { width: 6.5em; }
+ul.scan-warnings { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
+ul.scan-warnings li.bad { color: var(--bad); }
+[data-deploy-key] pre { white-space: pre-wrap; margin: 6px 0; }
