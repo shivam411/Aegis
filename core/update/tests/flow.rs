@@ -523,6 +523,7 @@ async fn helper_mode_hands_over_a_request_and_reports_its_failure() {
         allow_unsigned: false,
         method: "helper".into(),
         at: "2026-10-17T00:00:00Z".into(),
+        backup: None,
     };
     // Pretend the second request succeeded: pending is set again.
     mgr.start_apply("user:admin".into(), Some(TAG)).unwrap();
@@ -559,6 +560,7 @@ async fn self_update_installs_a_requested_release() {
         force,
         verify_runs: cfg!(unix),
         signatures: SignaturePolicy::Required,
+        before_swap: None,
     };
     let err = helper::self_update(opts(Some("v0.9.9"), false))
         .await
@@ -594,9 +596,94 @@ async fn self_update_with(
         force: false,
         verify_runs: cfg!(unix),
         signatures,
+        before_swap: None,
     })
     .await;
     (result, std::fs::read(&s.exe).unwrap())
+}
+
+/// Records when it ran (with the binary as it was then), and can fail.
+struct Backup {
+    exe: std::path::PathBuf,
+    fail: bool,
+    seen: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+}
+
+#[async_trait::async_trait]
+impl helper::BeforeSwap for Backup {
+    async fn before_swap(&self, tag: &str) -> anyhow::Result<()> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((tag.to_string(), std::fs::read(&self.exe).unwrap()));
+        if self.fail {
+            anyhow::bail!("The pre-update backup failed: disk full");
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn self_update_runs_the_backup_hook_before_swapping() {
+    let fake = fake_github(false).await;
+    for fail in [true, false] {
+        let s = setup(&fake, true);
+        let source = Source::new(Some(fake.base.clone()), "shivam411/Aegis", "test")
+            .with_keyring(fake.keyring());
+        let backup = Backup {
+            exe: s.exe.clone(),
+            fail,
+            seen: Default::default(),
+        };
+        let result = helper::self_update(helper::SelfUpdate {
+            source: &source,
+            exe: &s.exe,
+            target: Target::from_consts("linux", "x86_64").unwrap(),
+            current: aegis_update::parse_version("0.1.0").unwrap(),
+            wanted: Some(TAG),
+            force: false,
+            verify_runs: cfg!(unix),
+            signatures: SignaturePolicy::Required,
+            before_swap: Some(&backup),
+        })
+        .await;
+        // It ran once, after verification and before the old binary was
+        // replaced.
+        let seen = backup.seen.lock().unwrap().clone();
+        assert_eq!(seen, vec![(TAG.to_string(), b"old daemon".to_vec())]);
+        if fail {
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("backup failed"), "{err}");
+            assert_eq!(std::fs::read(&s.exe).unwrap(), b"old daemon");
+        } else {
+            result.unwrap();
+            assert_eq!(std::fs::read(&s.exe).unwrap(), new_binary());
+        }
+    }
+    // Nothing to install: the hook doesn't run.
+    let s = setup(&fake, true);
+    let source = Source::new(Some(fake.base.clone()), "shivam411/Aegis", "test")
+        .with_keyring(fake.keyring());
+    let backup = Backup {
+        exe: s.exe.clone(),
+        fail: false,
+        seen: Default::default(),
+    };
+    let err = helper::self_update(helper::SelfUpdate {
+        source: &source,
+        exe: &s.exe,
+        target: Target::from_consts("linux", "x86_64").unwrap(),
+        current: aegis_update::parse_version("0.2.0").unwrap(),
+        wanted: None,
+        force: false,
+        verify_runs: cfg!(unix),
+        signatures: SignaturePolicy::Required,
+        before_swap: Some(&backup),
+    })
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("not newer"), "{err}");
+    assert!(backup.seen.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

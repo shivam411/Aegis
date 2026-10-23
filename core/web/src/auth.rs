@@ -140,6 +140,8 @@ fn user_only(path: &str) -> bool {
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
         || matches!(section, Some("webhook" | "secrets"))
+        // Imports write secrets.
+        || (section == Some("env") && path.contains("/env/import"))
 }
 
 /// Mapping a domain decides where public traffic (and certificates) go, so
@@ -166,6 +168,10 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Credentials and secret material, even to read.
         ["users" | "tokens" | "backups", ..] => Role::Admin,
         ["projects", _, "secrets" | "webhook", ..] => Role::Admin,
+        // Pasted .env contents, and writes of Variables and Secrets.
+        ["projects", _, "env", "import", ..] => Role::Admin,
+        // Variable names and their sources (never values).
+        ["projects", _, "env"] if read => Role::Viewer,
         _ if read => Role::Viewer,
         // Checking now and installing a new Aegis version.
         ["system", "update", ..] => Role::Admin,
@@ -765,6 +771,7 @@ mod tests {
             "/api/v1/events/stream",
             "/api/v1/processes/web/logs",
             "/api/v1/projects/web/domains",
+            "/api/v1/projects/web/env",
             "/api/v1/system/update",
         ] {
             assert_eq!(need(Method::GET, p), Role::Viewer, "{p}");
@@ -807,6 +814,8 @@ mod tests {
             (Method::PUT, "/api/v1/projects/web/schedule"),
             (Method::POST, "/api/v1/projects/web/domains"),
             (Method::PUT, "/api/v1/projects/web/secrets/A"),
+            (Method::POST, "/api/v1/projects/web/env/import/preview"),
+            (Method::POST, "/api/v1/projects/web/env/import"),
             (Method::POST, "/api/v1/users"),
             (Method::POST, "/api/v1/detect"),
             (Method::POST, "/api/v1/processes/web/unknown"),
@@ -815,5 +824,9 @@ mod tests {
         ] {
             assert_eq!(need(m.clone(), p), Role::Admin, "{m} {p}");
         }
+        // Imports write secrets: signed-in users only.
+        assert!(user_only("/api/v1/projects/web/env/import/preview"));
+        assert!(user_only("/api/v1/projects/web/env/import"));
+        assert!(!user_only("/api/v1/projects/web/env"));
     }
 }

@@ -110,6 +110,27 @@ pub struct BuildRequest {
     pub log_path: PathBuf,
     /// Settings from the dashboard, merged into the release's aegis.toml.
     pub overrides: aegis_config::ProjectOverrides,
+    /// Directories the project's env file (`overrides.env_file`) may be in
+    /// (`[apps] env_file_dirs`).
+    pub env_file_dirs: Vec<PathBuf>,
+}
+
+/// The build commands' environment: the env file (if any, without `PORT`),
+/// then `[env]` (dashboard variables included), then
+/// `AEGIS_RELEASE_VERSION`. Secrets are not part of it.
+fn build_env(
+    env_file: Option<aegis_config::envfile::EnvVars>,
+    config: &ResolvedProjectConfig,
+    version: &str,
+) -> HashMap<String, String> {
+    env_file
+        .map(|vars| vars.into_inner())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(name, _)| name != "PORT")
+        .chain(config.env.iter().map(|(k, v)| (k.clone(), v.clone())))
+        .chain([("AEGIS_RELEASE_VERSION".to_string(), version.to_string())])
+        .collect()
 }
 
 #[derive(Debug)]
@@ -202,7 +223,7 @@ impl<'a> BuildPipeline<'a> {
             Ok(c) => c,
             Err(e) => return Err(self.fail(PipelineStage::Clone, e, &log).await),
         };
-        if !req.overrides.is_empty() {
+        if req.overrides.changes_file() {
             if let Err(e) = write_overrides(&req.release_dir, &req.overrides) {
                 return Err(self.fail(PipelineStage::Clone, e, &log).await);
             }
@@ -220,15 +241,35 @@ impl<'a> BuildPipeline<'a> {
                     .await)
             }
         };
+        // Read now, so build commands see the file as it is (values are
+        // never logged; only the names are).
+        let env_file = match &req.overrides.env_file {
+            Some(path) => match aegis_config::envfile::read_env_file(path, &req.env_file_dirs) {
+                Ok(vars) => {
+                    log.line(&format!(
+                        "==> Read {} variable(s) from the env file {}: {}",
+                        vars.len(),
+                        path,
+                        vars.names().collect::<Vec<_>>().join(", ")
+                    ));
+                    Some(vars)
+                }
+                Err(e) => {
+                    return Err(self
+                        .fail(
+                            PipelineStage::Clone,
+                            anyhow::anyhow!("Env file: {}", e),
+                            &log,
+                        )
+                        .await)
+                }
+            },
+            None => None,
+        };
         self.succeed(PipelineStage::Clone, Some(commit.sha.clone()))
             .await;
 
-        let env: HashMap<String, String> = config
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .chain([("AEGIS_RELEASE_VERSION".to_string(), req.version.clone())])
-            .collect();
+        let env = build_env(env_file, &config, &req.version);
 
         // 2-4. Install, Build, Test
         for (stage, command) in [
@@ -919,6 +960,7 @@ mod tests {
             release_dir: root.join("releases/r1"),
             log_path: root.join("logs/build.log"),
             overrides: Default::default(),
+            env_file_dirs: Vec::new(),
         }
     }
 
@@ -1027,6 +1069,61 @@ GREETING = "hi"
                 PipelineStage::Verify
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_env_file_reaches_build_commands_but_not_the_release() {
+        let src = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        let env_dir = TempDir::new().unwrap();
+        let env_path = env_dir.path().join("app.env");
+        std::fs::write(
+            &env_path,
+            "FROM_FILE=filevalue-s3ntinel\nOVERRIDDEN=file\nPORT=1\n",
+        )
+        .unwrap();
+        let command = "echo \"$FROM_FILE-$OVERRIDDEN-$PORT\" > env.out";
+        std::fs::write(
+            src.path().join("aegis.toml"),
+            format!(
+                "[build]\nbuild_command = '{}'\nstart_command = \"x\"\n[env]\nOVERRIDDEN = \"toml\"\n",
+                command
+            ),
+        )
+        .unwrap();
+        let store = ArtifactStore::new(out.path().join("artifacts"));
+        let recorder = Recorder::default();
+        let mut req = request(SourceSpec::LocalDir(src.path().to_path_buf()), out.path());
+        req.overrides.env_file = Some(env_path.to_string_lossy().to_string());
+        req.env_file_dirs = vec![env_dir.path().to_path_buf()];
+        BuildPipeline::new(&store, &recorder)
+            .run(&req)
+            .await
+            .unwrap();
+        let seen = std::fs::read_to_string(req.release_dir.join("env.out")).unwrap();
+        // [env] wins over the file; PORT from the file is ignored.
+        assert_eq!(seen.trim(), "filevalue-s3ntinel-toml-");
+        // The build log names the variables, never their values; the
+        // release's aegis.toml doesn't get them.
+        let log = std::fs::read_to_string(&req.log_path).unwrap();
+        assert!(log.contains("FROM_FILE"), "{log}");
+        assert!(!log.contains("s3ntinel"), "{log}");
+        let toml = std::fs::read_to_string(req.release_dir.join("aegis.toml")).unwrap();
+        assert!(!toml.contains("s3ntinel"));
+        assert!(!toml.contains("app.env"));
+
+        // A file outside the allowed directories fails the build early.
+        let out2 = TempDir::new().unwrap();
+        let mut req = request(SourceSpec::LocalDir(src.path().to_path_buf()), out2.path());
+        req.overrides.env_file = Some(env_path.to_string_lossy().to_string());
+        req.env_file_dirs = vec![out2.path().to_path_buf()];
+        let err = BuildPipeline::new(&store, &recorder)
+            .run(&req)
+            .await
+            .unwrap_err();
+        assert_eq!(err.stage, PipelineStage::Clone);
+        assert!(err.message.contains("Env file"), "{}", err.message);
+        assert!(!err.message.contains("s3ntinel"));
     }
 
     #[tokio::test]

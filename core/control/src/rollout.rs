@@ -1115,7 +1115,7 @@ impl ControlPlane {
             }
             let port = if self.is_running(id) {
                 // Pick up secrets changed since it started, keeping its port.
-                let mut env = self.process_env(project.id, config);
+                let mut env = self.process_env(project.id, config)?;
                 let proxied = self
                     .inner
                     .process_ports

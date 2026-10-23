@@ -1,6 +1,7 @@
-//! App configuration endpoints: secret environment variables, the aegis.toml
-//! preview for settings changes, and webhook setup (status, test delivery).
-//! Secrets and webhooks are managed by signed-in users only, not API tokens.
+//! App configuration endpoints: secret environment variables, the app's
+//! environment overview and `.env` import, the aegis.toml preview for
+//! settings changes, and webhook setup (status, test delivery). Secrets,
+//! imports and webhooks are managed by signed-in users only, not API tokens.
 
 use crate::dto::*;
 use crate::{ApiError, ApiJson, ApiResult, AppState};
@@ -72,6 +73,72 @@ pub(crate) async fn delete_secret(
     let project = st.control.resolve_project(&key)?;
     st.control.delete_secret(project.id, &name).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{project}/env", tag = "secrets",
+    params(("project" = String, Path, description = "Project id or name")),
+    responses((status = 200, description = "Variable names and where each comes from: the env file (read now), aegis.toml, Variables, Secrets. Values are never returned", body = EnvOverviewDto)))]
+pub(crate) async fn env_overview(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+) -> ApiResult<Json<EnvOverviewDto>> {
+    let project = st.control.resolve_project(&key)?;
+    // Reads a file: keep it off the async workers.
+    let control = st.control.clone();
+    let overview = tokio::task::spawn_blocking(move || control.env_overview(&project.id))
+        .await
+        .map_err(ApiError::internal)??;
+    Ok(Json(overview.into()))
+}
+
+#[utoipa::path(post, path = "/api/v1/projects/{project}/env/import/preview", tag = "secrets",
+    params(("project" = String, Path, description = "Project id or name")),
+    request_body = EnvImportPreviewRequest,
+    responses((status = 200, description = "The variables in the file with a suggested type (values are not returned)", body = EnvImportPreviewDto),
+              (status = 400, description = "Invalid syntax; the message names the line, never a value", body = ErrorBody)))]
+pub(crate) async fn preview_env_import(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+    ApiJson(req): ApiJson<EnvImportPreviewRequest>,
+) -> ApiResult<Json<EnvImportPreviewDto>> {
+    let project = st.control.resolve_project(&key)?;
+    let variables = st
+        .control
+        .preview_env_import(&project.id, &req.content)?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    Ok(Json(EnvImportPreviewDto { variables }))
+}
+
+#[utoipa::path(post, path = "/api/v1/projects/{project}/env/import", tag = "secrets",
+    params(("project" = String, Path, description = "Project id or name")),
+    request_body = EnvImportRequest,
+    responses((status = 200, description = "Imported as Variables (settings) and Secrets; applies to the next deployment (Variables) or restart (Secrets)", body = EnvImportResult),
+              (status = 400, body = ErrorBody)))]
+pub(crate) async fn import_env(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+    ApiJson(req): ApiJson<EnvImportRequest>,
+) -> ApiResult<Json<EnvImportResult>> {
+    let project = st.control.resolve_project(&key)?;
+    let mut choices = std::collections::BTreeMap::new();
+    for (name, how) in req.choices {
+        let how = aegis_control::ImportAs::parse(&how).ok_or_else(|| {
+            ApiError::bad_request(format!("{}: choose variable, secret or skip", name))
+        })?;
+        choices.insert(name, how);
+    }
+    let result = st
+        .control
+        .import_env(project.id, &req.content, &choices)
+        .await?;
+    Ok(Json(EnvImportResult {
+        restart_required: !result.secrets.is_empty() && is_running(&st, &project.id),
+        variables: result.variables,
+        secrets: result.secrets,
+        skipped: result.skipped,
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{project}/settings/preview", tag = "projects",

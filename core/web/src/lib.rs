@@ -260,6 +260,7 @@ impl Modify for SecuritySchemes {
         auth::rotate_webhook_secret, auth::github_webhook,
         domains::list_domains, domains::map_domain, domains::unmap_domain, domains::proxy_status,
         appconfig::list_secrets, appconfig::set_secret, appconfig::delete_secret,
+        appconfig::env_overview, appconfig::preview_env_import, appconfig::import_env,
         appconfig::preview_settings, appconfig::webhook_status, appconfig::test_webhook,
         backup::list_backups, backup::create_backup, backup::download_backup,
         backup::delete_backup,
@@ -277,7 +278,8 @@ impl Modify for SecuritySchemes {
         PointDto, MetricsDto, ResourceCapabilitiesDto, DockerStatusDto, ProjectResourcesDto,
         domains::DomainDto, domains::CertStatusDto, domains::MapDomainRequest,
         domains::ProxyRouteDto, domains::ProxyStatusDto,
-        SecretDto,
+        SecretDto, EnvOverviewDto, EnvFileStatusDto, EnvSourceDto, EnvImportPreviewRequest,
+        EnvImportCandidateDto, EnvImportPreviewDto, EnvImportRequest, EnvImportResult,
         SetSecretRequest, SecretSaved, DiffLineDto, ConfigPreviewDto, WebhookDeliveryDto,
         WebhookStatusDto, backup::BackupDto, backup::CreateBackupRequest,
         update::UpdateStatusDto, update::LatestReleaseDto, update::LastUpdateDto,
@@ -346,6 +348,12 @@ pub fn router(state: AppState) -> Router {
             "/projects/:project/settings/preview",
             post(appconfig::preview_settings),
         )
+        .route("/projects/:project/env", get(appconfig::env_overview))
+        .route(
+            "/projects/:project/env/import/preview",
+            post(appconfig::preview_env_import),
+        )
+        .route("/projects/:project/env/import", post(appconfig::import_env))
         .route("/projects/:project/secrets", get(appconfig::list_secrets))
         .route(
             "/projects/:project/secrets/:name",

@@ -1,3 +1,5 @@
+pub mod envfile;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -50,6 +52,43 @@ pub struct Config {
     pub backup: BackupConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+    #[serde(default)]
+    pub apps: AppsConfig,
+}
+
+/// `[apps]`: settings for every app.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppsConfig {
+    /// Directories an app's env file (dashboard Settings → Env file) may be
+    /// in, after symbolic links are resolved. Empty (the default) turns env
+    /// files off.
+    pub env_file_dirs: Vec<PathBuf>,
+}
+
+impl AppsConfig {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        for dir in &self.env_file_dirs {
+            let text = dir.to_string_lossy();
+            if !dir.is_absolute()
+                || dir
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                anyhow::bail!(
+                    "apps.env_file_dirs: '{}' must be an absolute path without '..'",
+                    text
+                );
+            }
+            if dir.parent().is_none() {
+                anyhow::bail!(
+                    "apps.env_file_dirs: '{}' would allow every file on the server; name the directories that hold env files",
+                    text
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `[update]`: checks for new Aegis releases on GitHub.
@@ -1058,11 +1097,23 @@ pub struct ProjectOverrides {
     /// Secrets are kept elsewhere, encrypted, and never written to a release.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Absolute path of an env file on the server, read at every build and
+    /// every process start (see [`envfile`]). Never written into a release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
 }
 
 impl ProjectOverrides {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Whether [`ProjectOverrides::apply_to`] changes anything in aegis.toml
+    /// (the env file is not part of it).
+    pub fn changes_file(&self) -> bool {
+        let mut file_settings = self.clone();
+        file_settings.env_file = None;
+        !file_settings.is_empty()
     }
 
     pub fn apply_to(&self, file: &mut ProjectFile) {
@@ -1304,6 +1355,42 @@ strategy = "GracefulSwitch"
         assert_eq!(file.env["KEEP"], "yes");
         let round_trip = ProjectFile::parse(&toml::to_string_pretty(&file).unwrap()).unwrap();
         assert_eq!(round_trip, file);
+    }
+
+    #[test]
+    fn test_env_file_setting_stays_out_of_aegis_toml() {
+        let overrides = ProjectOverrides {
+            env_file: Some("/opt/apps/web/.env".into()),
+            ..Default::default()
+        };
+        assert!(!overrides.is_empty());
+        assert!(!overrides.changes_file());
+        let mut file = ProjectFile::default();
+        overrides.apply_to(&mut file);
+        assert_eq!(file, ProjectFile::default());
+        assert!(!toml::to_string_pretty(&file).unwrap().contains("/opt/apps"));
+        // Settings saved before the field existed still load.
+        let old: ProjectOverrides = toml::from_str("port = 3000\n").unwrap();
+        assert_eq!(old.env_file, None);
+    }
+
+    #[test]
+    fn test_apps_env_file_dirs() {
+        let config: Config =
+            toml::from_str("[apps]\nenv_file_dirs = [\"/opt/github\", \"/etc/aegis/env\"]\n")
+                .unwrap();
+        assert_eq!(config.apps.env_file_dirs.len(), 2);
+        assert!(Config::default().apps.env_file_dirs.is_empty());
+        if cfg!(unix) {
+            assert!(config.apps.validate().is_ok());
+        }
+        for bad in ["relative/dir", "/opt/../etc", "/"] {
+            let apps = AppsConfig {
+                env_file_dirs: vec![PathBuf::from(bad)],
+            };
+            assert!(apps.validate().is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<Config>("[apps]\nenv_dirs = []\n").is_err());
     }
 
     #[test]

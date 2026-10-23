@@ -58,7 +58,8 @@ Other directives (resource limits, sandboxing) are ignored. Limits can be set pe
 
 - **Secrets don't belong in `aegis.toml`.** It is copied into every release. Move passwords, keys and connection strings out of `[env]` into the dashboard's Settings → Secrets (multi-line values such as PEM keys can be pasted as they are).
 - **Secrets are not available at build time.** Only the running app gets them. Anything the build reads must be a plain variable (`[env]` or the dashboard's Environment variables), for example Next.js `NEXT_PUBLIC_*` values, which are inlined into the bundle by `next build`.
-- **Files your app reads that git ignores are not copied.** A deployment copies tracked files plus untracked files that aren't ignored. A `.env`, `.env.local` or `.env.production` that is in `.gitignore` is not part of the release: put its values into Variables or Secrets.
+- **Files your app reads that git ignores are not copied.** A deployment copies tracked files plus untracked files that aren't ignored. A `.env`, `.env.local` or `.env.production` that is in `.gitignore` is not part of the release. Point the app's **Env file** at the existing file on the server (section 4.4), or import it into Variables and Secrets.
+- **Leave `NODE_ENV` unset for the build** unless you know the build works with it. With `NODE_ENV=production`, `npm ci`/`npm install` skip `devDependencies`, and a typical Next.js or TypeScript build needs them (`typescript`, `@types/*`, `eslint`, Tailwind/PostCSS plugins), so it fails with "Cannot find module" or "It looks like you're trying to use TypeScript but do not have the required package(s) installed". `next build` and `next start` set `NODE_ENV=production` themselves. Every source in the [precedence table](configuration.md#env-file-on-the-server) except Secrets reaches the build, so if the PM2 `.env`, or the `[env]` that `aegis migrate` copied from the ecosystem file, sets `NODE_ENV=production`, remove that line (or make the install command `npm ci --include=dev`). If the app needs it at runtime only, set it in the start command: `NODE_ENV=production npm start`.
 - **Listen on `$PORT`.** Once the app has a domain on the built-in proxy, every release gets its own port in `PORT`, and `deploy.port` is only the default for apps without a domain. A start command with a fixed port (`next start -p 3000`, `--port 8080`) must use `$PORT` instead (`next start -p $PORT`). Check `package.json` scripts too.
 - **Apps without a domain have a short gap on every deployment**: the old process is stopped before the new one starts on the same port. Map a domain on the built-in proxy to get zero-downtime switches.
 
@@ -113,9 +114,36 @@ Use TLS `off` because nginx terminates HTTPS. (With `acme` or `files`, requests 
 
 ### 4.4 Variables and secrets
 
-In **Settings**:
+The app's settings are in the `.env` PM2 used, say `/opt/github/my-app/.env`. The simplest move is to keep using that file:
 
-- **Environment variables**: everything the build needs, including all `NEXT_PUBLIC_*` values, plus non-secret settings (`NODE_ENV=production` is a good idea).
+1. Allow its directory in the daemon configuration (`/etc/aegis/aegis.toml`) and restart Aegis:
+
+   ```toml
+   [apps]
+   env_file_dirs = ["/opt/github"]
+   ```
+
+   ```bash
+   sudo systemctl restart aegis
+   ```
+
+2. Let the `aegis` user read it (it runs under `ProtectSystem=strict`, so it can read `/opt` but not write it, and the unit doesn't need to change):
+
+   ```bash
+   sudo chgrp aegis /opt/github/my-app/.env
+   sudo chmod 640 /opt/github/my-app/.env
+   namei -l /opt/github/my-app/.env    # every directory above needs x for aegis (group or other)
+   ```
+
+3. In **Settings → Environment**, set **Env file path** to `/opt/github/my-app/.env` and save. The card shows whether Aegis can read it and every variable name it provides (never the values). If it says *permission denied*, repeat step 2 for the file or the directory it names.
+
+The file is read at every build (so `NEXT_PUBLIC_*` values reach `next build`) and every start. To change a value, edit the file and restart the app (or deploy, for build-time values). To override one value without editing the file, add a **Variable** (also seen by the build) or a **Secret** (start only) of the same name: the precedence is env file < `[env]` in `aegis.toml` < Variables < Secrets, and `PORT` is always set by Aegis (a `PORT` in the file is ignored). See [configuration](configuration.md#env-file-on-the-server).
+
+Remove `NODE_ENV=production` from the file unless the build works with it (see section 3): `next build` and `next start` set it themselves.
+
+If you'd rather not keep the file, use **Settings → Environment → Import .env** to paste it (or pick it; it's read in the browser) and store each name as a Variable or a Secret. The import suggests a type per name: Secret for names containing `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PRIVATE` or `AUTH`, URLs with a password and multi-line values, Variable for `NEXT_PUBLIC_*` and the rest. Remember:
+
+- **Variables**: everything the build needs, including all `NEXT_PUBLIC_*` values, plus non-secret settings.
 - **Secrets**: passwords, API keys, `DATABASE_URL`, private keys. They reach the running app, not the build.
 
 ### 4.5 Deploy and test through the Aegis proxy

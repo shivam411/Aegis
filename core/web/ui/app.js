@@ -2099,6 +2099,226 @@ function secretsCard(ctx) {
   return card;
 }
 
+// --- Environment: env file, sources, .env import (Settings tab) ---------
+
+const ENV_SOURCES = {
+  env_file: 'Env file',
+  aegis_toml: 'aegis.toml [env]',
+  variable: 'Variable',
+  secret: 'Secret',
+  aegis: 'Set by Aegis',
+};
+
+const ENV_PRECEDENCE = 'Lowest to highest: env file → [env] in aegis.toml → Variables → Secrets → PORT (always set by Aegis). Build commands get the env file, [env] and Variables, never Secrets.';
+
+/** The app's environment: its env file on the server and where every
+ * variable comes from (names only; values are never sent to the browser).
+ * Admins can also set the env file and import a .env. `rerender` redraws
+ * the Settings tab after a change. */
+function envCard(ctx, rerender) {
+  const project = ctx.project();
+  const admin = can('admin');
+  const status = h('div', {}, h('p', { class: 'muted small' }, 'Loading…'));
+  const listBody = h('tbody');
+  const pathIn = h('input', {
+    id: 'env-file-path',
+    class: 'mono',
+    placeholder: '/opt/apps/my-app/.env',
+    value: project.settings?.env_file || '',
+    autocomplete: 'off',
+    spellcheck: 'false',
+  });
+  const saveBtn = h('button', { class: 'btn', type: 'submit', 'data-action': 'save-env-file' }, 'Save env file');
+  const importBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'import-env' }, 'Import .env…');
+  importBtn.addEventListener('click', () => importEnvDialog(ctx.project(), rerender));
+
+  const load = async () => {
+    const o = await api('GET', `/projects/${enc(project.id)}/env`);
+    const off = o.env_file_dirs.length === 0;
+    const file = o.env_file;
+    replace(status,
+      off
+        ? h('p', { class: 'muted small', 'data-env-file-off': '' },
+          'Env files are turned off on this server. To read one, list the directories that may hold env files in the daemon configuration, e.g. ',
+          h('code', {}, '[apps] env_file_dirs = ["/opt/apps"]'), ', and restart Aegis.')
+        : h('p', { class: 'muted small' }, 'Allowed directories: ', o.env_file_dirs.map((d, i) => [i ? ', ' : '', h('code', {}, d)])),
+      file
+        ? h('div', { 'data-env-file-status': file.readable ? 'ok' : 'error' },
+          h('dl', { class: 'facts' },
+            h('div', {}, h('dt', {}, 'Env file'), h('dd', { class: 'mono small truncate', title: file.path }, file.path)),
+            h('div', {}, h('dt', {}, 'Status'), h('dd', {}, file.readable ? pill('Readable', 'ok') : pill('Not readable', 'bad'))),
+            h('div', {}, h('dt', {}, 'Variables'), h('dd', {}, file.readable ? String(file.names.length) : '–'))),
+          file.error ? h('div', { class: 'alert', role: 'alert' }, file.error) : null)
+        : null);
+    if (admin) pathIn.disabled = off && !file;
+    replace(listBody, o.variables.length
+      ? o.variables.map((v) => h('tr', { 'data-env-var': v.name },
+        h('td', { 'data-label': 'Name', class: 'mono' }, v.name),
+        h('td', { 'data-label': 'Value from' }, pill(ENV_SOURCES[v.source] || v.source, v.source === 'secret' ? 'ok' : '')),
+        h('td', { 'data-label': 'Overrides', class: 'small muted' }, v.overrides.map((s) => ENV_SOURCES[s] || s).join(', ') || '–'),
+        h('td', { 'data-label': 'Build' }, v.build ? 'yes' : 'no')))
+      : h('tr', {}, h('td', { colspan: 4, class: 'muted small' }, 'No variables yet.')));
+  };
+
+  const form = admin
+    ? h('form', {
+      class: 'card-body',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const current = ctx.project();
+        const path = pathIn.value.trim();
+        if ((current.settings?.env_file || '') === path) {
+          toast('Nothing to save');
+          return;
+        }
+        const req = { ...(current.settings || {}), env_file: path || null };
+        const res = await run(saveBtn, () => api('PUT', `/projects/${enc(current.id)}/settings`, req),
+          path ? 'Env file saved; it is read at every build and start' : 'Env file removed');
+        if (!res) return;
+        await restartToApply(res, path
+          ? 'The env file is read when the app starts.'
+          : 'The app keeps the env file\'s values until it restarts.');
+        rerender();
+      },
+    },
+    h('div', { class: 'field' },
+      h('label', { for: 'env-file-path' }, 'Env file path'),
+      pathIn,
+      h('span', { class: 'hint' }, 'An absolute path on the server, e.g. the app\'s existing .env. Read at every build and every start, never stored. Leave blank for none.')),
+    h('div', { class: 'form-actions' }, importBtn, saveBtn))
+    : null;
+
+  const card = h('section', { class: 'card', 'data-card': 'environment' },
+    cardHeader('Environment', 'app.env'),
+    h('div', { class: 'card-body' },
+      status,
+      h('p', { class: 'muted small' }, ENV_PRECEDENCE)),
+    form,
+    h('div', { class: 'table-wrap' }, h('table', { class: 'stack', 'aria-label': 'Environment variables and their sources' },
+      h('thead', {}, h('tr', {}, ['Name', 'Value from', 'Overrides', 'Build'].map((t) => h('th', {}, t)))),
+      listBody)));
+  load().catch((err) => replace(status, errorBox(err)));
+  return card;
+}
+
+const IMPORT_KINDS = [['variable', 'Variable'], ['secret', 'Secret'], ['skip', 'Skip']];
+
+/** Import a .env pasted or read in the browser (FileReader; the file itself
+ * is never uploaded). The server parses it and suggests a type per name;
+ * values are never sent back. */
+async function importEnvDialog(project, rerender) {
+  const text = h('textarea', {
+    id: 'env-import-text',
+    class: 'mono secret-input',
+    rows: 8,
+    autocomplete: 'off',
+    autocapitalize: 'off',
+    autocorrect: 'off',
+    spellcheck: 'false',
+    'data-1p-ignore': true,
+    'data-lpignore': 'true',
+    placeholder: 'DATABASE_URL=postgres://…\nNEXT_PUBLIC_SITE_URL=https://…',
+  });
+  const canMask = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('-webkit-text-security', 'disc');
+  if (canMask) text.classList.add('masked');
+  const fileIn = h('input', { id: 'env-import-file', type: 'file', accept: '.env,.txt,text/plain' });
+  const out = h('div', { 'data-import-preview': '' });
+  const previewBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'preview-import' }, 'Preview');
+  const importBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'apply-import', disabled: true }, 'Import');
+  let choices = null;
+  let previewed = '';
+
+  fileIn.addEventListener('change', () => {
+    const file = fileIn.files && fileIn.files[0];
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+      toast('That file is larger than 1 MiB', 'bad');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      text.value = String(reader.result || '');
+      previewBtn.click();
+    };
+    reader.onerror = () => toast('Could not read that file', 'bad');
+    reader.readAsText(file);
+  });
+  text.addEventListener('input', () => {
+    importBtn.disabled = true;
+  });
+  previewBtn.addEventListener('click', async () => {
+    const content = text.value;
+    const res = await run(previewBtn, () => api('POST', `/projects/${enc(project.id)}/env/import/preview`, { content }));
+    if (!res) return;
+    previewed = content;
+    choices = {};
+    const rows = res.variables.map((v) => {
+      choices[v.name] = v.suggested;
+      const select = h('select', { 'aria-label': `Import ${v.name} as` },
+        IMPORT_KINDS.map(([value, label]) => h('option', { value, disabled: value === 'variable' && v.multiline }, label)));
+      select.value = v.suggested;
+      const note = h('td', { 'data-label': 'Note', class: 'small muted' });
+      const describe = () => {
+        const kind = select.value;
+        const parts = [v.reason];
+        if (v.exists_as && kind !== 'skip') {
+          parts.push(v.exists_as === kind
+            ? `replaces the existing ${kind}`
+            : (kind === 'secret' ? 'moves it from Variables to Secrets' : 'a secret with this name still wins at runtime'));
+        }
+        replace(note, v.exists_as ? [pill(`exists as ${v.exists_as}`, 'warn'), ' '] : null, parts.join('; '));
+      };
+      select.addEventListener('change', () => {
+        choices[v.name] = select.value;
+        describe();
+      });
+      describe();
+      return h('tr', { 'data-import-row': v.name },
+        h('td', { 'data-label': 'Name', class: 'mono' }, v.name),
+        h('td', { 'data-label': 'Import as' }, select),
+        note);
+    });
+    replace(out, rows.length
+      ? h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+        h('thead', {}, h('tr', {}, ['Name', 'Import as', 'Note'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, rows)))
+      : h('p', { class: 'muted small' }, 'No variables found.'));
+    importBtn.disabled = rows.length === 0;
+  });
+
+  let imported = null;
+  await modal((dlg) => {
+    importBtn.addEventListener('click', async () => {
+      if (!choices || text.value !== previewed) {
+        toast('Preview the changed text first', 'bad');
+        return;
+      }
+      const res = await run(importBtn, () => api('POST', `/projects/${enc(project.id)}/env/import`, { content: previewed, choices }));
+      if (!res) return;
+      imported = res;
+      text.value = '';
+      dlg.close('done');
+    });
+    return h('form', { method: 'dialog', class: 'wide', 'aria-label': 'Import .env' },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, 'Import a .env file'),
+        h('p', { class: 'muted small' }, 'Paste the file or choose it; it is read in this browser and sent to Aegis only to be parsed and imported. Pick Variable (written into each release, visible to viewers, available to builds) or Secret (encrypted, start only) for each name. Values are never shown again.'),
+        h('div', { class: 'field' }, h('label', { for: 'env-import-text' }, 'Paste a .env file'), text),
+        h('div', { class: 'field' }, h('label', { for: 'env-import-file' }, 'Or choose a file'), fileIn),
+        out),
+      h('div', { class: 'form-actions' },
+        previewBtn,
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn', value: 'cancel', type: 'submit' }, 'Cancel'),
+        importBtn));
+  });
+  if (!imported) return;
+  toast(`Imported ${imported.variables.length} variable(s) and ${imported.secrets.length} secret(s)`);
+  if (imported.variables.length) toast('Variables apply to the next deployment');
+  if (imported.restart_required) await restartToApply(project, 'Secrets reach the app when it restarts.');
+  rerender();
+}
+
 const DELIVERY_KIND = { queued: 'ok', pong: 'ok', ignored: '', duplicate: '', error: 'bad' };
 
 function webhookCard(ctx) {
@@ -2158,14 +2378,22 @@ function webhookCard(ctx) {
 
 async function settingsTab(body, ctx) {
   const project = ctx.project();
+  const rerender = async () => {
+    await ctx.refreshProject();
+    if (!body.isConnected) return;
+    body.replaceChildren();
+    settingsTab(body, ctx);
+  };
   if (!can('admin')) {
     const viewBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'show-config' }, 'View aegis.toml');
     viewBtn.addEventListener('click', () => showConfigFile(ctx.project(), viewBtn));
-    append(body, h('section', { class: 'card' },
-      cardHeader('Settings', 'app.settings'),
-      h('div', { class: 'card-body' },
-        h('p', { class: 'muted small' }, "Only admins can change an app's build and run settings, variables, secrets, domains, schedule and webhook."),
-        viewBtn)));
+    append(body, h('div', { class: 'grid' },
+      h('section', { class: 'card' },
+        cardHeader('Settings', 'app.settings'),
+        h('div', { class: 'card-body' },
+          h('p', { class: 'muted small' }, "Only admins can change an app's build and run settings, variables, secrets, domains, schedule and webhook."),
+          viewBtn)),
+      envCard(ctx, rerender)));
     return;
   }
   const s = project.settings || {};
@@ -2217,6 +2445,8 @@ async function settingsTab(body, ctx) {
         toast(err.message, 'bad');
         return;
       }
+      // Set in the Environment card; kept as it is here.
+      if (ctx.project().settings?.env_file) req.env_file = ctx.project().settings.env_file;
       // Show what the change does to aegis.toml before saving it.
       const preview = await run(saveBtn, () => api('POST', `/projects/${enc(project.id)}/settings/preview`, req));
       if (!preview) return;
@@ -2241,7 +2471,7 @@ async function settingsTab(body, ctx) {
         h('span', { class: 'hint' }, 'Copies of the app behind the built-in proxy (1-16; more than 1 needs a domain). Resource limits apply to each instance.'))),
     h('fieldset', { class: 'field env' },
       h('legend', {}, 'Environment variables'),
-      h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and written into each release. Use Secrets for passwords and keys.'),
+      h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and over the env file, and written into each release. Use Secrets for passwords and keys.'),
       env.el),
     h('div', { class: 'form-actions' }, saveBtn)));
 
@@ -2286,7 +2516,7 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info));
+  append(body, h('div', { class: 'grid' }, settingsForm, envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info));
 }
 
 // --- Domains (Settings tab) --------------------------------------------

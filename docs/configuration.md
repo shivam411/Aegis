@@ -97,16 +97,42 @@ There is no setting for privileged mode, host networking, extra capabilities, de
 
 ### Variables and secrets from the dashboard
 
-- **Variables** set in an app's Settings tab (or `PUT /api/v1/projects/{p}/settings` with `env`) are merged over `[env]` and written into each new release's `aegis.toml`, like the other dashboard settings.
+- **Variables** set in an app's Settings tab (or `PUT /api/v1/projects/{p}/settings` with `env`) are merged over `[env]` and written into each new release's `aegis.toml`, like the other dashboard settings. Every role can read them (they are part of the app's settings and its `aegis.toml`), and they are available to build commands.
 - **Secrets** (Settings → Secrets, or `PUT /api/v1/projects/{p}/secrets/{NAME}`) are stored exactly as given, line breaks included (a PEM private key can be pasted as it is; the dashboard's value field is a masked multi-line box). They are stored encrypted in the database with a key kept in `<data_dir>/secrets.key` (created on first start, mode 0600). They are passed to the app when its process starts and override variables of the same name; they are never written into a release, an event or a log. After changing one, restart the app to apply it. Secrets are **not** available to build commands: anything the build reads (for example `NEXT_PUBLIC_*` variables, which Next.js inlines at build time) must be a Variable. Container apps (`[run] runtime = "docker"`) can't receive values with line breaks, because Docker's env file can't hold them; the start fails with a message saying so (store such a value base64-encoded). Only signed-in users can manage secrets; API tokens cannot. `PORT` is reserved.
 - **Back up `secrets.key` together with `aegis.db`.** Without it the secrets can't be decrypted, and the daemon refuses to start rather than run apps without them; delete the `secrets` table rows (or restore the key) to recover.
+- **An env file on the server** (Settings → Environment → *Env file path*) can supply the values underneath all of these; see the next section.
+- **Import .env** (Settings → Environment) turns an existing `.env` into Variables and Secrets instead of retyping them; see [the dashboard's Settings tab](dashboard/settings.md#environment).
 
 Build commands also receive `AEGIS_RELEASE_VERSION`.
+
+### Env file on the server
+
+An app can read a `.env` file that already exists on the server, for example the one PM2 used, instead of (or underneath) dashboard Variables and Secrets. Set its absolute path in the dashboard (**Settings → Environment → Env file path**) or with `PUT /api/v1/projects/{p}/settings` and `"env_file": "/opt/apps/my-app/.env"` (like every field there, a settings request without it clears it). It is a dashboard/API setting only, not an `aegis.toml` key: what is in the repository can't choose which server file an app reads.
+
+- **When it is read:** at every build (so values such as `NEXT_PUBLIC_*` reach `next build`) and every time the app's process starts or restarts. Edit the file, then restart the app (or deploy) to apply it. Its values are never stored: not in the database, a release's `aegis.toml`, an event, the build log (which lists only the names it read) or an API response.
+- **Where it may be:** only inside a directory listed in the daemon configuration's `[apps] env_file_dirs` (below; empty by default, which turns env files off). Symbolic links are resolved first, `..` is refused, and the file must be a regular file of at most 1 MiB, readable by the daemon's user. Otherwise the setting is refused when saved (outside the allowed directories) or the build or start fails with a message saying what is wrong, for example `aegis can't read /opt/apps/my-app/.env: permission denied. Give the daemon's user read access, e.g. sudo chgrp aegis FILE && sudo chmod 640 FILE`. A missing file can be saved (create it afterwards); until then builds and starts fail rather than run without its values.
+- **Syntax:** the usual dotenv format. `NAME=value` per line; `export NAME=value`; `#` comments and blank lines; unquoted values are trimmed and end at a ` #` comment (a `#` without a space before it is part of the value, as in URLs); `'single quotes'` are literal; `"double quotes"` understand `\n`, `\r`, `\t`, `\"`, `\\` and `\$`; both kinds of quotes may span several lines (a PEM key pasted as it is). There is no `${VAR}` expansion. Later lines win over earlier ones. An invalid line stops the read with an error naming the file and line number, never the value.
+- **`PORT` in the file is ignored**: Aegis sets `PORT` (from `deploy.port`, `[env]`, or the proxy's per-release port).
+- **Container apps** get the file's values like secrets, through the 0600 env file Aegis hands to `docker run`; Docker can't pass values with line breaks, so such a value makes the start fail with a message naming it (store it base64-encoded). The values reach host-side build commands, not `docker build`.
+- The dashboard shows the path, whether it is readable right now (and why not), the names it defines and which of them Variables or Secrets override, never the values (`GET /api/v1/projects/{p}/env`; every role can read names). Changing the path is recorded as `ProjectSettingsUpdated` with the path only.
+
+**Precedence**, lowest first (a later source overrides an earlier one with the same name):
+
+| # | Source | Build commands | App process | Stored |
+| :--- | :--- | :--- | :--- | :--- |
+| 1 | Env file on the server | yes | yes | no, read each time |
+| 2 | `[env]` in the release's `aegis.toml` | yes | yes | in the release |
+| 3 | Dashboard Variables | yes | yes | in the settings and each new release's `aegis.toml` |
+| 4 | Dashboard Secrets | **no** | yes | encrypted in the database |
+| 5 | `PORT` | no | yes (always Aegis's) | |
+
+Builds also get `AEGIS_RELEASE_VERSION`. A name that is both a Secret and in the env file has the env file's value during the build and the secret's value when the app runs: anything the build needs must come from 1-3. Secrets are never given to builds, because build output (`<data_dir>/projects/<id>/logs/deploy-<id>.log`) is shown in the dashboard and a build command can print its environment; that applies to env file values too, so don't put values in an env file that a build script echoes and that deployers shouldn't read.
 
 ### What a deployment copies
 
 - With `aegis deploy` in a project directory, Aegis copies that directory. In a git work tree it copies tracked files plus untracked files that aren't ignored, and always includes `aegis.toml`. Outside git, it skips `.git`, `node_modules`, `target`, virtualenvs, `__pycache__` and `*.db` files.
 - With `aegis deploy --repo <url> [--branch b | --commit sha]`, Aegis clones the repository instead.
+- A `.env` in the project directory is part of the release only if it would be copied by these rules (for example, not git-ignored). Use an [env file on the server](#env-file-on-the-server) to keep it out of releases while the app still gets its values.
 
 ---
 
@@ -336,6 +362,25 @@ repo = "shivam411/Aegis"   # owner/name of the repository releases come from (fo
 The result is shown to every signed-in user (`GET /api/v1/system/update`, the dashboard banner); admins can check now and upgrade. With `check = false`, checking and upgrading from the dashboard are refused. How an upgrade is installed, and what happens to running apps, is in [`upgrading.md`](upgrading.md).
 
 `AEGIS_UPDATE_API_URL` points checks at a fake GitHub API for tests. Only `http(s)://` URLs on a loopback address are accepted (anything else stops the daemon at startup), and release downloads must then come from that same address.
+
+### App settings (`[apps]`)
+
+```toml
+[apps]
+env_file_dirs = ["/opt/apps", "/etc/aegis/env"]   # where apps' env files may be; default [] = env files off
+```
+
+`env_file_dirs` lists the directories an app's env file ([Env file on the server](#env-file-on-the-server)) may be in, at any depth, after symbolic links are resolved. Each must be an absolute path without `..`, and `/` is refused. Only admins can point an app at a file, but any file the daemon's user can read in these directories can be chosen, so list only directories that hold env files for apps on this server. A directory that doesn't exist is logged at startup and allows nothing.
+
+With `install.sh --server` the daemon runs as `aegis` under `ProtectSystem=strict` and `ProtectHome=read-only`: files outside `/var/lib/aegis` are readable (subject to their permissions) but not writable, so env files in `/opt` or `/etc` work without changing the unit. The `aegis` user needs read permission on the file and execute (search) permission on every directory above it:
+
+```bash
+sudo chgrp aegis /opt/apps/my-app/.env
+sudo chmod 640 /opt/apps/my-app/.env
+namei -l /opt/apps/my-app/.env      # every directory needs x for aegis (via group or other)
+```
+
+Alternatively keep env files in a directory only root and `aegis` can read: `sudo install -d -m 750 -o root -g aegis /etc/aegis/env`, then `sudo install -m 640 -o root -g aegis /opt/apps/my-app/.env /etc/aegis/env/my-app.env`.
 
 ### Data directory layout
 

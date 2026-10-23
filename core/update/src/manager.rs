@@ -464,7 +464,8 @@ impl UpdateManager {
                             json!({"from_version": last, "to_version": current,
                                    "method": record.method,
                                    "signed_by": record.signed_by,
-                                   "allow_unsigned": record.allow_unsigned}),
+                                   "allow_unsigned": record.allow_unsigned,
+                                   "backup": record.backup}),
                         ));
                     } else if now_running > before {
                         p.last_update = Some(AppliedUpdate {

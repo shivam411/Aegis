@@ -145,7 +145,7 @@ impl ControlPlane {
                 // Pick up secrets changed since the process started, keeping
                 // the port the proxy routes to.
                 if let Some(config) = &config {
-                    let mut env = self.process_env(process.project_id, config);
+                    let mut env = self.process_env(process.project_id, config)?;
                     let port = self.inner.process_ports.lock().unwrap().get(&id).copied();
                     if let Some(super::ProcessPort {
                         port: Some(port),

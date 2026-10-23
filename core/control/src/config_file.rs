@@ -76,7 +76,7 @@ pub(crate) fn diff_lines(old: &str, new: &str) -> Vec<DiffLine> {
 impl ControlPlane {
     /// The aegis.toml the dashboard settings are merged into: the project's
     /// own file when deploying from a directory, else the live release's.
-    fn base_project_file(
+    pub(crate) fn base_project_file(
         &self,
         project: &ProjectState,
     ) -> ControlResult<(&'static str, ProjectFile)> {

@@ -4,25 +4,11 @@
 //! applies the next time the process starts or is restarted.
 
 use crate::{ControlError, ControlPlane, ControlResult};
-use aegis_engine::ResolvedProjectConfig;
 use aegis_secrets::SecretInfo;
 use aegis_types::ProjectId;
 use serde_json::json;
-use std::collections::HashMap;
 
 impl ControlPlane {
-    /// The environment for a release's process: `[env]` (including dashboard
-    /// variables), `PORT`, then secrets, which win over plain variables.
-    pub(crate) fn process_env(
-        &self,
-        project_id: ProjectId,
-        config: &ResolvedProjectConfig,
-    ) -> HashMap<String, String> {
-        let mut env: HashMap<String, String> = config.process_env().into_iter().collect();
-        env.extend(self.inner.secrets.env(&project_id.to_string()));
-        env
-    }
-
     fn require_project(&self, project_id: &ProjectId) -> ControlResult<()> {
         match self.inner.projection.get_project(project_id) {
             Some(_) => Ok(()),

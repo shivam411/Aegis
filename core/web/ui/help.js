@@ -173,9 +173,21 @@ export const HELP = {
     roles: 'Admins.',
     docs: 'settings.md#domains',
   },
+  'app.env': {
+    title: 'Environment',
+    summary: 'Where each environment variable comes from, lowest to highest: the env file on the server, [env] in aegis.toml, Variables, Secrets, then PORT (always set by Aegis). Build commands get the env file, [env] and Variables, never Secrets. Only names are shown, never values.',
+    controls: [
+      ['Env file path', 'An absolute path on the server, such as the app\'s existing .env. It is read at every build and every start (edit the file, then restart), never stored. It must be in a directory listed in the daemon configuration ([apps] env_file_dirs), and the daemon\'s user must be able to read it (e.g. chgrp aegis FILE && chmod 640 FILE).'],
+      ['Status', 'Whether the file could be read just now, and why not (missing, permission denied, outside the allowed directories, a syntax error on a given line).'],
+      ['Value from / Overrides / Build', 'Which source wins for each name, which lower sources it overrides, and whether build commands see it.'],
+      ['Import .env', 'Paste a .env or choose one (read in the browser), preview the names with a suggested type, then save each as a Variable or a Secret, or skip it. Multi-line values can only be Secrets.'],
+    ],
+    roles: 'Everyone sees the names and sources; admins set the env file and import.',
+    docs: 'settings.md#environment',
+  },
   'app.secrets': {
     title: 'Secrets',
-    summary: 'Environment variables stored encrypted on the server and passed to the app when it starts. Values can be replaced but never read back. A running app picks up a change when it restarts. Secrets are not available to the build command: anything the build needs (such as NEXT_PUBLIC_* variables) goes in Variables.',
+    summary: 'Environment variables stored encrypted on the server and passed to the app when it starts. Values can be replaced but never read back. A running app picks up a change when it restarts. Secrets are not available to the build command: anything the build needs (such as NEXT_PUBLIC_* variables) goes in Variables or the env file.',
     controls: [
       ['Value', 'Saved exactly as typed or pasted, including line breaks, so a PEM private key or certificate can be pasted as it is. The field is masked; Show reveals it while you edit (where the browser supports masking).'],
       ['Save secret', 'Adds or replaces a secret, then offers to restart the app.'],

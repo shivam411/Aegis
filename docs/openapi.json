@@ -1220,6 +1220,139 @@
         }
       }
     },
+    "/api/v1/projects/{project}/env": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "env_overview",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Variable names and where each comes from: the env file (read now), aegis.toml, Variables, Secrets. Values are never returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvOverviewDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/env/import": {
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "import_env",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Imported as Variables (settings) and Secrets; applies to the next deployment (Variables) or restart (Secrets)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/env/import/preview": {
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "operationId": "preview_env_import",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvImportPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The variables in the file with a suggested type (values are not returned)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvImportPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid syntax; the message names the line, never a value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/metrics": {
       "get": {
         "tags": [
@@ -2972,6 +3105,222 @@
           }
         }
       },
+      "EnvFileStatusDto": {
+        "type": "object",
+        "description": "An app's env file as the daemon sees it right now.",
+        "required": [
+          "path",
+          "readable",
+          "names"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it can't be used, e.g. permission denied (never contains values)."
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Variable names it defines (values are never returned)."
+          },
+          "path": {
+            "type": "string"
+          },
+          "readable": {
+            "type": "boolean",
+            "description": "The file was read and parsed just now."
+          }
+        }
+      },
+      "EnvImportCandidateDto": {
+        "type": "object",
+        "description": "A variable found in the pasted file. Its value is not returned.",
+        "required": [
+          "name",
+          "suggested",
+          "reason",
+          "multiline"
+        ],
+        "properties": {
+          "exists_as": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`variable` or `secret` when the app already has this name."
+          },
+          "multiline": {
+            "type": "boolean",
+            "description": "The value spans several lines (only possible as a secret)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why this is suggested."
+          },
+          "suggested": {
+            "type": "string",
+            "description": "`variable`, `secret` or `skip`."
+          }
+        }
+      },
+      "EnvImportPreviewDto": {
+        "type": "object",
+        "required": [
+          "variables"
+        ],
+        "properties": {
+          "variables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvImportCandidateDto"
+            }
+          }
+        }
+      },
+      "EnvImportPreviewRequest": {
+        "type": "object",
+        "description": "The contents of a `.env` file, pasted or read in the browser.",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "dotenv text, at most 1 MiB. Never stored or logged."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnvImportRequest": {
+        "type": "object",
+        "required": [
+          "content",
+          "choices"
+        ],
+        "properties": {
+          "choices": {
+            "type": "object",
+            "description": "Name -> `variable`, `secret` or `skip`. Names not listed are skipped.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "content": {
+            "type": "string",
+            "description": "The same dotenv text as for the preview; parsed again on the server."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnvImportResult": {
+        "type": "object",
+        "required": [
+          "variables",
+          "secrets",
+          "skipped",
+          "restart_required"
+        ],
+        "properties": {
+          "restart_required": {
+            "type": "boolean",
+            "description": "The running process still has the old environment; restart it to apply secrets."
+          },
+          "secrets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Saved as Secrets (encrypted). A Variable of the same name was removed."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Saved as Variables (written into the next release's aegis.toml)."
+          }
+        }
+      },
+      "EnvOverviewDto": {
+        "type": "object",
+        "description": "Names and sources of an app's environment variables. Values are never\nincluded. Precedence, lowest first: env file, `[env]` in aegis.toml,\nVariables, Secrets, then `PORT`.",
+        "required": [
+          "env_file_dirs",
+          "variables"
+        ],
+        "properties": {
+          "env_file": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EnvFileStatusDto"
+              }
+            ]
+          },
+          "env_file_dirs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Directories env files may be in (`[apps] env_file_dirs`); empty\nmeans env files are turned off on this server."
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvSourceDto"
+            }
+          }
+        }
+      },
+      "EnvSourceDto": {
+        "type": "object",
+        "description": "One variable the app gets and where its value comes from.",
+        "required": [
+          "name",
+          "source",
+          "overrides",
+          "build"
+        ],
+        "properties": {
+          "build": {
+            "type": "boolean",
+            "description": "Build commands see it (env file, `[env]` and Variables; not Secrets)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lower-precedence sources that also define it and are overridden."
+          },
+          "source": {
+            "type": "string",
+            "description": "`env_file`, `aegis_toml`, `variable`, `secret`, or `aegis` (`PORT`,\nwhich Aegis sets; an env file's `PORT` is ignored)."
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "required": [
@@ -3645,6 +3994,14 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "env_file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absolute path of an env file on the server (dotenv syntax), read at\nevery build and every process start. It must be inside a directory\nlisted in the daemon's `[apps] env_file_dirs`. Its values are never\nstored; Variables and Secrets override them. Omit (or send `null`)\nfor none: like every field here, an omitted value is cleared.",
+            "default": null
           },
           "health_check_url": {
             "type": [

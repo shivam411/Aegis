@@ -83,6 +83,21 @@ print("hog listening on", os.environ["PORT"], flush=True)
 http.server.ThreadingHTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
 `);
 
+  // An app with an env file on the server, as left by PM2 (envfile.spec.js).
+  const envApp = path.join(WORK, 'envapp');
+  fs.mkdirSync(envApp);
+  fs.writeFileSync(path.join(envApp, 'index.js'), 'console.log("env app");\n');
+  const envDir = path.join(WORK, 'envfiles');
+  fs.mkdirSync(envDir);
+  const envFile = path.join(envDir, 'envapp.env');
+  fs.writeFileSync(envFile, [
+    '# server-side settings',
+    'MONGODB_URI=mongodb+srv://app:e2e-s3ntinel@cluster0.example.net/img',
+    'NEXT_PUBLIC_SITE_URL=https://img.example.com',
+    'PORT=3000',
+    '',
+  ].join('\n'));
+
   const configPath = path.join(WORK, 'daemon.toml');
   fs.writeFileSync(configPath, `[daemon]
 host = "127.0.0.1"
@@ -98,6 +113,9 @@ port = ${webPort}
 
 [update]
 check = true                # against the fake API below, never GitHub
+
+[apps]
+env_file_dirs = ['${envDir}']
 `);
 
   // A fake GitHub releases API announcing v0.99.0 (no network access).
@@ -126,5 +144,5 @@ check = true                # against the fake API below, never GitHub
 
   await waitFor(`${baseURL}/healthz`, 120_000);
   const password = fs.readFileSync(path.join(WORK, 'data', 'initial-admin-password'), 'utf8').trim();
-  fs.writeFileSync(path.join(WORK, 'env.json'), JSON.stringify({ repo, hog, password, baseURL }));
+  fs.writeFileSync(path.join(WORK, 'env.json'), JSON.stringify({ repo, hog, envApp, envFile, password, baseURL }));
 };

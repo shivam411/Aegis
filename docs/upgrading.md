@@ -107,7 +107,7 @@ The banner says which of these applies (`mode` in the API):
 | :--- | :--- | :--- |
 | `in_place` | The daemon can write the directory its binary is in (per-user install in `~/.local/bin`, a hand-run daemon) | The daemon does all four steps itself. |
 | `helper` | `install.sh --server` (root-owned `/usr/local/bin`, daemon running as `aegis` under `ProtectSystem=strict`) | The daemon backs up, then writes `/var/lib/aegis/update/request.json` containing only the version. The root-owned `aegis-update.path` unit starts `aegis-update.service`, which runs `aegis-daemon self-update --from-request`: it deletes the request, downloads and verifies that release **itself**, refuses anything that isn't newer than the installed version, swaps the binaries and restarts `aegis.service`. On failure it writes `result.json`, which the daemon reports as `UpdateFailed`. |
-| `manual` | Neither (e.g. installed with `--no-self-update`, or binaries owned by another user) | "Upgrade now" is not offered; admins see the exact command to run, e.g. `sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml /usr/local/bin/aegis-daemon self-update --restart-unit aegis.service`. Back up first (Account → Backups). |
+| `manual` | Neither (e.g. installed with `--no-self-update`, or binaries owned by another user) | "Upgrade now" is not offered; admins see the exact command to run, e.g. `sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml /usr/local/bin/aegis-daemon self-update --restart-unit aegis.service`, which takes the pre-update backup itself (see below). |
 | `unsupported` | Windows (releases are zip files) or no release for this CPU | Download the release by hand. |
 
 Installs from before this feature don't have the helper; re-run
@@ -133,6 +133,18 @@ aegis upgrade
 checksum verification and swap code as the dashboard. install.sh checks the
 same signature (with OpenSSL 1.1.1+, or minisign) and checksum before it
 installs anything.
+
+`aegis-daemon self-update` takes the same pre-update backup as "Upgrade now"
+(database, secrets key and certificates, no releases; `trigger: "update"` in
+the `BackupCreated` event) once the new release has been downloaded and
+verified, just before the binaries are replaced. If the backup fails, nothing
+is installed; `--no-backup` skips it. It works while the daemon runs, and
+when run as root the archive is given to the data directory's owner, so the
+dashboard can list it and retention can rotate it. The `UpdateApplied` event
+the new daemon records names the backup. (`--from-request`, run by the root
+helper, takes none: the daemon backed up before asking. `aegis upgrade`, the
+per-user CLI command, takes none either; run `aegis-daemon admin backup`
+first.)
 
 ## Never downgrades, and major versions need a decision
 
