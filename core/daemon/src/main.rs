@@ -256,6 +256,12 @@ fn describe_proxy(config: &Config) -> String {
     if let Some(domain) = &proxy.dashboard.domain {
         text.push_str(&format!(", dashboard on {}", domain));
     }
+    if !proxy.trusted_proxies.is_empty() {
+        text.push_str(&format!(
+            ", trusting forwarded headers from {}",
+            proxy.trusted_proxies.join(", ")
+        ));
+    }
     text
 }
 
@@ -885,6 +891,19 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
         ingress_config.host = config.proxy.host.clone();
         ingress_config.http_port = config.proxy.http_port;
         ingress_config.https_port = config.proxy.https_port;
+        ingress_config.upstream_timeout =
+            std::time::Duration::from_secs(config.proxy.response_timeout_secs);
+        ingress_config.connect_timeout =
+            std::time::Duration::from_secs(config.proxy.connect_timeout_secs);
+        ingress_config.trusted_proxies = config.proxy.trusted_proxy_ranges()?;
+        let exposed = config.proxy.non_loopback_trusted_proxies();
+        if !exposed.is_empty() {
+            tracing::warn!(
+                ranges = %exposed.join(", "),
+                "proxy.trusted_proxies includes non-loopback addresses; anyone who can connect \
+                 to the proxy from them can set X-Forwarded-Proto and X-Forwarded-Host"
+            );
+        }
         if config.proxy.acme.enabled {
             ingress_config.acme = Some(aegis_ingress::AcmeSettings {
                 email: config.proxy.acme.email.clone(),

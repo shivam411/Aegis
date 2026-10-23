@@ -256,6 +256,58 @@ async fn secrets_and_variables_reach_the_app_and_never_leak() {
 }
 
 #[tokio::test]
+async fn multi_line_secrets_reach_the_app_unchanged() {
+    let api = api().await;
+    let app = TempDir::new().unwrap();
+    let seen = app.path().join("seen.txt");
+    std::fs::write(
+        app.path().join("aegis.toml"),
+        format!(
+            "[build]\ninstall_command = \"\"\nbuild_command = \"\"\n\
+             start_command = \"printf '%s' \\\"$TLS_KEY\\\" > {}; exec sleep 60\"\n\
+             [deploy]\nhealth_check_url = \"\"\nhealth_check_timeout_secs = 5\ndrain_timeout_secs = 1\n",
+            seen.display()
+        ),
+    )
+    .unwrap();
+    let (status, _) = api
+        .call(
+            "POST",
+            "/api/v1/projects",
+            json!({"name": "pem", "source_dir": app.path()}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let user = login(&api).await;
+
+    // A PEM key as pasted into the dashboard's textarea: line breaks,
+    // indentation and the trailing newline are all part of the value.
+    let pem = "-----BEGIN PRIVATE KEY-----\n\
+               MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n  indented line  \n\
+               \n\
+               AbCd+/==\n\
+               -----END PRIVATE KEY-----\n";
+    let (status, body) = user
+        .call(
+            &api,
+            "PUT",
+            "/api/v1/projects/pem/secrets/TLS_KEY",
+            json!({ "value": pem }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, queued) = api
+        .call("POST", "/api/v1/projects/pem/deploy", json!({}))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    let d = wait_deployment(&api, queued["deployment_id"].as_str().unwrap()).await;
+    assert_eq!(d["status"], "Success", "{d}");
+    assert_eq!(wait_for_file(&seen, pem).await, pem);
+    api.state.control.shutdown().await;
+}
+
+#[tokio::test]
 async fn settings_preview_shows_the_aegis_toml_diff() {
     let api = api().await;
     let app = TempDir::new().unwrap();

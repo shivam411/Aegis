@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | b
 curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
 ```
 
-The installer automatically detects your OS and CPU architecture, downloads the latest release from GitHub, and installs to `~/.local/bin/`.
+The installer automatically detects your OS and CPU architecture, downloads the latest release from GitHub, and installs to `~/.local/bin/`. The CLI binary is `aegis-cli`; the installer also links `aegis` to it, which is the name used in these docs (both work).
 
 ### Manual Download
 
@@ -59,6 +59,7 @@ Download the latest binary for your platform from [**GitHub Releases**](https://
 ```bash
 tar -xzf aegis-linux-amd64.tar.gz
 mv aegis-daemon aegis-cli aegis-tui ~/.local/bin/
+ln -sfn aegis-cli ~/.local/bin/aegis    # optional: the name the docs use
 ```
 
 ### Build from Source
@@ -68,6 +69,7 @@ git clone https://github.com/shivam411/Aegis.git
 cd Aegis
 cargo build --release
 cp target/release/aegis-daemon target/release/aegis-cli target/release/aegis-tui ~/.local/bin/
+ln -sfn aegis-cli ~/.local/bin/aegis
 ```
 
 Requires Rust 1.75+, SQLite3, and `protoc`.
@@ -154,20 +156,20 @@ For a deep dive, see the [**Architecture Documentation**](https://shivam411.gith
 
 | Command | Description |
 | :--- | :--- |
-| `aegis-cli status` | Daemon version, project count, running apps |
-| `aegis-cli init` | Detect the runtime, write `aegis.toml`, register the project |
-| `aegis-cli validate` | Check `aegis.toml` and show the effective settings |
-| `aegis-cli deploy [project]` | Build and deploy, showing each stage; `--release`, `--repo`, `--commit`, `--detach` |
-| `aegis-cli rollback [project]` | Switch back to the previous (or `--version`) release without rebuilding |
-| `aegis-cli list` | Projects with status, live release, PID and restart count |
-| `aegis-cli logs [target] [-n N] [-f]` | App output (stdout, stderr and supervisor messages) |
-| `aegis-cli start` / `stop` / `restart [target]` | Control an app's process; a stopped app stays stopped across daemon restarts |
-| `aegis-cli releases [project]` | Release history with status and commit |
-| `aegis-cli deployments [project]` | Deployment history with status, failing stage and reason |
-| `aegis-cli timeline [project]` | The project's recent events |
-| `aegis-cli schedule` | Configure daily auto-deployment (`--hour 0-23`) |
-| `aegis-cli emit-event` | Emit a custom event to the event store |
-| `aegis-cli stream-events` | Stream live event bus notifications |
+| `aegis status` | Daemon version, project count, running apps |
+| `aegis init` | Detect the runtime, write `aegis.toml`, register the project |
+| `aegis validate` | Check `aegis.toml` and show the effective settings |
+| `aegis deploy [project]` | Build and deploy, showing each stage; `--release`, `--repo`, `--commit`, `--detach` |
+| `aegis rollback [project]` | Switch back to the previous (or `--version`) release without rebuilding |
+| `aegis list` | Projects with status, live release, PID and restart count |
+| `aegis logs [target] [-n N] [-f]` | App output (stdout, stderr and supervisor messages) |
+| `aegis start` / `stop` / `restart [target]` | Control an app's process; a stopped app stays stopped across daemon restarts |
+| `aegis releases [project]` | Release history with status and commit |
+| `aegis deployments [project]` | Deployment history with status, failing stage and reason |
+| `aegis timeline [project]` | The project's recent events |
+| `aegis schedule` | Configure daily auto-deployment (`--hour 0-23`) |
+| `aegis emit-event` | Emit a custom event to the event store |
+| `aegis stream-events` | Stream live event bus notifications |
 
 `target` is a process id or a project id/name; without it, commands use the project in `./aegis.toml`.
 

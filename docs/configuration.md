@@ -98,7 +98,7 @@ There is no setting for privileged mode, host networking, extra capabilities, de
 ### Variables and secrets from the dashboard
 
 - **Variables** set in an app's Settings tab (or `PUT /api/v1/projects/{p}/settings` with `env`) are merged over `[env]` and written into each new release's `aegis.toml`, like the other dashboard settings.
-- **Secrets** (Settings → Secrets, or `PUT /api/v1/projects/{p}/secrets/{NAME}`) are stored encrypted in the database with a key kept in `<data_dir>/secrets.key` (created on first start, mode 0600). They are passed to the app when its process starts and override variables of the same name; they are never written into a release, an event or a log. After changing one, restart the app to apply it. Only signed-in users can manage secrets; API tokens cannot. `PORT` is reserved.
+- **Secrets** (Settings → Secrets, or `PUT /api/v1/projects/{p}/secrets/{NAME}`) are stored exactly as given, line breaks included (a PEM private key can be pasted as it is; the dashboard's value field is a masked multi-line box). They are stored encrypted in the database with a key kept in `<data_dir>/secrets.key` (created on first start, mode 0600). They are passed to the app when its process starts and override variables of the same name; they are never written into a release, an event or a log. After changing one, restart the app to apply it. Secrets are **not** available to build commands: anything the build reads (for example `NEXT_PUBLIC_*` variables, which Next.js inlines at build time) must be a Variable. Container apps (`[run] runtime = "docker"`) can't receive values with line breaks, because Docker's env file can't hold them; the start fails with a message saying so (store such a value base64-encoded). Only signed-in users can manage secrets; API tokens cannot. `PORT` is reserved.
 - **Back up `secrets.key` together with `aegis.db`.** Without it the secrets can't be decrypted, and the daemon refuses to start rather than run apps without them; delete the `secrets` table rows (or restore the key) to recover.
 
 Build commands also receive `AEGIS_RELEASE_VERSION`.
@@ -192,6 +192,9 @@ enabled = false            # off by default
 host = "0.0.0.0"           # address both listeners bind to
 http_port = 80             # HTTP, ACME challenges, redirects to HTTPS
 https_port = 443           # HTTPS; certificates chosen by SNI
+trusted_proxies = []       # front proxies whose X-Forwarded-Proto/-Host are kept, e.g. ["127.0.0.1", "::1"]
+response_timeout_secs = 120    # how long an app may take to send response headers (1-86400)
+connect_timeout_secs = 5       # how long to wait for a connection to the app (1-300)
 
 [proxy.acme]               # automatic certificates
 enabled = false
@@ -205,11 +208,11 @@ tls = "acme"               # or "files" with cert_path / key_path
 
 With the proxy on, the daemon serves each app on the domains mapped to it (dashboard Settings tab, or `POST /api/v1/projects/{p}/domains`). Requests are routed by `Host` to the app's live process on `127.0.0.1`. Unknown hosts get a 404 page, and an app that isn't running gets a 502. The proxy:
 
-- forwards `X-Forwarded-For` (the client address is appended, so apps should trust only the last entry), `X-Forwarded-Proto` and `X-Forwarded-Host`, and keeps the original `Host`;
+- forwards `X-Forwarded-For` (the address of the connecting peer is appended, so apps should trust only the entries added by proxies they trust), `X-Forwarded-Proto` and `X-Forwarded-Host`, and keeps the original `Host`. `X-Forwarded-Proto` and `X-Forwarded-Host` are set by the proxy and anything the client sent is replaced, unless the request comes from a [trusted front proxy](#running-behind-another-reverse-proxy-nginx-caddy);
 - removes hop-by-hop headers;
 - passes WebSocket and other `Upgrade` connections through;
 - streams request and response bodies;
-- times out connections to the app after 5 s and response headers after 120 s.
+- gives up on connecting to the app after `connect_timeout_secs` (default 5 s, then 502) and on waiting for its response headers after `response_timeout_secs` (default 120 s, then 504). Both apply to every route. Once the headers have arrived the body streams for as long as it takes, and an upgraded (WebSocket) connection stays open for as long as both sides keep it open: the response timeout only covers the upgrade handshake.
 
 Each domain has its own TLS mode:
 
@@ -219,7 +222,45 @@ Each domain has its own TLS mode:
 | `files` | PEM chain and key at absolute paths you manage (e.g. certbot). They are checked when the domain is mapped and reloaded within a minute of changing. |
 | `off` | Plain HTTP only. |
 
-Once a domain has a certificate, HTTP requests to it are redirected (308) to HTTPS.
+Once a domain has a certificate, HTTP requests to it are redirected (308) to HTTPS. ACME challenges (`/.well-known/acme-challenge/...`) are always answered on the plain HTTP listener and never redirected.
+
+#### Running behind another reverse proxy (nginx, Caddy)
+
+If another web server already owns ports 80 and 443 on the machine, run the Aegis proxy on loopback ports and let the front proxy forward to it:
+
+```toml
+[proxy]
+enabled = true
+host = "127.0.0.1"
+http_port = 8081
+https_port = 8444          # must be set and free, but nothing needs to reach it
+trusted_proxies = ["127.0.0.1", "::1"]
+```
+
+Map the app's domains with TLS `off`: the front proxy terminates HTTPS, so Aegis needs no certificate. In nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    # WebSockets
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;   # map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+    proxy_read_timeout 300s;   # keep at least response_timeout_secs if apps are slow
+}
+```
+
+`trusted_proxies` is a list of IP addresses and CIDR ranges (`"10.0.0.0/8"`, `"fd00::/8"`). It is empty by default. When a request's TCP peer is in the list:
+
+- `X-Forwarded-Proto` and `X-Forwarded-Host` are passed to the app as the front proxy sent them, if they are well formed: the protocol must be exactly `http` or `https`, the host a host name or IP address with an optional port, each sent once. Anything else is ignored and the proxy's own values are used.
+- `X-Forwarded-For` is kept and the peer's address is appended, as for every request.
+- `X-Forwarded-Proto: https` counts as HTTPS, so a domain with a certificate (`acme` or `files`) is not redirected again (no redirect loop). A request the front proxy marks as `http` is redirected to `https://<domain>/...` without a port, because the public HTTPS port is the front proxy's.
+
+From any other peer, both headers are replaced, so clients can't spoof them, and the HTTPS redirect is decided by the listener the request arrived on. With `host = "127.0.0.1"` only processes on the machine can connect at all. Host names are refused (list addresses), and so are `0.0.0.0/0` and `::/0`, which would trust everyone. Entries outside loopback are accepted with a warning at startup: anything that can connect from those addresses can claim to be HTTPS. See [Security](security.md#forwarded-headers-and-trusted-proxies).
 
 **Zero-downtime deployments.** For an app with at least one domain, each release gets its own free local port, passed to the app as `PORT`. This overrides `deploy.port` and any `PORT` in `[env]`, so the app must listen on `$PORT`. If the health check URL names the app's configured port, it is probed on the release's port instead. A URL naming another port is left alone.
 
@@ -262,7 +303,11 @@ The daemon refuses a proxy configuration that:
 
 - uses the same port twice, or a port of the HTTP or gRPC API;
 - has an invalid `host`, ACME email or directory URL;
-- sets up a dashboard domain without HTTPS.
+- sets up a dashboard domain without HTTPS;
+- has a `trusted_proxies` entry that is not an IP address or CIDR range, or that covers every address;
+- has `response_timeout_secs` outside 1-86400 or `connect_timeout_secs` outside 1-300.
+
+The last two are checked even while the proxy is disabled.
 
 ### Backups (`[backup]`)
 

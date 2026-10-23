@@ -2005,7 +2005,36 @@ function secretsCard(ctx) {
   const project = ctx.project();
   const listBody = h('tbody');
   const nameIn = h('input', { id: 'secret-name', class: 'mono', placeholder: 'DATABASE_URL', required: true, autocomplete: 'off' });
-  const valueIn = h('input', { id: 'secret-value', class: 'mono', type: 'password', required: true, autocomplete: 'new-password' });
+  // A textarea so multi-line values (PEM keys, certificates) keep their
+  // line breaks. It is masked where the browser supports it.
+  const valueIn = h('textarea', {
+    id: 'secret-value',
+    class: 'mono secret-input',
+    rows: 4,
+    required: true,
+    autocomplete: 'off',
+    autocapitalize: 'off',
+    autocorrect: 'off',
+    spellcheck: 'false',
+    'data-1p-ignore': true,
+    'data-lpignore': 'true',
+  });
+  const canMask = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('-webkit-text-security', 'disc');
+  const showBtn = h('button', {
+    class: 'btn small',
+    type: 'button',
+    'data-action': 'toggle-secret',
+    'aria-controls': 'secret-value',
+    'aria-pressed': 'false',
+    hidden: !canMask,
+  }, 'Show');
+  const setMasked = (masked) => {
+    valueIn.classList.toggle('masked', canMask && masked);
+    showBtn.setAttribute('aria-pressed', masked ? 'false' : 'true');
+    showBtn.textContent = masked ? 'Show' : 'Hide';
+  };
+  showBtn.addEventListener('click', () => setMasked(!valueIn.classList.contains('masked')));
+  setMasked(true);
   const load = async () => {
     const secrets = await api('GET', `/projects/${enc(project.id)}/secrets`);
     const started = parseTime(ctx.project().process?.last_start);
@@ -2043,13 +2072,21 @@ function secretsCard(ctx) {
       if (!res) return;
       nameIn.value = '';
       valueIn.value = '';
+      setMasked(true);
       await load().catch(() => {});
       if (res.restart_required) await restartToApply(ctx.project(), `${name} reaches the app when it restarts.`);
     },
   },
   h('div', { class: 'row' },
-    h('div', { class: 'field' }, h('label', { for: 'secret-name' }, 'Name'), nameIn),
-    h('div', { class: 'field' }, h('label', { for: 'secret-value' }, 'Value'), valueIn)),
+    h('div', { class: 'field' }, h('label', { for: 'secret-name' }, 'Name'), nameIn)),
+  h('div', { class: 'field' },
+    h('label', { for: 'secret-value' }, 'Value'),
+    valueIn,
+    h('div', { class: 'field-tools' },
+      h('span', { class: 'hint' }, canMask
+        ? 'Saved exactly as entered, line breaks included (paste PEM keys as they are). Hidden while you type.'
+        : 'Saved exactly as entered, line breaks included (paste PEM keys as they are).'),
+      showBtn)),
   h('div', { class: 'form-actions' }, saveBtn));
   const card = h('section', { class: 'card' },
     cardHeader('Secrets', 'app.secrets'),

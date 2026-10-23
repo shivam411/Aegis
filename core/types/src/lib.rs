@@ -58,6 +58,7 @@ define_id!(ArtifactId);
 
 pub mod domain;
 pub mod error;
+pub mod net;
 pub use error::AegisError;
 
 use std::collections::HashMap;

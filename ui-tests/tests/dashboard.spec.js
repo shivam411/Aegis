@@ -169,12 +169,24 @@ test('full lifecycle from the browser', async ({ page }) => {
 
     // Secrets are write-only; saving one offers a restart.
     await page.getByLabel('Name', { exact: true }).fill('API_KEY');
-    await page.getByLabel('Value', { exact: true }).fill('s3cret-value');
+    // The value is a textarea, so multi-line values (PEM keys) keep their
+    // line breaks; it is masked until "Show" is pressed.
+    const secretValue = page.getByLabel('Value', { exact: true });
+    await secretValue.fill('s3cret-value\nsecond-line');
+    await expect(secretValue).toHaveValue('s3cret-value\nsecond-line');
+    const showSecret = page.locator('[data-action="toggle-secret"]');
+    if (await showSecret.isVisible()) {
+      await expect(secretValue).toHaveClass(/masked/);
+      await showSecret.click();
+      await expect(showSecret).toHaveAttribute('aria-pressed', 'true');
+      await expect(secretValue).not.toHaveClass(/masked/);
+    }
     await page.getByRole('button', { name: 'Save secret' }).click();
     await confirm(page, 'Restart');
     await expect(page.locator('.toast', { hasText: 'Restarted' })).toBeVisible();
     await expect(page.locator('td', { hasText: 'API_KEY' })).toBeVisible();
     await expect(page.locator('body')).not.toContainText('s3cret-value');
+    await expect(secretValue).toHaveValue('');
 
     await page.getByRole('button', { name: 'Generate secret' }).click();
     await confirm(page, 'Generate');

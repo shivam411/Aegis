@@ -43,8 +43,15 @@ pub struct IngressConfig {
     pub certs_dir: PathBuf,
     /// `None` disables automatic certificates.
     pub acme: Option<AcmeSettings>,
-    /// How long an upstream may take to send its response headers.
+    /// How long an upstream may take to send its response headers. It does
+    /// not limit a streamed body or an upgraded (WebSocket) connection.
     pub upstream_timeout: Duration,
+    /// How long to wait for a TCP connection to an upstream.
+    pub connect_timeout: Duration,
+    /// Front proxies whose `X-Forwarded-Proto`/`X-Forwarded-Host` headers are
+    /// passed on (and whose `X-Forwarded-Proto: https` counts as HTTPS).
+    /// Empty: forwarded headers are always overwritten.
+    pub trusted_proxies: Vec<aegis_types::net::IpCidr>,
     /// How often certificates are checked for renewal and files for changes.
     pub maintenance_interval: Duration,
 }
@@ -58,6 +65,8 @@ impl IngressConfig {
             certs_dir,
             acme: None,
             upstream_timeout: Duration::from_secs(120),
+            connect_timeout: Duration::from_secs(5),
+            trusted_proxies: Vec::new(),
             maintenance_interval: Duration::from_secs(60),
         }
     }
@@ -123,7 +132,7 @@ impl std::fmt::Debug for Ingress {
 
 impl Ingress {
     pub fn new(config: IngressConfig) -> Self {
-        let client = proxy::upstream_client();
+        let client = proxy::upstream_client(config.connect_timeout);
         Self {
             inner: Arc::new(Inner {
                 config,

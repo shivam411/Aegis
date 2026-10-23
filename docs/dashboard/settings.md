@@ -47,6 +47,9 @@ If the proxy is off, the card says so: domains are saved but not served until `[
 Environment variables stored encrypted on the server, for passwords, API keys and connection strings. Values can be replaced but never read back, and they are never written into `aegis.toml` or the release.
 
 - Enter **Name** and **Value** and click **Save secret**. If the app is running, Aegis offers to restart it, because a process only reads its environment when it starts.
+- **Value** is a multi-line box: the value is saved exactly as typed or pasted, line breaks included, so a PEM private key or certificate can be pasted as it is. Enter adds a line rather than submitting. The box is masked while you type; **Show** reveals it (a browser that can't mask a multi-line box shows it as plain text and have no **Show** button). After saving, the box is cleared and the value is never shown again.
+- Secrets are only given to the running app, not to the build: values the build needs (for example `NEXT_PUBLIC_*` in a Next.js app, which are inlined at build time) belong in **Environment variables**.
+- Container apps (`runtime = "docker"`) can't receive values with line breaks (Docker's env file can't hold them): starting the app fails with a message naming the secret. Store such values base64-encoded instead.
 - A **Restart to apply** pill marks secrets changed since the app last started.
 - **Replace** fills in the name so you can type a new value; **Delete** removes the secret (the running app keeps it until it restarts).
 

@@ -25,14 +25,13 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type ProxyBody = BoxBody<Bytes, BoxError>;
 pub(crate) type UpstreamClient = Client<HttpConnector, ProxyBody>;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-pub(crate) fn upstream_client() -> UpstreamClient {
+pub(crate) fn upstream_client(connect_timeout: Duration) -> UpstreamClient {
     let mut connector = HttpConnector::new();
-    connector.set_connect_timeout(Some(CONNECT_TIMEOUT));
+    connector.set_connect_timeout(Some(connect_timeout));
     connector.set_nodelay(true);
     Client::builder(TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(30))
@@ -152,8 +151,25 @@ pub(crate) async fn handle(
         } => (domain, route, Some(port)),
     };
 
-    if !https && route.tls != TlsMode::Off && inner.certs.contains(&domain) {
+    // A trusted front proxy (e.g. nginx terminating TLS) may say the client
+    // used HTTPS; such a request is not redirected again, which would loop.
+    let trusted = inner
+        .config
+        .trusted_proxies
+        .iter()
+        .any(|range| range.contains(peer.ip()));
+    let forwarded = headers::Forwarded::from_request(
+        req.headers(),
+        trusted,
+        if https { "https" } else { "http" },
+        &host,
+    );
+
+    if !forwarded.is_https() && route.tls != TlsMode::Off && inner.certs.contains(&domain) {
+        // Behind a trusted front proxy the public HTTPS port is the front
+        // proxy's (443), not this listener's.
         let port_suffix = match inner.config.https_port {
+            _ if trusted => String::new(),
             443 => String::new(),
             p => format!(":{}", p),
         };
@@ -201,7 +217,7 @@ pub(crate) async fn handle(
     headers::prepare_request_headers(
         &mut parts.headers,
         peer.ip(),
-        if https { "https" } else { "http" },
+        &forwarded,
         &host,
         upgrade.as_ref(),
     );
@@ -218,6 +234,7 @@ pub(crate) async fn handle(
             Request::from_parts(parts, body),
             client_upgrade,
             guard,
+            inner.config.connect_timeout,
             timeout,
         )
         .await
@@ -308,15 +325,18 @@ pub(crate) async fn handle(
 
 /// Forwards an upgrade request (e.g. WebSocket) on its own connection and,
 /// when the app switches protocols, splices the two connections together.
+/// `timeout` only covers waiting for the app's handshake response; an
+/// upgraded connection stays open for as long as both sides keep it open.
 async fn forward_upgrade(
     port: u16,
     req: Request<Incoming>,
     client_upgrade: hyper::upgrade::OnUpgrade,
     guard: InFlightGuard,
+    connect_timeout: Duration,
     timeout: Duration,
 ) -> Result<Response<ProxyBody>, BoxError> {
     let stream = tokio::time::timeout(
-        CONNECT_TIMEOUT,
+        connect_timeout,
         tokio::net::TcpStream::connect(("127.0.0.1", port)),
     )
     .await??;

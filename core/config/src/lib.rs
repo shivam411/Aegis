@@ -226,10 +226,24 @@ pub struct ProxyConfig {
     pub host: String,
     pub http_port: u16,
     pub https_port: u16,
+    /// Front proxies (IP addresses or CIDR ranges) whose `X-Forwarded-Proto`
+    /// and `X-Forwarded-Host` headers are passed on to apps instead of being
+    /// overwritten. Empty (the default) trusts nobody.
+    pub trusted_proxies: Vec<String>,
+    /// Seconds an app may take to send its response headers before the
+    /// client gets a 504. Upgraded (WebSocket) connections are not cut.
+    pub response_timeout_secs: u64,
+    /// Seconds to wait for a TCP connection to an app.
+    pub connect_timeout_secs: u64,
     pub acme: AcmeConfig,
     /// Serve the dashboard and API on a domain through the proxy.
     pub dashboard: ProxyDashboardConfig,
 }
+
+/// Bounds for `proxy.response_timeout_secs` (one second to one day).
+pub const PROXY_RESPONSE_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 1..=86_400;
+/// Bounds for `proxy.connect_timeout_secs`.
+pub const PROXY_CONNECT_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 1..=300;
 
 impl Default for ProxyConfig {
     fn default() -> Self {
@@ -238,6 +252,9 @@ impl Default for ProxyConfig {
             host: "0.0.0.0".into(),
             http_port: 80,
             https_port: 443,
+            trusted_proxies: Vec::new(),
+            response_timeout_secs: 120,
+            connect_timeout_secs: 5,
             acme: AcmeConfig::default(),
             dashboard: ProxyDashboardConfig::default(),
         }
@@ -299,9 +316,63 @@ impl Default for ProxyDashboardConfig {
 }
 
 impl ProxyConfig {
+    /// The parsed `trusted_proxies` list.
+    ///
+    /// Every entry must be an IP address or a CIDR range; host names are
+    /// refused (they would be resolved once and silently go stale), and so
+    /// are ranges that cover the whole address space (`0.0.0.0/0`, `::/0`),
+    /// which would let any client spoof the forwarded headers.
+    pub fn trusted_proxy_ranges(&self) -> Result<Vec<aegis_types::net::IpCidr>, anyhow::Error> {
+        self.trusted_proxies
+            .iter()
+            .map(|entry| {
+                let cidr: aegis_types::net::IpCidr = entry
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("proxy.trusted_proxies: {}", e))?;
+                if cidr.prefix() == 0 {
+                    anyhow::bail!(
+                        "proxy.trusted_proxies: \"{}\" would trust every client; list only \
+                         the addresses of your front proxy (usually \"127.0.0.1\" and \"::1\")",
+                        entry
+                    );
+                }
+                Ok(cidr)
+            })
+            .collect()
+    }
+
+    /// The entries of `trusted_proxies` that are not loopback addresses.
+    /// They are allowed, but anyone who can connect from those addresses can
+    /// set the forwarded headers, so the daemon warns about them.
+    pub fn non_loopback_trusted_proxies(&self) -> Vec<String> {
+        self.trusted_proxy_ranges()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| !c.is_loopback())
+            .map(|c| c.to_string())
+            .collect()
+    }
+
     /// Checks the `[proxy]` section; `web` and `daemon` are needed to rule
     /// out port clashes and to check the dashboard route.
     pub fn validate(&self, web: &WebConfig, daemon: &DaemonConfig) -> Result<(), anyhow::Error> {
+        self.trusted_proxy_ranges()?;
+        if !PROXY_RESPONSE_TIMEOUT_RANGE.contains(&self.response_timeout_secs) {
+            anyhow::bail!(
+                "proxy.response_timeout_secs must be {}-{} (got {})",
+                PROXY_RESPONSE_TIMEOUT_RANGE.start(),
+                PROXY_RESPONSE_TIMEOUT_RANGE.end(),
+                self.response_timeout_secs
+            );
+        }
+        if !PROXY_CONNECT_TIMEOUT_RANGE.contains(&self.connect_timeout_secs) {
+            anyhow::bail!(
+                "proxy.connect_timeout_secs must be {}-{} (got {})",
+                PROXY_CONNECT_TIMEOUT_RANGE.start(),
+                PROXY_CONNECT_TIMEOUT_RANGE.end(),
+                self.connect_timeout_secs
+            );
+        }
         if !self.enabled {
             return Ok(());
         }
@@ -1164,6 +1235,37 @@ strategy = "GracefulSwitch"
             assert!(check(&parse(&bad)).is_err(), "{bad}");
         }
         assert!(toml::from_str::<Config>("[proxy]\nenabeld = true\n").is_err());
+
+        // Timeouts and trusted proxies are checked even when the proxy is off.
+        for bad in [
+            "[proxy]\nresponse_timeout_secs = 0\n",
+            "[proxy]\nresponse_timeout_secs = 86401\n",
+            "[proxy]\nconnect_timeout_secs = 0\n",
+            "[proxy]\nconnect_timeout_secs = 301\n",
+            "[proxy]\ntrusted_proxies = [\"localhost\"]\n",
+            "[proxy]\ntrusted_proxies = [\"10.0.0.0/33\"]\n",
+            "[proxy]\ntrusted_proxies = [\"0.0.0.0/0\"]\n",
+            "[proxy]\ntrusted_proxies = [\"::/0\"]\n",
+            "[proxy]\ntrusted_proxies = [\"127.0.0.1\", \"nginx\"]\n",
+        ] {
+            let err = check(&parse(bad)).unwrap_err().to_string();
+            assert!(err.starts_with("proxy."), "{bad}: {err}");
+        }
+        let behind = parse(
+            "[proxy]\nenabled = true\nhost = \"127.0.0.1\"\nhttp_port = 8081\nhttps_port = 8444\n\
+             trusted_proxies = [\"127.0.0.1\", \"::1\"]\nresponse_timeout_secs = 600\n\
+             connect_timeout_secs = 2\n",
+        );
+        assert!(check(&behind).is_ok());
+        assert_eq!(behind.proxy.trusted_proxy_ranges().unwrap().len(), 2);
+        assert!(behind.proxy.non_loopback_trusted_proxies().is_empty());
+        assert_eq!(behind.proxy.response_timeout_secs, 600);
+        assert_eq!(behind.proxy.connect_timeout_secs, 2);
+        let lan = parse("[proxy]\ntrusted_proxies = [\"10.0.0.0/8\", \"127.0.0.1\"]\n");
+        assert!(check(&lan).is_ok());
+        assert_eq!(lan.proxy.non_loopback_trusted_proxies(), vec!["10.0.0.0/8"]);
+        assert_eq!(Config::default().proxy.response_timeout_secs, 120);
+        assert_eq!(Config::default().proxy.connect_timeout_secs, 5);
 
         let dashboard = parse(
             "[web]\nenabled = true\n[proxy]\nenabled = true\n[proxy.acme]\nenabled = true\n[proxy.dashboard]\ndomain = \"aegis.example.com\"\n",

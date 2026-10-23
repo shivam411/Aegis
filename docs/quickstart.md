@@ -44,7 +44,7 @@ sudo systemctl enable --now aegis
 Inside your project directory, initialize Aegis. It auto-detects the runtime:
 
 ```bash
-aegis-cli init --name my-api --repo https://github.com/user/my-api
+aegis init --name my-api --repo https://github.com/user/my-api
 ```
 
 Aegis scans for `package.json` (Node.js), `Cargo.toml` (Rust), `go.mod` (Go), `requirements.txt` (Python), or `bun.lockb` (Bun) and configures the build pipeline automatically.
@@ -56,7 +56,7 @@ Aegis scans for `package.json` (Node.js), `Cargo.toml` (Rust), `go.mod` (Go), `r
 Trigger a health-checked deployment:
 
 ```bash
-aegis-cli deploy --project <PROJECT_ID> --branch main
+aegis deploy my-api --branch main
 ```
 
 What happens behind the scenes:
@@ -71,7 +71,7 @@ What happens behind the scenes:
 7. Promote   → Atomically switch the active version pointer
 ```
 
-A failed build never touches the live version. At cutover the old process is stopped and the new one started, so there is a short gap while the app starts listening (removed once the planned reverse proxy lands). If the new version fails its health check, the previous release is started again.
+A failed build never touches the live version. For an app with a domain on the built-in proxy, the new release starts next to the old one and the proxy switches over once it is healthy (no downtime). An app without a domain has its old process stopped before the new one starts, so there is a short gap while it starts listening. If the new version fails its health check, the previous release is started again.
 
 ---
 
@@ -80,13 +80,13 @@ A failed build never touches the live version. At cutover the old process is sto
 Query daemon status and active projects:
 
 ```bash
-aegis-cli status
+aegis status
 ```
 
 List running processes:
 
 ```bash
-aegis-cli list
+aegis list
 ```
 
 ---
@@ -96,7 +96,7 @@ aegis-cli list
 Set a daily automated deployment at 02:00 AM:
 
 ```bash
-aegis-cli schedule --project <PROJECT_ID> --hour 2 --branch main
+aegis schedule my-api --hour 2 --branch main
 ```
 
 ---
@@ -106,7 +106,7 @@ aegis-cli schedule --project <PROJECT_ID> --hour 2 --branch main
 If something goes wrong, instantly roll back to a previous version:
 
 ```bash
-aegis-cli rollback --project <PROJECT_ID> --version v1.0.0
+aegis rollback my-api --version v1.0.0
 ```
 
 No rebuild required — Aegis keeps previous release artifacts on disk (configurable via `max_retained_versions`).
@@ -118,13 +118,13 @@ No rebuild required — Aegis keeps previous release artifacts on disk (configur
 Tail real-time process logs:
 
 ```bash
-aegis-cli logs --process-id <PROCESS_ID>
+aegis logs my-api -f
 ```
 
 Stream all operational events:
 
 ```bash
-aegis-cli stream-events
+aegis stream-events
 ```
 
 ---

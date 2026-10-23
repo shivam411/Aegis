@@ -39,6 +39,16 @@ for bin in aegis-daemon aegis-cli aegis-tui; do
     rm -f "${INSTALL_DIR}/${bin}.previous"
 done
 
+# The `aegis` link install.sh creates, but only if it is ours.
+if [ -L "${INSTALL_DIR}/aegis" ]; then
+    case "$(readlink "${INSTALL_DIR}/aegis")" in
+        aegis-cli|*/aegis-cli)
+            rm -f "${INSTALL_DIR}/aegis"
+            info "Removed ${INSTALL_DIR}/aegis (link to aegis-cli)"
+            ;;
+    esac
+fi
+
 if [ "${removed}" -eq 0 ]; then
     warn "No Aegis binaries found in ${INSTALL_DIR}/."
 else
