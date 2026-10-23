@@ -91,7 +91,7 @@ impl ControlPlane {
                 let port = this
                     .start_release_process(project.id, id, &release, &dir, &config, port)
                     .await
-                    .map_err(ControlError::Internal)?;
+                    .map_err(crate::deploy::start_error)?;
                 if several {
                     this.sync_routes(project.id);
                 } else {

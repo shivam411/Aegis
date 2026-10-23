@@ -113,6 +113,10 @@ pub struct BuildRequest {
     /// Directories the project's env file (`overrides.env_file`) may be in
     /// (`[apps] env_file_dirs`).
     pub env_file_dirs: Vec<PathBuf>,
+    /// The project's deploy key, used for SSH remotes (see `fetch_source`).
+    pub ssh: Option<aegis_ssh::SshAuth>,
+    /// Build and run only this subdirectory of the source (monorepos).
+    pub source_subdir: Option<String>,
 }
 
 /// The build commands' environment: the env file (if any, without `PORT`),
@@ -218,7 +222,14 @@ impl<'a> BuildPipeline<'a> {
 
         // 1. Clone
         self.begin(PipelineStage::Clone).await;
-        let fetched = fetch_source(&req.source, &req.release_dir, &mut log).await;
+        let fetched = fetch_source(
+            &req.source,
+            &req.release_dir,
+            req.ssh.as_ref(),
+            req.source_subdir.as_deref(),
+            &mut log,
+        )
+        .await;
         let commit = match fetched {
             Ok(c) => c,
             Err(e) => return Err(self.fail(PipelineStage::Clone, e, &log).await),
@@ -557,18 +568,24 @@ fn write_overrides(
 pub async fn detect_source(
     source: &SourceSpec,
     scratch: &Path,
+    ssh: Option<&aegis_ssh::SshAuth>,
+    subdir: Option<&str>,
 ) -> Result<ResolvedProjectConfig, anyhow::Error> {
     if let SourceSpec::LocalDir(dir) = source {
+        let dir = match subdir {
+            Some(sub) => dir.join(validate_subdir(sub)?),
+            None => dir.clone(),
+        };
         if !dir.is_dir() {
             anyhow::bail!("Directory {} does not exist", dir.display());
         }
-        return ResolvedProjectConfig::load(dir);
+        return ResolvedProjectConfig::load(&dir);
     }
     let _ = std::fs::remove_dir_all(scratch);
     let checkout = scratch.join("checkout");
     let mut log = BuildLog::new(scratch.join("detect.log"))?;
     let result = async {
-        fetch_source(source, &checkout, &mut log).await?;
+        fetch_source(source, &checkout, ssh, subdir, &mut log).await?;
         ResolvedProjectConfig::load(&checkout)
     }
     .await;
@@ -627,6 +644,106 @@ pub fn validate_git_ref(reference: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/// Checks a source subdirectory setting: a relative path of plain names
+/// (no `..`, no leading `/`), e.g. `apps/web`.
+pub fn validate_subdir(subdir: &str) -> Result<PathBuf, anyhow::Error> {
+    let trimmed = subdir.trim().trim_matches('/');
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= 255
+        && trimmed.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | '+'))
+        });
+    if !valid {
+        anyhow::bail!(
+            "Invalid source subdirectory '{}': use a relative path inside the repository such as apps/web (letters, digits, . - _ @ +; no '..')",
+            subdir
+        );
+    }
+    Ok(trimmed.split('/').collect())
+}
+
+/// What `git ls-remote` saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteRefs {
+    /// Branch names (`refs/heads/...` without the prefix).
+    pub branches: Vec<String>,
+}
+
+/// Lists a remote's branches without cloning it: `git ls-remote --heads`,
+/// with the deploy key when given (else unauthenticated: no credential
+/// helpers, no prompts). The error is git's own message, which never
+/// contains key material.
+pub async fn ls_remote(
+    url: &str,
+    ssh: Option<&aegis_ssh::SshAuth>,
+    timeout: Duration,
+) -> Result<RemoteRefs, String> {
+    validate_repository_url(url).map_err(|e| e.to_string())?;
+    let session = match ssh {
+        Some(auth) => Some(auth.session()?),
+        None => None,
+    };
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.askPass=",
+        "ls-remote",
+        "--heads",
+        "--",
+        url,
+    ])
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .env("GCM_INTERACTIVE", "never")
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
+    if let Some(session) = &session {
+        cmd.env("GIT_SSH_COMMAND", session.git_ssh_command());
+    }
+    let result = tokio::time::timeout(timeout, cmd.output()).await;
+    // The key file is gone before the result is looked at.
+    drop(session);
+    let output = match result {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("Failed to run git: {}", e)),
+        Err(_) => return Err(format!("No answer within {}s", timeout.as_secs())),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut message = stderr
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if message.len() > 1000 {
+            let mut cut = 1000;
+            while !message.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            message.truncate(cut);
+        }
+        if message.is_empty() {
+            message = format!("git ls-remote exited with {}", output.status);
+        }
+        return Err(message);
+    }
+    let branches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1)?.strip_prefix("refs/heads/"))
+        .map(str::to_string)
+        .collect();
+    Ok(RemoteRefs { branches })
+}
+
 /// Hides credentials embedded in a URL (`https://user:token@host/…`).
 pub fn redact_url(url: &str) -> String {
     if let Some((scheme, rest)) = url.split_once("://") {
@@ -638,9 +755,70 @@ pub fn redact_url(url: &str) -> String {
     url.to_string()
 }
 
+/// Fetches the source into `dest`. With `subdir`, only that subdirectory
+/// of the source ends up in `dest` (the rest of a clone is removed).
 async fn fetch_source(
     source: &SourceSpec,
     dest: &Path,
+    ssh: Option<&aegis_ssh::SshAuth>,
+    subdir: Option<&str>,
+    log: &mut BuildLog,
+) -> Result<CommitInfo, anyhow::Error> {
+    let Some(subdir) = subdir else {
+        return fetch_whole_source(source, dest, ssh, log).await;
+    };
+    let rel = validate_subdir(subdir)?;
+    if dest.exists() {
+        anyhow::bail!(
+            "Release directory {} already exists; choose a different version",
+            dest.display()
+        );
+    }
+    if let SourceSpec::LocalDir(src) = source {
+        let inner = src.join(&rel);
+        if !inner.is_dir() {
+            anyhow::bail!(
+                "The source subdirectory {} does not exist in {}",
+                subdir,
+                src.display()
+            );
+        }
+        log.line(&format!("==> Source subdirectory: {}", subdir));
+        return fetch_whole_source(&SourceSpec::LocalDir(inner), dest, ssh, log).await;
+    }
+    // Clone next to the release, then keep only the subdirectory.
+    let mut checkout = dest.as_os_str().to_owned();
+    checkout.push(".checkout");
+    let checkout = PathBuf::from(checkout);
+    let _ = std::fs::remove_dir_all(&checkout);
+    let result = async {
+        let info = fetch_whole_source(source, &checkout, ssh, log).await?;
+        let root = checkout.canonicalize()?;
+        let inner = checkout.join(&rel).canonicalize().map_err(|_| {
+            anyhow::anyhow!(
+                "The source subdirectory {} is not in the repository",
+                subdir
+            )
+        })?;
+        if !inner.starts_with(&root) || inner == root || !inner.is_dir() {
+            anyhow::bail!(
+                "The source subdirectory {} is not a directory inside the repository",
+                subdir
+            );
+        }
+        log.line(&format!("==> Source subdirectory: {}", subdir));
+        std::fs::rename(&inner, dest)?;
+        Ok(info)
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(&checkout);
+    result
+}
+
+async fn fetch_whole_source(
+    source: &SourceSpec,
+    dest: &Path,
+    ssh: Option<&aegis_ssh::SshAuth>,
     log: &mut BuildLog,
 ) -> Result<CommitInfo, anyhow::Error> {
     if dest.exists() {
@@ -662,7 +840,22 @@ async fn fetch_source(
                 && reference.len() <= 40
                 && reference.chars().all(|c| c.is_ascii_hexdigit());
             let dest_str = dest.to_string_lossy().to_string();
-            let env = HashMap::from([("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())]);
+            let mut env = HashMap::from([("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())]);
+            // The deploy key, for SSH remotes only. Its file lives as long as
+            // `_session`: until this clone has finished or failed.
+            let uses_ssh = aegis_ssh::RemoteUrl::parse(url).is_some_and(|r| r.is_ssh());
+            let _session = match ssh.filter(|_| uses_ssh) {
+                Some(auth) => {
+                    log.line(&format!(
+                        "==> Using the app's deploy key ({})",
+                        auth.fingerprint
+                    ));
+                    let session = auth.session().map_err(anyhow::Error::msg)?;
+                    env.insert("GIT_SSH_COMMAND".to_string(), session.git_ssh_command());
+                    Some(session)
+                }
+                None => None,
+            };
             let timeout = Duration::from_secs(600);
             let cwd = dest.parent().unwrap_or(Path::new("."));
             if is_commit {
@@ -961,6 +1154,8 @@ mod tests {
             log_path: root.join("logs/build.log"),
             overrides: Default::default(),
             env_file_dirs: Vec::new(),
+            ssh: None,
+            source_subdir: None,
         }
     }
 
@@ -1176,6 +1371,8 @@ GREETING = "hi"
                 reference: "main".into(),
             },
             &scratch_dir,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1186,6 +1383,8 @@ GREETING = "hi"
         let local = detect_source(
             &SourceSpec::LocalDir(repo.path().to_path_buf()),
             &scratch_dir,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1197,6 +1396,8 @@ GREETING = "hi"
                 reference: "no-such-branch".into(),
             },
             &scratch_dir,
+            None,
+            None,
         )
         .await
         .unwrap_err();
@@ -1378,5 +1579,201 @@ GREETING = "hi"
             .await
             .unwrap_err();
         assert_eq!(err.stage, PipelineStage::Clone);
+    }
+
+    #[test]
+    fn test_subdir_validation() {
+        assert_eq!(
+            validate_subdir("apps/web/").unwrap(),
+            PathBuf::from("apps").join("web")
+        );
+        assert!(validate_subdir("packages/@scope+x").is_ok());
+        for bad in ["", "/", "../x", "a/../b", "a//b", "a b", "./a", "a\\b"] {
+            assert!(validate_subdir(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_monorepo_subdirectory_build() {
+        let repo = TempDir::new().unwrap();
+        git(repo.path(), &["init", "-q", "-b", "main"]);
+        let web = repo.path().join("apps").join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(repo.path().join("README.md"), "root").unwrap();
+        std::fs::write(web.join("index.js"), "web").unwrap();
+        std::fs::write(
+            web.join("aegis.toml"),
+            "[build]\nbuild_command = \"\"\nstart_command = \"node index.js\"\n",
+        )
+        .unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-q", "-m", "mono"]);
+
+        let out = TempDir::new().unwrap();
+        let store = ArtifactStore::new(out.path().join("artifacts"));
+        let recorder = Recorder::default();
+        // Cloned: only the subdirectory becomes the release.
+        let mut req = request(
+            SourceSpec::Git {
+                url: repo.path().to_string_lossy().to_string(),
+                reference: "main".into(),
+            },
+            out.path(),
+        );
+        req.source_subdir = Some("apps/web".into());
+        let output = BuildPipeline::new(&store, &recorder)
+            .run(&req)
+            .await
+            .unwrap();
+        assert!(req.release_dir.join("index.js").exists());
+        assert!(!req.release_dir.join("README.md").exists());
+        assert!(!req.release_dir.join(".git").exists());
+        assert_eq!(output.config.start_command, "node index.js");
+        assert_eq!(output.release.commit_message, "mono");
+        assert!(!out.path().join("releases/r1.checkout").exists());
+
+        // Copied from a directory on the server.
+        let mut local = request(SourceSpec::LocalDir(repo.path().to_path_buf()), out.path());
+        local.release_dir = out.path().join("releases/r2");
+        local.source_subdir = Some("apps/web".into());
+        BuildPipeline::new(&store, &recorder)
+            .run(&local)
+            .await
+            .unwrap();
+        assert!(local.release_dir.join("index.js").exists());
+        assert!(!local.release_dir.join("README.md").exists());
+
+        // A missing subdirectory fails the Clone stage and leaves no checkout.
+        let mut missing = req.clone();
+        missing.release_dir = out.path().join("releases/r3");
+        missing.source_subdir = Some("apps/nope".into());
+        let err = BuildPipeline::new(&store, &recorder)
+            .run(&missing)
+            .await
+            .unwrap_err();
+        assert_eq!(err.stage, PipelineStage::Clone);
+        assert!(err.message.contains("apps/nope"), "{}", err.message);
+        assert!(!out.path().join("releases/r3.checkout").exists());
+
+        // Detection looks inside the subdirectory too.
+        let scratch = TempDir::new().unwrap();
+        let cfg = detect_source(
+            &SourceSpec::Git {
+                url: repo.path().to_string_lossy().to_string(),
+                reference: "main".into(),
+            },
+            &scratch.path().join("d"),
+            None,
+            Some("apps/web"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cfg.start_command, "node index.js");
+    }
+
+    /// Clones over "ssh" through a stand-in ssh client that checks the key
+    /// file and serves the repository locally.
+    #[tokio::test]
+    async fn test_clone_with_deploy_key_uses_a_temporary_key_file() {
+        let repo = TempDir::new().unwrap();
+        git(repo.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("index.js"), "x").unwrap();
+        std::fs::write(
+            repo.path().join("aegis.toml"),
+            "[build]\nbuild_command = \"\"\nstart_command = \"true\"\n",
+        )
+        .unwrap();
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-q", "-m", "over ssh"]);
+
+        let tools = TempDir::new().unwrap();
+        let log = tools.path().join("ssh.log");
+        let fake_ssh = tools.path().join("ssh");
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                r#"#!/bin/sh
+LOG='{log}'
+key=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i) key="$2"; shift 2 ;;
+    -o|-p|-l) echo "opt $2" >> "$LOG"; shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+echo "argv-has-no-key-material $(echo "$key" | grep -c PRIVATE)" >> "$LOG"
+if [ -f "$key" ]; then echo "key-file-present" >> "$LOG"; fi
+head -1 "$key" >> "$LOG"
+echo "mode $(stat -c %a "$key")" >> "$LOG"
+echo "GIT_SSH_COMMAND-has-key $(printf '%s' "$GIT_SSH_COMMAND" | grep -c PRIVATE)" >> "$LOG"
+shift
+exec sh -c "$*"
+"#,
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let key = aegis_ssh::generate_deploy_key("aegis:test").unwrap();
+        let run_dir = tools.path().join("run-ssh");
+        let auth = aegis_ssh::SshAuth::new(
+            key.private_openssh.clone(),
+            key.fingerprint.clone(),
+            run_dir.clone(),
+            None,
+        );
+        let out = TempDir::new().unwrap();
+        let store = ArtifactStore::new(out.path().join("artifacts"));
+        let recorder = Recorder::default();
+        let url = format!("ssh://git@localhost{}", repo.path().display());
+        let mut req = request(
+            SourceSpec::Git {
+                url: url.clone(),
+                reference: "main".into(),
+            },
+            out.path(),
+        );
+        req.ssh = Some(auth.clone());
+        // Only this test sets the variable.
+        std::env::set_var("AEGIS_SSH_BIN", &fake_ssh);
+        let built = BuildPipeline::new(&store, &recorder).run(&req).await;
+        let mut failing = req.clone();
+        failing.release_dir = out.path().join("releases/r2");
+        failing.source = SourceSpec::Git {
+            url: url.clone(),
+            reference: "no-such-branch".into(),
+        };
+        let failed = BuildPipeline::new(&store, &recorder).run(&failing).await;
+        let listed = ls_remote(&url, Some(&auth), Duration::from_secs(30)).await;
+        std::env::remove_var("AEGIS_SSH_BIN");
+
+        let output = built.unwrap();
+        assert_eq!(output.release.commit_message, "over ssh");
+        assert!(req.release_dir.join("index.js").exists());
+        let seen = std::fs::read_to_string(&log).unwrap();
+        assert!(seen.contains("key-file-present"), "{seen}");
+        assert!(
+            seen.contains("-----BEGIN OPENSSH PRIVATE KEY-----"),
+            "{seen}"
+        );
+        assert!(seen.contains("mode 600"), "{seen}");
+        assert!(seen.contains("argv-has-no-key-material 0"), "{seen}");
+        assert!(seen.contains("GIT_SSH_COMMAND-has-key 0"), "{seen}");
+        assert!(seen.contains("opt IdentitiesOnly=yes"), "{seen}");
+        assert!(seen.contains("opt StrictHostKeyChecking=yes"), "{seen}");
+        // The build log names the key by fingerprint only.
+        let build_log = std::fs::read_to_string(&req.log_path).unwrap();
+        assert!(build_log.contains(&key.fingerprint), "{build_log}");
+        assert!(!build_log.contains("PRIVATE KEY"), "{build_log}");
+        // The failed clone fails in the Clone stage...
+        assert_eq!(failed.unwrap_err().stage, PipelineStage::Clone);
+        // ...and ls-remote with the key sees the branch.
+        assert_eq!(listed.unwrap().branches, vec!["main".to_string()]);
+        // No key file is left behind, after success or failure.
+        assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0);
     }
 }

@@ -1,7 +1,9 @@
 pub mod detector_pipeline;
 pub mod project_config;
+pub mod start_hint;
 pub use detector_pipeline::{DetectedConfig, DetectorPipeline};
 pub use project_config::ResolvedProjectConfig;
+pub use start_hint::{node_start_hint, StartHint};
 
 use async_trait::async_trait;
 use std::path::Path;

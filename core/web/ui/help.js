@@ -46,14 +46,31 @@ export const HELP = {
   },
   wizard: {
     title: 'New app',
-    summary: 'Adds an app in two steps. First say where the code is; Aegis then looks at it and suggests install, build, test and start commands, a port and a health check. Review them, then create the app.',
+    summary: 'Adds an app in two steps. First say where the code is; Aegis then looks at it and suggests install, build, test and start commands, a port and a health check. Review them, then create the app. Or scan a folder on the server and import several existing apps at once.',
     controls: [
       ['Git repository / Directory on this server', 'Where the code comes from. A repository is cloned on every deploy; a directory is copied.'],
-      ['Detect settings', 'Inspects the code and fills in step 2.'],
+      ['Scan a folder on the server', 'Looks for apps in a folder allowed by the daemon configuration ([apps] import_dirs or env_file_dirs) and imports the ones you select, without deploying them.'],
+      ['App folder in the source', 'Optional, for monorepos: only this folder (e.g. apps/web) is built and run.'],
+      ['Private repository', 'If Aegis can\'t read a GitHub repository, it offers to create the app and set up a deploy key first, then detect the settings with it.'],
+      ['Detect settings', 'Inspects the code and fills in step 2. A start script that fixes its port (e.g. next start -p 4000) is changed to read $PORT (npx next start -p $PORT).'],
       ['Deploy right away', 'Starts the first deployment as soon as the app is created.'],
     ],
     roles: 'Admins only.',
     docs: 'new-app.md',
+  },
+  'wizard.scan': {
+    title: 'Scan results',
+    summary: 'Apps found in the folder, with the settings an import would save. Nothing is changed until you import, and imported apps are not deployed. Apps already registered (same repository, branch and folder, or same directory) are listed but can\'t be selected.',
+    controls: [
+      ['Name / Start command / Port', 'Edit before importing. A hard-coded port in the start script is already replaced with $PORT.'],
+      ['Source', 'Clone the repository (the checkout\'s origin, at its current branch) or copy this folder at every deployment.'],
+      ['Check', 'For GitHub repositories: asks GitHub, without credentials, whether the repository is public. Private ones need a deploy key (Settings → Repository after import).'],
+      ['Env file', 'Use the app\'s .env as its Env file (only if its folder is in [apps] env_file_dirs). Only variable names are shown, never values.'],
+      ['Warnings', 'Port in use (probably the current deployment: stop it before the first deploy, or map a domain), deploy key needed, .env not readable by the daemon (with the chgrp/chmod fix), hard-coded port.'],
+      ['Import selected', 'Registers the selected apps and lists the next steps for each.'],
+    ],
+    roles: 'Admins only.',
+    docs: 'new-app.md#scan-a-folder-on-the-server',
   },
 
   // --- App page -----------------------------------------------------------
@@ -172,6 +189,18 @@ export const HELP = {
     ],
     roles: 'Admins.',
     docs: 'settings.md#domains',
+  },
+  'app.repository': {
+    title: 'Repository',
+    summary: 'Where deployments get the code, and the app\'s SSH deploy key for private repositories. Aegis generates an Ed25519 key pair; the private key stays on this server, encrypted with the secrets key, and is only written to a temporary file (readable by Aegis alone) while git runs. Only the public key is ever shown.',
+    controls: [
+      ['Generate deploy key', 'Creates the key pair. Add the public key to the repository\'s deploy keys (on GitHub: Settings → Deploy keys → Add deploy key) and leave "Allow write access" unticked.'],
+      ['Copy', 'Copies the public key line (ssh-ed25519 …).'],
+      ['Test access', 'Runs git ls-remote with the key and shows the result, or git\'s error with what to do about it.'],
+      ['Generate a new key / Delete key', 'Replaces or removes the key; also update the repository\'s deploy keys.'],
+    ],
+    roles: 'Admins.',
+    docs: 'settings.md#repository',
   },
   'app.env': {
     title: 'Environment',

@@ -282,7 +282,7 @@ impl fmt::Display for EnvFileError {
 impl std::error::Error for EnvFileError {}
 
 /// The user the daemon runs as, for error messages.
-fn daemon_user() -> String {
+pub fn daemon_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .or_else(|_| std::env::var("USERNAME"))

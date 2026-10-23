@@ -25,6 +25,8 @@ aegis-resources = { path = "../../runtime/resources" }
 aegis-metrics = { path = "../../runtime/metrics" }
 aegis-secrets = { path = "../secrets" }
 aegis-docker = { path = "../../integrations/docker" }
+aegis-ssh = { path = "../ssh" }
+zeroize = "1"
 serde = { workspace = true }
 toml = { workspace = true }
 sqlx = { workspace = true }

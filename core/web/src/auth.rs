@@ -139,7 +139,10 @@ fn user_only(path: &str) -> bool {
         || path.starts_with("/api/v1/backups/")
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
-        || matches!(section, Some("webhook" | "secrets"))
+        || matches!(section, Some("webhook" | "secrets" | "deploy-key"))
+        // Reading server folders and registering apps in bulk.
+        || path == "/api/v1/apps"
+        || path.starts_with("/api/v1/apps/")
         // Imports write secrets.
         || (section == Some("env") && path.contains("/env/import"))
 }
@@ -167,7 +170,9 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         ["auth", ..] => Role::Viewer,
         // Credentials and secret material, even to read.
         ["users" | "tokens" | "backups", ..] => Role::Admin,
-        ["projects", _, "secrets" | "webhook", ..] => Role::Admin,
+        ["projects", _, "secrets" | "webhook" | "deploy-key", ..] => Role::Admin,
+        // Scanning server folders, access checks and bulk import.
+        ["apps", ..] => Role::Admin,
         // Pasted .env contents, and writes of Variables and Secrets.
         ["projects", _, "env", "import", ..] => Role::Admin,
         // Variable names and their sources (never values).
@@ -782,6 +787,8 @@ mod tests {
             "/api/v1/backups",
             "/api/v1/projects/web/secrets",
             "/api/v1/projects/web/webhook",
+            "/api/v1/projects/web/deploy-key",
+            "/api/v1/apps/scan",
         ] {
             assert_eq!(need(Method::GET, p), Role::Admin, "{p}");
         }
@@ -828,5 +835,18 @@ mod tests {
         assert!(user_only("/api/v1/projects/web/env/import/preview"));
         assert!(user_only("/api/v1/projects/web/env/import"));
         assert!(!user_only("/api/v1/projects/web/env"));
+        // Deploy keys, scans and imports: admins, signed in.
+        for (m, p) in [
+            (Method::POST, "/api/v1/projects/web/deploy-key"),
+            (Method::DELETE, "/api/v1/projects/web/deploy-key"),
+            (Method::POST, "/api/v1/projects/web/deploy-key/test"),
+            (Method::POST, "/api/v1/apps/scan"),
+            (Method::POST, "/api/v1/apps/import"),
+            (Method::POST, "/api/v1/apps/check-access"),
+        ] {
+            assert_eq!(need(m.clone(), p), Role::Admin, "{m} {p}");
+            assert!(user_only(p), "{p}");
+        }
+        assert!(user_only("/api/v1/projects/web/deploy-key"));
     }
 }

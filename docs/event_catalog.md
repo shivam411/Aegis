@@ -44,7 +44,10 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `ProjectCreated` | New project initialized | `project_id`, `name`, `repository_url`, `branch`, `runtime`, `source_dir` |
+| `ProjectCreated` | New project initialized | `project_id`, `name`, `repository_url`, `branch`, `runtime`, `source_dir`, `source_subdir` (the folder of the source that is built and run, or `null`) |
+| `AppsImported` | Apps registered in bulk from a folder scan (each also has its own `ProjectCreated`; none is deployed) | `count`, `apps` (`[{project_id, name}]`), `actor` |
+| `DeployKeyCreated` | An SSH deploy key was generated for the project. Only the fingerprint is recorded, never key material; the private key is sealed in the database | `project_id`, `fingerprint` (`SHA256:…`), `replaced` (the previous key's fingerprint, or `null`), `actor` |
+| `DeployKeyDeleted` | The project's deploy key was deleted | `project_id`, `fingerprint`, `actor` |
 | `ProjectSettingsUpdated` | Build/run settings edited in the dashboard or API (override aegis.toml from the next deployment), including Variables and the env file path (`settings.env_file`; the file's contents are never recorded). A `.env` import that adds Variables records one | `project_id`, `settings`, `actor` |
 | `ResourceLimitsChanged` | CPU/memory/process limits changed (applied live) | `project_id`, `limits`, `previous`, `applied_to_processes`, `forced`, `actor` |
 | `ResourcePressureDetected` | An alert: `kind` is `oom_kill`, `cpu_throttled` (≥50% of periods for 30 s), `memory_pressure` (≥90% of the limit for 30 s) or `disk_low` (<10% free) | `kind`, `message`, `project_id` (not for `disk_low`), and figures such as `oom_kills`, `memory_limit_bytes` |

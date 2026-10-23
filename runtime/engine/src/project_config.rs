@@ -39,6 +39,9 @@ pub struct ResolvedProjectConfig {
     pub blue_green_keep: Duration,
     /// `[run]`: process (default) or container.
     pub run: RunSection,
+    /// The detected start command runs a package.json start script that
+    /// hard-codes its port; this proposes the `$PORT` form.
+    pub start_hint: Option<crate::StartHint>,
 }
 
 /// Default for `[deploy] blue_green_keep_secs`.
@@ -67,6 +70,11 @@ impl ResolvedProjectConfig {
         };
 
         let port = file.deploy.port.or(defaults.deploy.port);
+        let start_hint = (!docker
+            && detected.runtime_engine == "Node.js"
+            && non_empty(file.build.start_command.clone()).is_none())
+        .then(|| crate::node_start_hint(dir))
+        .flatten();
         let health_check_url = match file.deploy.health_check_url {
             Some(url) => non_empty(Some(url)),
             // Through Docker's port publishing a bare TCP connect succeeds
@@ -132,6 +140,7 @@ impl ResolvedProjectConfig {
                     .unwrap_or(DEFAULT_BLUE_GREEN_KEEP_SECS),
             ),
             run: file.run,
+            start_hint,
         }
     }
 
@@ -233,6 +242,34 @@ PORT = "5000"
         .unwrap();
         let cfg = ResolvedProjectConfig::load(dir.path()).unwrap();
         assert_eq!(cfg.health_check_url, None);
+    }
+
+    #[test]
+    fn test_start_hint_for_hardcoded_ports() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"start":"next start -p 4000"}}"#,
+        )
+        .unwrap();
+        let cfg = ResolvedProjectConfig::load(dir.path()).unwrap();
+        let hint = cfg.start_hint.unwrap();
+        assert_eq!(hint.port, 4000);
+        assert_eq!(hint.suggested_start, "npx next start -p $PORT");
+        // Detection itself is unchanged.
+        assert_eq!(cfg.start_command, "npm start");
+        // An explicit start command needs no hint.
+        std::fs::write(
+            dir.path().join("aegis.toml"),
+            "[build]
+start_command = \"node s.js\"
+",
+        )
+        .unwrap();
+        assert_eq!(
+            ResolvedProjectConfig::load(dir.path()).unwrap().start_hint,
+            None
+        );
     }
 
     #[test]

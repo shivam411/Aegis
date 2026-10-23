@@ -66,6 +66,19 @@ pub(crate) struct CutoverFailure {
     pub restored: Option<String>,
 }
 
+/// How long a port may take to be released by a process that was just
+/// stopped before a new release refuses to start on it.
+const PORT_RELEASE_GRACE: Duration = Duration::from_secs(3);
+
+/// Maps a failure to start a release process: a busy port is the
+/// operator's to fix (409), anything else is internal.
+pub(crate) fn start_error(e: anyhow::Error) -> ControlError {
+    match e.downcast_ref::<crate::ports::PortInUse>() {
+        Some(busy) => ControlError::FailedPrecondition(format!("Cannot start: {}", busy)),
+        None => ControlError::Internal(e),
+    }
+}
+
 fn validate_strategy(strategy: &str) -> ControlResult<()> {
     if SUPPORTED_STRATEGIES.contains(&strategy) {
         return Ok(());
@@ -189,6 +202,7 @@ impl ControlPlane {
             branch: req.branch.clone().unwrap_or_else(|| "main".into()),
             runtime: Some(config.runtime),
             source_dir: Some(dir.clone()),
+            source_subdir: None,
         })
         .await?;
         Ok(())
@@ -330,6 +344,12 @@ impl ControlPlane {
             project_id,
             deployment_id,
         };
+        // The app's deploy key (for SSH remotes; a GitHub HTTPS URL is
+        // cloned over SSH when there is one), and its subdirectory unless
+        // this deployment copies an explicitly given directory.
+        let ssh = self.ssh_auth(&project_id);
+        let source = crate::sources::with_deploy_key_url(source, ssh.is_some());
+        let explicit_dir = str_of("source_dir").or_else(|| str_of("working_dir"));
         let request = BuildRequest {
             project_id,
             deployment_id,
@@ -340,6 +360,11 @@ impl ControlPlane {
             log_path: self.deployment_log_path(project_id, deployment_id),
             overrides: project.settings.clone(),
             env_file_dirs: self.inner.settings.env_file_dirs.clone(),
+            ssh,
+            source_subdir: project
+                .source_subdir
+                .clone()
+                .filter(|_| explicit_dir.is_none()),
         };
         let output = match BuildPipeline::new(&self.inner.artifact_store, &reporter)
             .run(&request)
@@ -541,12 +566,20 @@ impl ControlPlane {
         proxied_port: Option<u16>,
     ) -> anyhow::Result<Option<u16>> {
         let spec = self.process_spec(project_id, process_id, dir, config, proxied_port)?;
+        let port = spec.env.get("PORT").and_then(|p| p.parse().ok());
+        // Never start next to another process on the same port: the new
+        // release would crash with EADDRINUSE while the other one answers
+        // its health check (see ports.rs).
+        if let Some(port) = port {
+            crate::ports::ensure_port_free(port, PORT_RELEASE_GRACE)
+                .await
+                .map_err(anyhow::Error::new)?;
+        }
         self.inner
             .process_release
             .lock()
             .unwrap()
             .insert(process_id, version.to_string());
-        let port = spec.env.get("PORT").and_then(|p| p.parse().ok());
         self.inner.process_ports.lock().unwrap().insert(
             process_id,
             crate::ProcessPort {
@@ -909,7 +942,18 @@ impl ControlPlane {
             }
             match &checker {
                 Some((checker, target)) => match checker.check_health(target).await {
-                    Ok(true) => return Ok(()),
+                    Ok(true) => {
+                        let url = health_url.as_deref().unwrap_or_default();
+                        return self
+                            .confirm_after_health(
+                                id,
+                                config,
+                                url,
+                                (info.pid, info.restart_count),
+                                window,
+                            )
+                            .await;
+                    }
                     Ok(false) => {}
                     Err(e) => return Err(format!("Health check misconfigured: {}", e)),
                 },
@@ -927,6 +971,82 @@ impl ControlPlane {
                 });
             }
             tokio::time::sleep(settings.health_poll_interval).await;
+        }
+    }
+
+    /// After a passing health check: the answer must have come from this
+    /// release (on Linux, the listening socket belongs to its process tree),
+    /// and the release must then stay up, without restarting, for the
+    /// liveness `window`. Otherwise it is not promoted.
+    async fn confirm_after_health(
+        &self,
+        id: &ProcessId,
+        config: &ResolvedProjectConfig,
+        health_url: &str,
+        // The process as it was before the passing probe was sent.
+        (pid, restarts): (Option<u32>, u32),
+        window: Duration,
+    ) -> Result<(), String> {
+        let same_process = |this: &Self| {
+            this.inner.supervisor.get(id).is_some_and(|info| {
+                matches!(info.status, ProcessStatus::Running)
+                    && info.pid == pid
+                    && info.restart_count == restarts
+            })
+        };
+        if let (Some(port), Some(root), false) = (
+            crate::ports::local_probe_port(health_url),
+            pid,
+            config.is_docker(),
+        ) {
+            // A release that is exiting has closed its descriptors while its
+            // socket may still be listed for a moment: look again before
+            // blaming another process, and report an exit as an exit (below).
+            for attempt in 0..3 {
+                let listener =
+                    tokio::task::spawn_blocking(move || crate::ports::listener_of(port, root))
+                        .await
+                        .unwrap_or(crate::ports::Listener::Unknown);
+                let crate::ports::Listener::Other(owner) = listener else {
+                    break;
+                };
+                if !same_process(self) {
+                    break;
+                }
+                if attempt == 2 {
+                    return Err(format!(
+                        "The health check on port {} was answered by another process ({}), not by the new release; stop that process or map a domain so each release gets its own port",
+                        port,
+                        owner.unwrap_or_else(|| "not visible to the daemon's user".into())
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        let passed = Instant::now();
+        loop {
+            match self.inner.supervisor.get(id) {
+                Some(info)
+                    if matches!(info.status, ProcessStatus::Running)
+                        && info.pid == pid
+                        && info.restart_count == restarts => {}
+                Some(info) => {
+                    let code = info
+                        .last_exit_code
+                        .map_or("a signal".to_string(), |c| format!("code {}", c));
+                    return Err(format!(
+                        "Process exited with {} {:.1}s after passing its health check (start command: {})",
+                        code,
+                        passed.elapsed().as_secs_f64(),
+                        config.start_command
+                    ));
+                }
+                None => return Err("Process disappeared after its health check".to_string()),
+            }
+            if passed.elapsed() >= window {
+                return Ok(());
+            }
+            tokio::time::sleep(self.inner.settings.health_poll_interval.min(window)).await;
         }
     }
 

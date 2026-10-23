@@ -106,6 +106,7 @@ pub(crate) async fn create_project(
             branch: req.branch.unwrap_or_default(),
             runtime: non_empty(req.runtime),
             source_dir: non_empty(req.source_dir).map(PathBuf::from),
+            source_subdir: non_empty(req.source_subdir),
         })
         .await?;
     Ok((StatusCode::CREATED, Json(project_view(&st, &project.id)?)))
@@ -507,12 +508,18 @@ pub(crate) async fn detect(
     State(st): State<AppState>,
     ApiJson(req): ApiJson<DetectRequest>,
 ) -> ApiResult<Json<DetectedDto>> {
+    let project = match non_empty(req.project) {
+        Some(key) => Some(st.control.resolve_project(&key)?),
+        None => None,
+    };
     let detected = st
         .control
-        .detect_source(
+        .detect_source_for(
+            project.as_ref(),
             non_empty(req.source_dir).map(PathBuf::from),
             non_empty(req.repository_url),
             non_empty(req.branch),
+            non_empty(req.source_subdir),
         )
         .await?;
     Ok(Json(detected.into()))

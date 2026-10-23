@@ -30,6 +30,7 @@ aegis-config = { path = "../config" }
 aegis-update = { path = "../update" }
 async-trait = { workspace = true }
 aegis-engine = { path = "../../runtime/engine" }
+aegis-ssh = { path = "../ssh" }
 tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]

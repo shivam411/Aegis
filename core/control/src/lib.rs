@@ -11,10 +11,13 @@ mod deploy;
 mod docker;
 mod domains;
 mod env;
+pub mod ports;
 mod process;
 mod resources;
 mod rollout;
+pub mod scan;
 mod secrets;
+mod sources;
 
 use aegis_artifact_store::ArtifactStore;
 use aegis_event_store::EventStore;
@@ -40,6 +43,8 @@ pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, 
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 pub use rollout::{InstanceView, StandbyView};
+pub use scan::{ImportApp, ImportedApp, ScanCandidate, ScanResult};
+pub use sources::{AccessCheck, DeployKeyInfo};
 
 tokio::task_local! {
     static ACTOR: String;
@@ -116,6 +121,11 @@ pub struct ControlSettings {
     /// Directories apps' env files may be read from (`[apps]
     /// env_file_dirs`); empty turns env files off.
     pub env_file_dirs: Vec<PathBuf>,
+    /// Directories "Scan a folder" may look in (`[apps] import_dirs`, plus
+    /// `env_file_dirs`); empty turns scanning off.
+    pub import_dirs: Vec<PathBuf>,
+    /// Host keys for git servers other than GitHub (`[git] known_hosts_file`).
+    pub known_hosts_file: Option<PathBuf>,
 }
 
 impl ControlSettings {
@@ -130,6 +140,8 @@ impl ControlSettings {
             metrics_retention: Duration::from_secs(7 * 24 * 3600),
             backup: backup::BackupSettings::default(),
             env_file_dirs: Vec::new(),
+            import_dirs: Vec::new(),
+            known_hosts_file: None,
         }
     }
 }
@@ -143,6 +155,8 @@ pub struct RegisterProject {
     pub branch: String,
     pub runtime: Option<String>,
     pub source_dir: Option<PathBuf>,
+    /// Build and run only this subdirectory of the source (monorepos).
+    pub source_subdir: Option<String>,
 }
 
 /// A project together with the live state of its current process.
@@ -228,6 +242,8 @@ impl ControlPlane {
         );
 
         std::fs::create_dir_all(&settings.data_dir).map_err(anyhow::Error::from)?;
+        // Deploy key files left behind by a crash.
+        aegis_ssh::clean_run_dir(&sources::ssh_run_dir(&settings.data_dir));
         // The key lives in the data directory, apart from the database.
         let secrets = aegis_secrets::SecretStore::open(
             store.pool().clone(),
@@ -407,6 +423,14 @@ impl ControlPlane {
             aegis_builder::validate_git_ref(&req.branch)
                 .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
         }
+        let source_subdir = match req.source_subdir.as_deref().map(str::trim) {
+            Some(sub) if !sub.is_empty() => {
+                aegis_builder::validate_subdir(sub)
+                    .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+                Some(sub.trim_matches('/').to_string())
+            }
+            _ => None,
+        };
         let branch = if req.branch.is_empty() {
             "main".to_string()
         } else {
@@ -421,6 +445,7 @@ impl ControlPlane {
                 "branch": branch,
                 "runtime": req.runtime,
                 "source_dir": source_dir,
+                "source_subdir": source_subdir,
             }),
         )
         .await?;
@@ -517,6 +542,28 @@ impl ControlPlane {
         repository_url: Option<String>,
         branch: Option<String>,
     ) -> ControlResult<aegis_engine::ResolvedProjectConfig> {
+        self.detect_source_for(None, source_dir, repository_url, branch, None)
+            .await
+    }
+
+    /// [`ControlPlane::detect_source`] for a registered project: clones with
+    /// its deploy key and looks inside `subdir` (default: the project's).
+    pub async fn detect_source_for(
+        &self,
+        project: Option<&ProjectState>,
+        source_dir: Option<PathBuf>,
+        repository_url: Option<String>,
+        branch: Option<String>,
+        subdir: Option<String>,
+    ) -> ControlResult<aegis_engine::ResolvedProjectConfig> {
+        let subdir = subdir
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| project.and_then(|p| p.source_subdir.clone()));
+        if let Some(sub) = &subdir {
+            aegis_builder::validate_subdir(sub)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
+        let ssh = project.and_then(|p| self.ssh_auth(&p.id));
         let source = match (source_dir, repository_url) {
             (Some(_), Some(_)) => {
                 return Err(ControlError::InvalidArgument(
@@ -530,7 +577,10 @@ impl ControlPlane {
                 let reference = branch.unwrap_or_else(|| "main".into());
                 aegis_builder::validate_git_ref(&reference)
                     .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-                aegis_builder::SourceSpec::Git { url, reference }
+                sources::with_deploy_key_url(
+                    aegis_builder::SourceSpec::Git { url, reference },
+                    ssh.is_some(),
+                )
             }
             (None, None) => {
                 return Err(ControlError::InvalidArgument(
@@ -544,7 +594,7 @@ impl ControlPlane {
             .data_dir
             .join("tmp")
             .join(format!("detect-{}", aegis_types::EventId::new()));
-        aegis_builder::detect_source(&source, &scratch)
+        aegis_builder::detect_source(&source, &scratch, ssh.as_ref(), subdir.as_deref())
             .await
             .map_err(|e| {
                 ControlError::FailedPrecondition(format!("Could not read the source: {}", e))

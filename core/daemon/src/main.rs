@@ -237,6 +237,7 @@ fn validate_config(config: &Config) -> Result<(), anyhow::Error> {
     config.backup.validate()?;
     config.update.validate()?;
     config.apps.validate()?;
+    config.git.validate()?;
     aegis_update::api_base_override()?;
     Ok(())
 }
@@ -885,6 +886,18 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
         }
     }
     settings.env_file_dirs = config.apps.env_file_dirs.clone();
+    for dir in &config.apps.import_dirs {
+        if !dir.is_dir() {
+            tracing::warn!(dir = %dir.display(), "apps.import_dirs: not a directory; nothing can be scanned there");
+        }
+    }
+    settings.import_dirs = config.apps.import_dirs.clone();
+    if let Some(file) = &config.git.known_hosts_file {
+        if let Err(e) = std::fs::metadata(file) {
+            tracing::warn!(file = %file.display(), error = %e, "git.known_hosts_file can't be read; clones with a deploy key will fail until it can");
+        }
+    }
+    settings.known_hosts_file = config.git.known_hosts_file.clone();
     let control = ControlPlane::new(event_store.clone(), ProcessSupervisor::new(), settings)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;

@@ -30,7 +30,7 @@ Each person signs in with their own account, so the audit log records who did wh
 | :--- | :--- |
 | **viewer** | Read everything except credentials: apps, releases, deployments, logs, events, metrics, domains. View the `aegis.toml` an app would get. Change their own password. |
 | **deployer** | Also deploy, roll back, and start, stop or restart apps. |
-| **admin** | Everything: create apps, change settings, variables, secrets, domains, schedules, webhooks and limits; manage API tokens, users and backups. |
+| **admin** | Everything: create apps, change settings, variables, secrets, domains, schedules, webhooks and limits; manage deploy keys, scan server folders and import apps; manage API tokens, users and backups. |
 
 - Admins manage users in the dashboard (**Account → Users**) or with `GET/POST /api/v1/users`, `PUT/DELETE /api/v1/users/{name}`. New users and admin password resets get a random password that is shown once.
 - A role change applies to the user's open sessions immediately. A password reset or deletion signs them out.
@@ -148,7 +148,30 @@ What this trusts, and the risks:
 2. Signed in, call `POST /api/v1/projects/{project}/webhook`. It returns the payload path and a secret, shown once. Calling it again replaces the secret.
 3. In GitHub, add a webhook with payload URL `https://aegis.example.com/hooks/github/<project-id>`, content type `application/json`, that secret, and the "push" event.
 
-Only pushes to the project's branch deploy, and always from the project's **configured** `repository_url` at the pushed commit, never a URL from the payload. Deliveries without a valid `X-Hub-Signature-256` get `401`. Redeliveries of the same `X-GitHub-Delivery` are ignored, and so are pushes for commits that already have a release, so a captured signed payload can't be replayed to roll the app back. Repository URLs that git could treat as options or command-running remote helpers (`ext::`) are rejected. Private repositories need credentials the `aegis` user can use, such as an SSH deploy key in `/var/lib/aegis/.ssh` with an `ssh://` URL.
+Only pushes to the project's branch deploy, and always from the project's **configured** `repository_url` at the pushed commit, never a URL from the payload. Deliveries without a valid `X-Hub-Signature-256` get `401`. Redeliveries of the same `X-GitHub-Delivery` are ignored, and so are pushes for commits that already have a release, so a captured signed payload can't be replayed to roll the app back. Repository URLs that git could treat as options or command-running remote helpers (`ext::`) are rejected. Private repositories are cloned with the app's [deploy key](#deploy-keys), for webhook and scheduled deployments too.
+
+## Deploy keys
+
+A private repository is cloned with a **per-app SSH deploy key** (dashboard: Settings → Repository, or the new app wizard when Aegis can't read a repository; API: `POST/GET/DELETE /api/v1/projects/{p}/deploy-key`, `POST …/deploy-key/test`). The trust model:
+
+- **One key per app, read-only.** Aegis generates an Ed25519 key pair with the RustCrypto `ssh-key` crate (no `ssh-keygen`, no shell). You add the public key to that one repository's deploy keys with *Allow write access* **unticked**, so the key can read one repository and nothing else. Replacing or deleting the key in Aegis doesn't remove it from GitHub; do that there too.
+- **The private key never leaves the daemon.** It is sealed like secrets (ChaCha20-Poly1305 with `<data_dir>/secrets.key`, bound to the project so a sealed key can't be moved to another app) in the database's `deploy_keys` table. The API returns only the public key, its `SHA256:` fingerprint and the creation time, for signed-in admins only (API tokens and other roles get `403`, even to read). Events (`DeployKeyCreated`, `DeployKeyDeleted`) carry the fingerprint, never key material; releases, build logs and the dashboard never contain it.
+- **On disk only while git runs.** For each clone or access test the key is decrypted and written to a 0600 file in a fresh 0700 directory `<data_dir>/run/ssh/key-<random>/`, and git runs with `GIT_SSH_COMMAND="ssh -i <that file> -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<aegis-managed known_hosts>"`: only paths appear on the command line and in the environment, never key material. The directory is deleted when the command ends, whether it succeeded or failed, and leftovers from a crash are deleted at startup. While it exists, the app's own processes (which run as the same `aegis` user) could read it; they can already read the database and `secrets.key`, so this adds nothing they couldn't get.
+- **Host keys are pinned, never trusted on first use.** The `known_hosts` file of each git command holds GitHub's published host keys (built into the binary; [GitHub's SSH key fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)) plus the contents of `[git] known_hosts_file`, if set. Any other host fails with `Host key verification failed`, and *Test access* explains how to add it.
+- **Which URLs use it.** SSH remotes (`ssh://…`, `git@host:owner/repo.git`). A GitHub HTTPS URL is cloned over SSH (`git@github.com:owner/repo.git`) when the app has a key; other HTTPS URLs and local paths never use it. The existing URL hardening (no `ext::`/remote helpers, no leading `-`, no whitespace) still applies.
+- **Backups** contain the database (with the sealed keys) and `secrets.key`, so a backup can decrypt every deploy key (as it can every secret): keep downloads safe. Losing `secrets.key` makes the keys unreadable; generate new ones.
+- **Access checks.** *Test access* runs `git ls-remote` with the key (20 s timeout) and shows git's own error output (which never contains the key). The wizard's and the scan's visibility check (`POST /api/v1/apps/check-access`) runs an unauthenticated `git ls-remote https://github.com/<owner>/<repo>.git` (no credential helpers, no prompts) and only accepts GitHub repository URLs, so it can't be pointed at other hosts.
+
+## Scanning folders on the server
+
+*Scan a folder on the server* (`POST /api/v1/apps/scan`) and *Import selected* (`POST /api/v1/apps/import`) are for signed-in admins only. They only look inside the folders listed in `[apps] import_dirs` or `[apps] env_file_dirs` (empty: off), after resolving symbolic links; a link leading outside them is not followed. A scan goes two levels deep and looks at no more than 5000 entries. It never runs git or any other program, and never writes. Per app folder it reads, read-only:
+
+- the files the runtime detector looks at (`package.json`, `aegis.toml`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `go.mod`, `pom.xml`, `build.gradle`, `Dockerfile`);
+- `.git/HEAD` and `.git/config` (parsed directly, so root-owned checkouts don't need `safe.directory`), for the `origin` URL and the branch. Credentials embedded in the URL (`https://token@github.com/…`) are removed and never returned or imported;
+- the app's `.env`, for **variable names only**; values are never returned, logged or stored. An unreadable `.env` is reported with the `chgrp`/`chmod` fix;
+- whether something listens on the app's port (a local bind and connect test, plus `/proc/net/tcp*` and `/proc/<pid>/fd` to name the process when the daemon's user can see it).
+
+Importing registers the selected apps (`ProjectCreated`, `ProjectSettingsUpdated`, and one `AppsImported` with their ids and names) without deploying them.
 
 ## The service (`install.sh --server`)
 

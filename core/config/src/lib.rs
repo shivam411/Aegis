@@ -54,6 +54,8 @@ pub struct Config {
     pub update: UpdateConfig,
     #[serde(default)]
     pub apps: AppsConfig,
+    #[serde(default)]
+    pub git: GitConfig,
 }
 
 /// `[apps]`: settings for every app.
@@ -64,26 +66,62 @@ pub struct AppsConfig {
     /// in, after symbolic links are resolved. Empty (the default) turns env
     /// files off.
     pub env_file_dirs: Vec<PathBuf>,
+    /// Folders the dashboard's "Scan a folder on the server" may look in
+    /// for apps to import (`env_file_dirs` are allowed too). Empty (the
+    /// default, with no `env_file_dirs`) turns scanning off.
+    pub import_dirs: Vec<PathBuf>,
 }
 
 impl AppsConfig {
     pub fn validate(&self) -> Result<(), anyhow::Error> {
-        for dir in &self.env_file_dirs {
-            let text = dir.to_string_lossy();
-            if !dir.is_absolute()
-                || dir
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
-                anyhow::bail!(
-                    "apps.env_file_dirs: '{}' must be an absolute path without '..'",
-                    text
-                );
+        for (key, dirs) in [
+            ("env_file_dirs", &self.env_file_dirs),
+            ("import_dirs", &self.import_dirs),
+        ] {
+            for dir in dirs {
+                let text = dir.to_string_lossy();
+                if !dir.is_absolute()
+                    || dir
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    anyhow::bail!(
+                        "apps.{}: '{}' must be an absolute path without '..'",
+                        key,
+                        text
+                    );
+                }
+                if dir.parent().is_none() {
+                    anyhow::bail!(
+                        "apps.{}: '{}' would allow every file on the server; name the directories that hold your apps",
+                        key,
+                        text
+                    );
+                }
             }
-            if dir.parent().is_none() {
+        }
+        Ok(())
+    }
+}
+
+/// `[git]`: how Aegis talks to git servers.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct GitConfig {
+    /// A file in `known_hosts` format with the SSH host keys of git servers
+    /// other than GitHub (whose keys are built in). Deploy keys are only
+    /// used with hosts listed there; unknown hosts are refused, never
+    /// trusted on first use.
+    pub known_hosts_file: Option<PathBuf>,
+}
+
+impl GitConfig {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if let Some(path) = &self.known_hosts_file {
+            if !path.is_absolute() {
                 anyhow::bail!(
-                    "apps.env_file_dirs: '{}' would allow every file on the server; name the directories that hold env files",
-                    text
+                    "git.known_hosts_file: '{}' must be an absolute path",
+                    path.display()
                 );
             }
         }
@@ -1387,10 +1425,41 @@ strategy = "GracefulSwitch"
         for bad in ["relative/dir", "/opt/../etc", "/"] {
             let apps = AppsConfig {
                 env_file_dirs: vec![PathBuf::from(bad)],
+                ..Default::default()
             };
             assert!(apps.validate().is_err(), "{bad}");
+            let apps = AppsConfig {
+                import_dirs: vec![PathBuf::from(bad)],
+                ..Default::default()
+            };
+            let err = apps.validate().unwrap_err().to_string();
+            assert!(err.contains("import_dirs"), "{err}");
         }
         assert!(toml::from_str::<Config>("[apps]\nenv_dirs = []\n").is_err());
+    }
+
+    #[test]
+    fn test_apps_import_dirs_and_git_known_hosts() {
+        let config: Config = toml::from_str(
+            "[apps]\nimport_dirs = [\"/opt/github\"]\n[git]\nknown_hosts_file = \"/etc/aegis/known_hosts\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.apps.import_dirs, vec![PathBuf::from("/opt/github")]);
+        assert_eq!(
+            config.git.known_hosts_file,
+            Some(PathBuf::from("/etc/aegis/known_hosts"))
+        );
+        assert!(Config::default().apps.import_dirs.is_empty());
+        assert!(Config::default().git.known_hosts_file.is_none());
+        if cfg!(unix) {
+            assert!(config.apps.validate().is_ok());
+            assert!(config.git.validate().is_ok());
+        }
+        let relative = GitConfig {
+            known_hosts_file: Some(PathBuf::from("known_hosts")),
+        };
+        assert!(relative.validate().is_err());
+        assert!(toml::from_str::<Config>("[git]\nknown_hosts = \"/x\"\n").is_err());
     }
 
     #[test]

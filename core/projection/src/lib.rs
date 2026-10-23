@@ -20,6 +20,9 @@ pub struct ProjectState {
     pub runtime: Option<String>,
     /// Local directory deployments copy from when no other source is given.
     pub source_dir: Option<String>,
+    /// Build and run only this subdirectory of the source (monorepos).
+    #[serde(default)]
+    pub source_subdir: Option<String>,
     /// Version of the release that is currently live.
     pub current_release: Option<String>,
     /// The process serving the current release.
@@ -262,6 +265,7 @@ impl ProjectionEngine {
                             .unwrap_or(at),
                         runtime: string_field(&payload, "runtime"),
                         source_dir: string_field(&payload, "source_dir"),
+                        source_subdir: string_field(&payload, "source_subdir"),
                         current_release: previous.as_ref().and_then(|p| p.current_release.clone()),
                         current_process: previous.as_ref().and_then(|p| p.current_process),
                         schedule: previous.as_ref().and_then(|p| p.schedule.clone()),
