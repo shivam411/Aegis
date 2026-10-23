@@ -496,6 +496,28 @@ install_binaries() {
         err "No Aegis binaries found in ${src}."
     fi
     ok "Installed ${found} binaries ${version} to ${target}/"
+    link_cli_alias "${target}"
+}
+
+# The CLI binary is aegis-cli; the docs call it `aegis`. A relative link
+# keeps working when an upgrade swaps aegis-cli in place (by rename).
+# Something else already named `aegis` is left alone.
+link_cli_alias() {
+    local target="$1" link current
+    link="${target}/aegis"
+    [ -f "${target}/aegis-cli" ] || return 0
+    if [ -L "${link}" ]; then
+        current="$(readlink "${link}")"
+        case "${current}" in
+            aegis-cli|*/aegis-cli) ;;
+            *) warn "${link} points to ${current}, not aegis-cli; leaving it. Run aegis-cli instead."; return 0 ;;
+        esac
+    elif [ -e "${link}" ]; then
+        warn "${link} already exists and is not Aegis; leaving it. Run aegis-cli instead of aegis."
+        return 0
+    fi
+    ln -sfn aegis-cli "${link}"
+    ok "Linked ${link} -> aegis-cli (run the CLI as aegis or aegis-cli)"
 }
 
 # ──────────────────────────────────────────────
@@ -661,10 +683,11 @@ main() {
     echo "  Get started:"
     echo ""
     echo -e "    ${CYAN}aegis-daemon${NC}              Start the daemon"
-    echo -e "    ${CYAN}aegis-cli status${NC}          Check daemon health"
-    echo -e "    ${CYAN}aegis-cli init${NC}            Initialize a project"
-    echo -e "    ${CYAN}aegis-cli deploy${NC}          Deploy an application"
+    echo -e "    ${CYAN}aegis status${NC}              Check daemon health"
+    echo -e "    ${CYAN}aegis init${NC}                Initialize a project"
+    echo -e "    ${CYAN}aegis deploy${NC}              Deploy an application"
     echo ""
+    echo "  'aegis' is a link to the aegis-cli binary; both names work."
     echo "  On a server, install as a system service instead: install.sh --server"
     echo "  Documentation: https://shivam411.github.io/Aegis/"
     echo ""

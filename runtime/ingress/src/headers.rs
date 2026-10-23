@@ -57,16 +57,135 @@ pub fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: Option<&HeaderValue>) 
     }
 }
 
+/// What the app is told about the original request through
+/// `X-Forwarded-Proto` and `X-Forwarded-Host`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forwarded {
+    /// `"http"` or `"https"`.
+    pub proto: &'static str,
+    /// The host (with an optional port) the client asked for.
+    pub host: String,
+}
+
+impl Forwarded {
+    /// Works out the forwarded values for a request that reached the proxy
+    /// over `proto` with `host` (from the URI or the `Host` header).
+    ///
+    /// When the peer is a trusted front proxy (`trusted`), the incoming
+    /// `X-Forwarded-Proto` and `X-Forwarded-Host` are used if each holds
+    /// exactly one well-formed value; anything else falls back to the values
+    /// computed here. For any other peer the incoming headers are ignored,
+    /// so clients cannot spoof them.
+    pub fn from_request(
+        headers: &HeaderMap,
+        trusted: bool,
+        proto: &'static str,
+        host: &str,
+    ) -> Self {
+        let mut forwarded = Self {
+            proto,
+            host: host.to_string(),
+        };
+        if trusted {
+            if let Some(proto) = single_value(headers, "x-forwarded-proto").and_then(parse_proto) {
+                forwarded.proto = proto;
+            }
+            if let Some(host) = single_value(headers, "x-forwarded-host").filter(|h| valid_host(h))
+            {
+                forwarded.host = host.to_ascii_lowercase();
+            }
+        }
+        forwarded
+    }
+
+    pub fn is_https(&self) -> bool {
+        self.proto == "https"
+    }
+}
+
+/// The value of a header that appears exactly once, as a single value (no
+/// comma-separated list), trimmed.
+fn single_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let mut values = headers.get_all(name).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let value = value.to_str().ok()?.trim();
+    (!value.is_empty() && !value.contains(',')).then_some(value)
+}
+
+fn parse_proto(value: &str) -> Option<&'static str> {
+    if value.eq_ignore_ascii_case("https") {
+        Some("https")
+    } else if value.eq_ignore_ascii_case("http") {
+        Some("http")
+    } else {
+        None
+    }
+}
+
+/// A host name or IP literal with an optional port: `example.com`,
+/// `example.com:8443`, `10.0.0.1:80`, `[::1]:8080`.
+pub fn valid_host(value: &str) -> bool {
+    if value.is_empty() || value.len() > 261 {
+        return false;
+    }
+    let (name, port) = if let Some(rest) = value.strip_prefix('[') {
+        let Some((addr, after)) = rest.split_once(']') else {
+            return false;
+        };
+        if addr.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        match after.strip_prefix(':') {
+            _ if after.is_empty() => return true,
+            Some(port) => (None, Some(port)),
+            None => return false,
+        }
+    } else {
+        match value.split_once(':') {
+            Some((name, port)) => (Some(name), Some(port)),
+            None => (Some(value), None),
+        }
+    };
+    if let Some(port) = port {
+        let ok = !port.is_empty()
+            && port.len() <= 5
+            && port.bytes().all(|b| b.is_ascii_digit())
+            && port.parse::<u16>().is_ok_and(|p| p != 0);
+        if !ok {
+            return false;
+        }
+    }
+    let Some(name) = name else {
+        return true;
+    };
+    name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
 /// Prepares a client's request headers for the upstream app:
 /// - hop-by-hop headers are removed (the upgrade handshake is kept for upgrades);
 /// - `Host` is the host the client asked for;
-/// - `X-Forwarded-For` gets the client address appended (earlier entries
-///   are whatever the client sent, so apps should trust only the last one);
-/// - `X-Forwarded-Proto` and `X-Forwarded-Host` are set (never passed through).
+/// - `X-Forwarded-For` gets the peer address appended (earlier entries are
+///   whatever the client or a front proxy sent, so apps should trust only
+///   the entries added by proxies they trust);
+/// - `X-Forwarded-Proto` and `X-Forwarded-Host` are set from `forwarded`.
+///   Incoming values are dropped; [`Forwarded::from_request`] decides whether
+///   a trusted front proxy's values are kept.
 pub fn prepare_request_headers(
     headers: &mut HeaderMap,
     client_ip: IpAddr,
-    proto: &str,
+    forwarded: &Forwarded,
     host: &str,
     upgrade: Option<&HeaderValue>,
 ) {
@@ -83,18 +202,20 @@ pub fn prepare_request_headers(
     if !chain.is_empty() {
         chain.push_str(", ");
     }
-    chain.push_str(&client_ip.to_string());
+    chain.push_str(&client_ip.to_canonical().to_string());
     headers.remove("x-forwarded-for");
     if let Ok(value) = HeaderValue::from_str(&chain) {
         headers.insert("x-forwarded-for", value);
     }
     headers.insert(
         "x-forwarded-proto",
-        HeaderValue::from_str(proto).unwrap_or(HeaderValue::from_static("http")),
+        HeaderValue::from_static(forwarded.proto),
     );
     headers.remove("x-forwarded-host");
+    if let Ok(value) = HeaderValue::from_str(&forwarded.host) {
+        headers.insert("x-forwarded-host", value);
+    }
     if let Ok(value) = HeaderValue::from_str(host) {
-        headers.insert("x-forwarded-host", value.clone());
         headers.insert(header::HOST, value);
     }
 }
@@ -125,6 +246,147 @@ mod tests {
         headers
     }
 
+    /// Prepares headers as for a request from an untrusted peer.
+    fn prep(
+        headers: &mut HeaderMap,
+        ip: IpAddr,
+        proto: &'static str,
+        host: &str,
+        upgrade: Option<&HeaderValue>,
+    ) {
+        let forwarded = Forwarded::from_request(headers, false, proto, host);
+        prepare_request_headers(headers, ip, &forwarded, host, upgrade);
+    }
+
+    /// Prepares headers as the proxy does, with the peer trusted or not.
+    fn prep_from(headers: &mut HeaderMap, peer: &str, trusted: bool) -> Forwarded {
+        let forwarded = Forwarded::from_request(headers, trusted, "http", "app.example.com");
+        prepare_request_headers(
+            headers,
+            peer.parse().unwrap(),
+            &forwarded,
+            "app.example.com",
+            None,
+        );
+        forwarded
+    }
+
+    #[test]
+    fn trusted_proxy_headers_are_passed_through() {
+        let mut headers = map(&[
+            ("host", "app.example.com"),
+            ("x-forwarded-for", "203.0.113.9"),
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "App.Example.com"),
+        ]);
+        let forwarded = prep_from(&mut headers, "127.0.0.1", true);
+        assert!(forwarded.is_https());
+        assert_eq!(headers["x-forwarded-proto"], "https");
+        assert_eq!(headers["x-forwarded-host"], "app.example.com");
+        assert_eq!(headers["x-forwarded-for"], "203.0.113.9, 127.0.0.1");
+        assert_eq!(headers["host"], "app.example.com");
+
+        // A port and upper-case scheme are fine.
+        let mut headers = map(&[
+            ("x-forwarded-proto", "HTTPS"),
+            ("x-forwarded-host", "app.example.com:8443"),
+        ]);
+        prep_from(&mut headers, "::1", true);
+        assert_eq!(headers["x-forwarded-proto"], "https");
+        assert_eq!(headers["x-forwarded-host"], "app.example.com:8443");
+        assert_eq!(headers["x-forwarded-for"], "::1");
+
+        // Missing headers from a trusted proxy: computed values.
+        let mut headers = map(&[]);
+        let forwarded = prep_from(&mut headers, "127.0.0.1", true);
+        assert!(!forwarded.is_https());
+        assert_eq!(headers["x-forwarded-proto"], "http");
+        assert_eq!(headers["x-forwarded-host"], "app.example.com");
+    }
+
+    #[test]
+    fn untrusted_peers_cannot_spoof_forwarded_headers() {
+        let mut headers = map(&[
+            ("x-forwarded-for", "10.9.9.9"),
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "evil.example"),
+        ]);
+        let forwarded = prep_from(&mut headers, "198.51.100.7", false);
+        assert!(!forwarded.is_https());
+        assert_eq!(headers["x-forwarded-proto"], "http");
+        assert_eq!(headers["x-forwarded-host"], "app.example.com");
+        // The spoofed entry stays, but the real peer is always appended last.
+        assert_eq!(headers["x-forwarded-for"], "10.9.9.9, 198.51.100.7");
+    }
+
+    #[test]
+    fn invalid_values_from_a_trusted_proxy_fall_back() {
+        for (proto, host) in [
+            ("ftp", "evil example"),
+            ("https, http", "a.example.com, b.example.com"),
+            ("", ""),
+            ("javascript", "a.example.com/path"),
+            ("http s", "a.example.com:0"),
+            ("httpss", "a.example.com:99999"),
+            ("https\u{7f}", "user@a.example.com"),
+            ("ws", "-bad.example.com"),
+            ("http", "[::1"),
+        ] {
+            let Ok(proto_value) = HeaderValue::from_str(proto) else {
+                continue;
+            };
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-proto", proto_value);
+            headers.insert("x-forwarded-host", HeaderValue::from_str(host).unwrap());
+            prep_from(&mut headers, "127.0.0.1", true);
+            assert_eq!(headers["x-forwarded-proto"], "http", "{proto:?}");
+            assert_eq!(headers["x-forwarded-host"], "app.example.com", "{host:?}");
+        }
+        // The header repeated on two lines is ambiguous: fall back.
+        let mut headers = map(&[
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "a.example.com"),
+            ("x-forwarded-host", "b.example.com"),
+        ]);
+        let forwarded = prep_from(&mut headers, "127.0.0.1", true);
+        assert!(!forwarded.is_https());
+        assert_eq!(headers["x-forwarded-host"], "app.example.com");
+        assert_eq!(headers.get_all("x-forwarded-proto").iter().count(), 1);
+        assert_eq!(headers.get_all("x-forwarded-host").iter().count(), 1);
+    }
+
+    #[test]
+    fn host_validation() {
+        for good in [
+            "example.com",
+            "a.example.com:8443",
+            "localhost",
+            "10.0.0.1:80",
+            "[::1]",
+            "[::1]:8080",
+            "my_host.internal",
+        ] {
+            assert!(valid_host(good), "{good}");
+        }
+        for bad in [
+            "",
+            "a..example.com",
+            "example.com:",
+            "example.com:0",
+            "example.com:65536",
+            "example.com:80:80",
+            "[::1]x",
+            "[nope]:80",
+            "a b.example.com",
+            "a.example.com/x",
+            "-a.example.com",
+            &"a".repeat(64),
+        ] {
+            assert!(!valid_host(bad), "{bad}");
+        }
+    }
+
     #[test]
     fn strips_hop_by_hop_and_connection_named_headers() {
         let mut headers = map(&[
@@ -137,7 +399,7 @@ mod tests {
             ("accept", "text/html"),
             ("cookie", "a=b"),
         ]);
-        prepare_request_headers(
+        prep(
             &mut headers,
             "203.0.113.9".parse().unwrap(),
             "https",
@@ -171,7 +433,7 @@ mod tests {
             ("x-forwarded-host", "evil.example"),
             ("host", "app.example.com:8080"),
         ]);
-        prepare_request_headers(
+        prep(
             &mut headers,
             "::1".parse().unwrap(),
             "http",
@@ -197,7 +459,7 @@ mod tests {
         ]);
         let upgrade = upgrade_protocol(&headers);
         assert_eq!(upgrade.as_ref().unwrap(), "websocket");
-        prepare_request_headers(
+        prep(
             &mut headers,
             "127.0.0.1".parse().unwrap(),
             "http",

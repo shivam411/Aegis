@@ -175,8 +175,9 @@ export const HELP = {
   },
   'app.secrets': {
     title: 'Secrets',
-    summary: 'Environment variables stored encrypted on the server and passed to the app when it starts. Values can be replaced but never read back. A running app picks up a change when it restarts.',
+    summary: 'Environment variables stored encrypted on the server and passed to the app when it starts. Values can be replaced but never read back. A running app picks up a change when it restarts. Secrets are not available to the build command: anything the build needs (such as NEXT_PUBLIC_* variables) goes in Variables.',
     controls: [
+      ['Value', 'Saved exactly as typed or pasted, including line breaks, so a PEM private key or certificate can be pasted as it is. The field is masked; Show reveals it while you edit (where the browser supports masking).'],
       ['Save secret', 'Adds or replaces a secret, then offers to restart the app.'],
       ['Replace / Delete', 'Fills the form to set a new value, or removes the secret.'],
     ],

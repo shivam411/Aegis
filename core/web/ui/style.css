@@ -301,6 +301,9 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; }
+textarea.secret-input { resize: vertical; white-space: pre; overflow-x: auto; }
+textarea.secret-input.masked { -webkit-text-security: disc; }
+.field-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 .choice { display: flex; gap: 8px; flex-wrap: wrap; }
 .choice label {

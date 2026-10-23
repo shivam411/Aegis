@@ -115,6 +115,11 @@ struct Proxy {
 }
 
 async fn proxy() -> Proxy {
+    proxy_with(|_| {}).await
+}
+
+/// A proxy with its configuration adjusted by `tweak`.
+async fn proxy_with(tweak: impl FnOnce(&mut IngressConfig)) -> Proxy {
     let certs = tempfile::TempDir::new().unwrap();
     let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let https = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -122,6 +127,7 @@ async fn proxy() -> Proxy {
     config.http_port = http.local_addr().unwrap().port();
     config.https_port = https.local_addr().unwrap().port();
     config.upstream_timeout = Duration::from_secs(5);
+    tweak(&mut config);
     let ingress = Ingress::new(config.clone());
     let (stop, rx) = tokio::sync::watch::channel(false);
     tokio::spawn(ingress.clone().serve_http(http, stopped(&rx)));
@@ -561,4 +567,222 @@ async fn acme_domains_without_acme_are_reported() {
     assert_eq!(all.routes[0].project_id.as_deref(), Some("p"));
     // Nothing is due without ACME settings, and maintenance makes no requests.
     assert!(p.ingress.maintain().await.is_empty());
+}
+
+/// A self-signed certificate for `domain`, written to files.
+fn cert_files(domain: &str) -> (tempfile::TempDir, DomainRoute) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec![domain.to_string()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let (cert_path, key_path) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
+    std::fs::write(&cert_path, cert.pem()).unwrap();
+    std::fs::write(&key_path, key.serialize_pem()).unwrap();
+    let route = DomainRoute {
+        target: Target::Project("pt".into()),
+        tls: TlsMode::Files,
+        cert_path: Some(cert_path),
+        key_path: Some(key_path),
+    };
+    (dir, route)
+}
+
+async fn get_with(port: u16, host: &str, path: &str, extra: &str) -> Reply {
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    exchange(
+        stream,
+        format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{extra}Connection: close\r\n\r\n")
+            .as_bytes(),
+    )
+    .await
+}
+
+fn location(reply: &Reply) -> String {
+    reply
+        .head
+        .lines()
+        .find_map(|l| {
+            let (name, value) = l.split_once(':')?;
+            name.eq_ignore_ascii_case("location")
+                .then(|| value.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn trusted_front_proxy_headers_are_passed_through() {
+    let p = proxy_with(|c| {
+        c.trusted_proxies = vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()];
+    })
+    .await;
+    let a = echo_upstream("a").await;
+    p.ingress
+        .set_domain("a.example.com", DomainRoute::project("pa", TlsMode::Off));
+    p.ingress.set_upstream("pa", Some(a));
+
+    // What nginx sends after terminating TLS.
+    let r = get_with(
+        p.http_port,
+        "a.example.com",
+        "/",
+        "X-Forwarded-For: 203.0.113.9\r\nX-Forwarded-Proto: https\r\nX-Forwarded-Host: a.example.com\r\n",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert!(r.body.contains("proto=https\n"), "{}", r.body);
+    assert!(r.body.contains("xfhost=a.example.com\n"), "{}", r.body);
+    assert!(
+        r.body.contains("xff=203.0.113.9, 127.0.0.1\n"),
+        "{}",
+        r.body
+    );
+    assert!(r.body.contains("host=a.example.com\n"), "{}", r.body);
+
+    // Malformed values are not passed on, even from a trusted proxy.
+    let r = get_with(
+        p.http_port,
+        "a.example.com",
+        "/",
+        "X-Forwarded-Proto: gopher\r\nX-Forwarded-Host: bad host\r\n",
+    )
+    .await;
+    assert!(r.body.contains("proto=http\n"), "{}", r.body);
+    assert!(r.body.contains("xfhost=a.example.com\n"), "{}", r.body);
+
+    // A domain with a certificate: a request the front proxy marks as
+    // HTTPS is served, not redirected (no loop behind nginx).
+    let (_dir, route) = cert_files("secure.example.com");
+    p.ingress.set_domain("secure.example.com", route);
+    p.ingress.set_upstream("pt", Some(a));
+    let r = get_with(
+        p.http_port,
+        "secure.example.com",
+        "/page",
+        "X-Forwarded-Proto: https\r\n",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert!(r.body.contains("proto=https\n"), "{}", r.body);
+    // Plain HTTP through the front proxy is redirected to the standard
+    // HTTPS port (the front proxy's), not this listener's.
+    let r = get_with(
+        p.http_port,
+        "secure.example.com",
+        "/page?q=1",
+        "X-Forwarded-Proto: http\r\n",
+    )
+    .await;
+    assert_eq!(r.status, 308, "{}", r.head);
+    assert_eq!(location(&r), "https://secure.example.com/page?q=1");
+
+    // ACME challenges are still answered on the plain listener.
+    p.ingress.challenges().insert("tok-9", "tok-9.thumb");
+    let r = get_with(
+        p.http_port,
+        "secure.example.com",
+        "/.well-known/acme-challenge/tok-9",
+        "X-Forwarded-Proto: https\r\n",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert_eq!(r.body, "tok-9.thumb");
+}
+
+#[tokio::test]
+async fn untrusted_peers_cannot_spoof_forwarded_headers() {
+    // Only some other network is trusted; this test connects from 127.0.0.1.
+    let p = proxy_with(|c| {
+        c.trusted_proxies = vec!["10.0.0.0/8".parse().unwrap()];
+    })
+    .await;
+    let a = echo_upstream("a").await;
+    p.ingress
+        .set_domain("a.example.com", DomainRoute::project("pa", TlsMode::Off));
+    p.ingress.set_upstream("pa", Some(a));
+    let r = get_with(
+        p.http_port,
+        "a.example.com",
+        "/",
+        "X-Forwarded-Proto: https\r\nX-Forwarded-Host: evil.example\r\n",
+    )
+    .await;
+    assert!(r.body.contains("proto=http\n"), "{}", r.body);
+    assert!(r.body.contains("xfhost=a.example.com\n"), "{}", r.body);
+
+    // ...and a spoofed X-Forwarded-Proto never skips the HTTPS redirect.
+    let (_dir, route) = cert_files("secure.example.com");
+    p.ingress.set_domain("secure.example.com", route);
+    p.ingress.set_upstream("pt", Some(a));
+    let r = get_with(
+        p.http_port,
+        "secure.example.com",
+        "/",
+        "X-Forwarded-Proto: https\r\n",
+    )
+    .await;
+    assert_eq!(r.status, 308, "{}", r.head);
+    assert_eq!(
+        location(&r),
+        format!("https://secure.example.com:{}/", p.https_port)
+    );
+}
+
+#[tokio::test]
+async fn response_timeout_is_configurable() {
+    let p = proxy_with(|c| c.upstream_timeout = Duration::from_millis(100)).await;
+    let a = echo_upstream("a").await;
+    p.ingress
+        .set_domain("a.example.com", DomainRoute::project("pa", TlsMode::Off));
+    p.ingress.set_upstream("pa", Some(a));
+    // The app answers "/slow" after 300 ms: too late.
+    let r = get(p.http_port, "a.example.com", "/slow").await;
+    assert_eq!(r.status, 504, "{}", r.head);
+    assert!(r.body.contains("took too long"), "{}", r.body);
+    // A quick answer is fine.
+    let r = get(p.http_port, "a.example.com", "/fast").await;
+    assert_eq!(r.status, 200, "{}", r.head);
+
+    // With a longer timeout the slow request succeeds.
+    let p = proxy_with(|c| c.upstream_timeout = Duration::from_secs(2)).await;
+    p.ingress
+        .set_domain("a.example.com", DomainRoute::project("pa", TlsMode::Off));
+    p.ingress.set_upstream("pa", Some(a));
+    let r = get(p.http_port, "a.example.com", "/slow").await;
+    assert_eq!(r.status, 200, "{}", r.head);
+}
+
+#[tokio::test]
+async fn upgraded_connections_outlive_the_response_timeout() {
+    let p = proxy_with(|c| c.upstream_timeout = Duration::from_millis(100)).await;
+    let up = upgrade_upstream().await;
+    p.ingress
+        .set_domain("ws.example.com", DomainRoute::project("pw", TlsMode::Off));
+    p.ingress.set_upstream("pw", Some(up));
+    let mut stream = TcpStream::connect(("127.0.0.1", p.http_port))
+        .await
+        .unwrap();
+    stream
+        .write_all(b"GET /socket HTTP/1.1\r\nHost: ws.example.com\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+        .await
+        .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+        head.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&head)
+        .to_lowercase()
+        .starts_with("http/1.1 101"));
+    // Idle for several times the response timeout, then talk again.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    stream.write_all(b"still here").await.unwrap();
+    let mut buf = [0u8; 10];
+    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut buf))
+        .await
+        .expect("echo in time")
+        .unwrap();
+    assert_eq!(&buf, b"STILL HERE");
 }
