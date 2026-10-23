@@ -987,21 +987,40 @@ impl ControlPlane {
         (pid, restarts): (Option<u32>, u32),
         window: Duration,
     ) -> Result<(), String> {
-        if let (Some(port), Some(pid), false) = (
+        let same_process = |this: &Self| {
+            this.inner.supervisor.get(id).is_some_and(|info| {
+                matches!(info.status, ProcessStatus::Running)
+                    && info.pid == pid
+                    && info.restart_count == restarts
+            })
+        };
+        if let (Some(port), Some(root), false) = (
             crate::ports::local_probe_port(health_url),
             pid,
             config.is_docker(),
         ) {
-            let listener =
-                tokio::task::spawn_blocking(move || crate::ports::listener_of(port, pid))
-                    .await
-                    .unwrap_or(crate::ports::Listener::Unknown);
-            if let crate::ports::Listener::Other(owner) = listener {
-                return Err(format!(
-                    "The health check on port {} was answered by another process ({}), not by the new release; stop that process or map a domain so each release gets its own port",
-                    port,
-                    owner.unwrap_or_else(|| "not visible to the daemon's user".into())
-                ));
+            // A release that is exiting has closed its descriptors while its
+            // socket may still be listed for a moment: look again before
+            // blaming another process, and report an exit as an exit (below).
+            for attempt in 0..3 {
+                let listener =
+                    tokio::task::spawn_blocking(move || crate::ports::listener_of(port, root))
+                        .await
+                        .unwrap_or(crate::ports::Listener::Unknown);
+                let crate::ports::Listener::Other(owner) = listener else {
+                    break;
+                };
+                if !same_process(self) {
+                    break;
+                }
+                if attempt == 2 {
+                    return Err(format!(
+                        "The health check on port {} was answered by another process ({}), not by the new release; stop that process or map a domain so each release gets its own port",
+                        port,
+                        owner.unwrap_or_else(|| "not visible to the daemon's user".into())
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
         let passed = Instant::now();
