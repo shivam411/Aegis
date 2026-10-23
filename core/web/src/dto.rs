@@ -472,6 +472,12 @@ pub struct ProjectSettingsDto {
     /// Plain environment variables, merged over aegis.toml's `[env]` and
     /// written into each release. Use secrets for sensitive values.
     pub env: std::collections::BTreeMap<String, String>,
+    /// Absolute path of an env file on the server (dotenv syntax), read at
+    /// every build and every process start. It must be inside a directory
+    /// listed in the daemon's `[apps] env_file_dirs`. Its values are never
+    /// stored; Variables and Secrets override them. Omit (or send `null`)
+    /// for none: like every field here, an omitted value is cleared.
+    pub env_file: Option<String>,
 }
 
 impl From<aegis_config::ProjectOverrides> for ProjectSettingsDto {
@@ -486,6 +492,7 @@ impl From<aegis_config::ProjectOverrides> for ProjectSettingsDto {
             strategy: o.strategy,
             instances: o.instances,
             env: o.env,
+            env_file: o.env_file,
         }
     }
 }
@@ -502,6 +509,7 @@ impl From<ProjectSettingsDto> for aegis_config::ProjectOverrides {
             strategy: d.strategy,
             instances: d.instances,
             env: d.env,
+            env_file: d.env_file,
         }
     }
 }
@@ -809,6 +817,130 @@ pub struct SecretSaved {
     /// False when an existing secret was replaced.
     pub created: bool,
     /// The running process still has the old value; restart it to apply.
+    pub restart_required: bool,
+}
+
+/// An app's env file as the daemon sees it right now.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EnvFileStatusDto {
+    pub path: String,
+    /// The file was read and parsed just now.
+    pub readable: bool,
+    /// Why it can't be used, e.g. permission denied (never contains values).
+    pub error: Option<String>,
+    /// Variable names it defines (values are never returned).
+    pub names: Vec<String>,
+}
+
+/// One variable the app gets and where its value comes from.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EnvSourceDto {
+    pub name: String,
+    /// `env_file`, `aegis_toml`, `variable`, `secret`, or `aegis` (`PORT`,
+    /// which Aegis sets; an env file's `PORT` is ignored).
+    pub source: String,
+    /// Lower-precedence sources that also define it and are overridden.
+    pub overrides: Vec<String>,
+    /// Build commands see it (env file, `[env]` and Variables; not Secrets).
+    pub build: bool,
+}
+
+/// Names and sources of an app's environment variables. Values are never
+/// included. Precedence, lowest first: env file, `[env]` in aegis.toml,
+/// Variables, Secrets, then `PORT`.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EnvOverviewDto {
+    /// Directories env files may be in (`[apps] env_file_dirs`); empty
+    /// means env files are turned off on this server.
+    pub env_file_dirs: Vec<String>,
+    pub env_file: Option<EnvFileStatusDto>,
+    pub variables: Vec<EnvSourceDto>,
+}
+
+impl From<aegis_control::EnvOverview> for EnvOverviewDto {
+    fn from(o: aegis_control::EnvOverview) -> Self {
+        Self {
+            env_file_dirs: o
+                .env_file_dirs
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect(),
+            env_file: o.env_file.map(|f| EnvFileStatusDto {
+                path: f.path,
+                readable: f.readable,
+                error: f.error,
+                names: f.names,
+            }),
+            variables: o
+                .variables
+                .into_iter()
+                .map(|v| EnvSourceDto {
+                    name: v.name,
+                    source: v.source.to_string(),
+                    overrides: v.overrides.iter().map(|s| s.to_string()).collect(),
+                    build: v.build,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The contents of a `.env` file, pasted or read in the browser.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnvImportPreviewRequest {
+    /// dotenv text, at most 1 MiB. Never stored or logged.
+    pub content: String,
+}
+
+/// A variable found in the pasted file. Its value is not returned.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EnvImportCandidateDto {
+    pub name: String,
+    /// `variable`, `secret` or `skip`.
+    pub suggested: String,
+    /// Why this is suggested.
+    pub reason: String,
+    /// The value spans several lines (only possible as a secret).
+    pub multiline: bool,
+    /// `variable` or `secret` when the app already has this name.
+    pub exists_as: Option<String>,
+}
+
+impl From<aegis_control::ImportCandidate> for EnvImportCandidateDto {
+    fn from(c: aegis_control::ImportCandidate) -> Self {
+        Self {
+            name: c.name,
+            suggested: c.suggested.to_string(),
+            reason: c.reason.to_string(),
+            multiline: c.multiline,
+            exists_as: c.exists_as.map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EnvImportPreviewDto {
+    pub variables: Vec<EnvImportCandidateDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnvImportRequest {
+    /// The same dotenv text as for the preview; parsed again on the server.
+    pub content: String,
+    /// Name -> `variable`, `secret` or `skip`. Names not listed are skipped.
+    pub choices: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EnvImportResult {
+    /// Saved as Variables (written into the next release's aegis.toml).
+    pub variables: Vec<String>,
+    /// Saved as Secrets (encrypted). A Variable of the same name was removed.
+    pub secrets: Vec<String>,
+    pub skipped: Vec<String>,
+    /// The running process still has the old environment; restart it to apply secrets.
     pub restart_required: bool,
 }
 

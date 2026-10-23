@@ -130,6 +130,9 @@ pub struct InstalledRecord {
     pub method: String,
     /// RFC 3339.
     pub at: String,
+    /// The pre-update backup `self-update` took (its file name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<String>,
 }
 
 /// Root side: written into the daemon's (existing) update directory just
@@ -187,6 +190,19 @@ pub struct SelfUpdate<'a> {
     pub verify_runs: bool,
     /// [`SignaturePolicy::Required`] except for `--allow-unsigned`.
     pub signatures: SignaturePolicy,
+    /// Runs after the release is downloaded and verified, just before the
+    /// binaries are swapped (e.g. the pre-update backup). An error stops
+    /// the update with nothing replaced.
+    pub before_swap: Option<&'a (dyn BeforeSwap + 'a)>,
+}
+
+/// See [`SelfUpdate::before_swap`].
+// async-trait marks the boxed futures #[must_use] (clippy::double_must_use).
+#[allow(clippy::double_must_use)]
+#[async_trait::async_trait]
+pub trait BeforeSwap: Send + Sync {
+    /// `tag` is the release about to be installed.
+    async fn before_swap(&self, tag: &str) -> anyhow::Result<()>;
 }
 
 /// Why `release` must not be installed over `current` without `force`.
@@ -238,6 +254,9 @@ pub async fn self_update(opts: SelfUpdate<'_>) -> anyhow::Result<Installed> {
     let staged = bundle.stage(opts.exe)?;
     if opts.verify_runs {
         install::check_runs(staged.daemon(), &bundle.version).await?;
+    }
+    if let Some(hook) = opts.before_swap {
+        hook.before_swap(&bundle.tag).await?;
     }
     let replaced = staged.commit()?;
     Ok(Installed {
@@ -305,6 +324,7 @@ mod tests {
             allow_unsigned: false,
             method: "helper".into(),
             at: "2026-10-17T00:00:00Z".into(),
+            backup: None,
         };
         write_installed(dir.path(), &record).unwrap();
         assert_eq!(take_installed(dir.path()), Some(record.clone()));

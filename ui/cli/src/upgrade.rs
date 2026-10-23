@@ -75,6 +75,7 @@ pub async fn install(
         } else {
             SignaturePolicy::Required
         },
+        before_swap: None,
     })
     .await
 }

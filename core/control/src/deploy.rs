@@ -339,6 +339,7 @@ impl ControlPlane {
             release_dir: release_dir.clone(),
             log_path: self.deployment_log_path(project_id, deployment_id),
             overrides: project.settings.clone(),
+            env_file_dirs: self.inner.settings.env_file_dirs.clone(),
         };
         let output = match BuildPipeline::new(&self.inner.artifact_store, &reporter)
             .run(&request)
@@ -506,14 +507,14 @@ impl ControlPlane {
         dir: &Path,
         config: &ResolvedProjectConfig,
         proxied_port: Option<u16>,
-    ) -> ProcessSpec {
-        let mut env = self.process_env(project_id, config);
+    ) -> crate::ControlResult<ProcessSpec> {
+        let mut env = self.process_env(project_id, config)?;
         if let Some(port) = proxied_port {
             env.insert("PORT".to_string(), port.to_string());
         }
         // Container apps run through a launcher (see docker.rs).
         let runtime = self.runtime_launcher(project_id, dir, config);
-        ProcessSpec {
+        Ok(ProcessSpec {
             project_id,
             command: runtime
                 .as_ref()
@@ -524,7 +525,7 @@ impl ControlPlane {
                 .unwrap_or(RestartPolicy::Always),
             log_file: Some(self.process_log_path(project_id, process_id)),
             launcher: runtime.map(|(launcher, _)| launcher),
-        }
+        })
     }
 
     /// Starts a release's process under a known id and remembers its release
@@ -539,12 +540,12 @@ impl ControlPlane {
         config: &ResolvedProjectConfig,
         proxied_port: Option<u16>,
     ) -> anyhow::Result<Option<u16>> {
+        let spec = self.process_spec(project_id, process_id, dir, config, proxied_port)?;
         self.inner
             .process_release
             .lock()
             .unwrap()
             .insert(process_id, version.to_string());
-        let spec = self.process_spec(project_id, process_id, dir, config, proxied_port);
         let port = spec.env.get("PORT").and_then(|p| p.parse().ok());
         self.inner.process_ports.lock().unwrap().insert(
             process_id,

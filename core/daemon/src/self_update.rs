@@ -125,13 +125,43 @@ WARNING: --allow-unsigned: the release's signature is NOT required.
          both. Use this only for a release you have verified another way.
          The install is recorded in the event log (UpdateApplied, allow_unsigned).";
 
+/// The pre-update backup, taken once the new release is downloaded and
+/// verified, just before the binaries are replaced. The same archive as
+/// the dashboard's "Upgrade now" takes (without releases).
+struct PreUpdateBackup<'a> {
+    config: &'a Config,
+    taken: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl helper::BeforeSwap for PreUpdateBackup<'_> {
+    async fn before_swap(&self, tag: &str) -> anyhow::Result<()> {
+        match crate::pre_update_backup(self.config).await {
+            Ok(Some(name)) => {
+                println!("Backup before installing {}: {}", tag, name);
+                *self.taken.lock().unwrap() = Some(name);
+                Ok(())
+            }
+            Ok(None) => {
+                println!("No database yet; nothing to back up.");
+                Ok(())
+            }
+            Err(e) => Err(anyhow::anyhow!(
+                "The pre-update backup failed, so nothing was installed: {:#}. Fix that (e.g. free disk space), or run again with --no-backup to update without a backup",
+                e
+            )),
+        }
+    }
+}
+
 /// `aegis-daemon self-update [--check] [--version TAG] [--force]
-/// [--restart-unit UNIT] [--from-request] [--allow-unsigned]`.
+/// [--restart-unit UNIT] [--from-request] [--allow-unsigned] [--no-backup]`.
 pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Error> {
     let mut check = false;
     let mut force = false;
     let mut from_request = false;
     let mut allow_unsigned = false;
+    let mut no_backup = false;
     let mut wanted = None;
     let mut unit = None;
     let mut it = flags.iter();
@@ -141,6 +171,7 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
             "--force" => force = true,
             "--from-request" => from_request = true,
             "--allow-unsigned" => allow_unsigned = true,
+            "--no-backup" => no_backup = true,
             "--version" => {
                 let tag = it
                     .next()
@@ -227,6 +258,16 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
     if allow_unsigned {
         eprintln!("{}", UNSIGNED_WARNING);
     }
+    // The dashboard took its backup before asking the helper (--from-request).
+    let backup = PreUpdateBackup {
+        config,
+        taken: Default::default(),
+    };
+    let before_swap: Option<&dyn helper::BeforeSwap> = if from_request || no_backup {
+        None
+    } else {
+        Some(&backup)
+    };
     let result = helper::self_update(helper::SelfUpdate {
         source: &source,
         exe: &exe,
@@ -240,6 +281,7 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
         } else {
             SignaturePolicy::Required
         },
+        before_swap,
     })
     .await;
     let installed = match result {
@@ -274,6 +316,7 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
         }
         .into(),
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        backup: backup.taken.lock().unwrap().clone(),
     };
     if let Err(e) = helper::write_installed(&request_dir, &record) {
         if allow_unsigned {

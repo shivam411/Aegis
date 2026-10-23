@@ -117,12 +117,14 @@ const USAGE: &str = "Usage:
   aegis-daemon admin restore ARCHIVE [--force]
                                          Restore a backup. The daemon must be stopped.
                                          --force restores a backup made by another Aegis version
-  aegis-daemon self-update [--check] [--version TAG] [--force] [--restart-unit UNIT] [--allow-unsigned]
+  aegis-daemon self-update [--check] [--version TAG] [--force] [--restart-unit UNIT] [--allow-unsigned] [--no-backup]
                                          Download the latest (or TAG) release from GitHub, verify
                                          its signature (release key) and SHA256SUMS and replace this
                                          binary (and aegis-cli/aegis-tui next to it), keeping
-                                         <binary>.previous. Run it as the binaries' owner (root
-                                         for install.sh --server). --force allows reinstalls,
+                                         <binary>.previous. A backup (without releases, as from
+                                         the dashboard) is taken just before the binaries are
+                                         replaced; --no-backup skips it. Run it as the binaries'
+                                         owner (root for install.sh --server). --force allows reinstalls,
                                          downgrades, pre-releases and major-version jumps.
                                          --restart-unit restarts that systemd unit afterwards.
                                          --allow-unsigned installs a release without a valid-key
@@ -234,6 +236,7 @@ fn validate_config(config: &Config) -> Result<(), anyhow::Error> {
     config.proxy.validate(&config.web, &config.daemon)?;
     config.backup.validate()?;
     config.update.validate()?;
+    config.apps.validate()?;
     aegis_update::api_base_override()?;
     Ok(())
 }
@@ -560,6 +563,38 @@ async fn admin_backup(
             other => anyhow::bail!("Unknown flag {}\n\n{}", other, USAGE),
         }
     }
+    let created = cli_backup(config, store, include_releases, out, "cli").await?;
+    eprintln!(
+        "Backup created ({} files, {} bytes{}).",
+        created.file_count,
+        created.size,
+        if include_releases {
+            ""
+        } else {
+            ", without releases"
+        }
+    );
+    // Only the path on stdout, so scripts can capture it.
+    println!("{}", created.path.display());
+    Ok(())
+}
+
+pub(crate) struct CliBackup {
+    pub path: PathBuf,
+    pub size: u64,
+    pub file_count: usize,
+}
+
+/// Makes a backup from the command line (`admin backup`, and the
+/// pre-update backup of `self-update`), records it, and applies retention
+/// to the backups directory. `trigger` goes into the events.
+pub(crate) async fn cli_backup(
+    config: &Config,
+    store: &EventStore,
+    include_releases: bool,
+    out: Option<PathBuf>,
+    trigger: &str,
+) -> Result<CliBackup, anyhow::Error> {
     let data_dir = config.daemon.resolved_data_dir();
     let dir = backup::backups_dir(&data_dir);
     let path = match out {
@@ -583,13 +618,19 @@ async fn admin_backup(
             store
                 .append_event(
                     "BackupFailed",
-                    serde_json::json!({"trigger": "cli", "include_releases": include_releases,
+                    serde_json::json!({"trigger": trigger, "include_releases": include_releases,
                                        "error": format!("{:#}", e), "actor": "local-admin"}),
                 )
                 .await?;
             return Err(e);
         }
     };
+    // Run as root (sudo), the archive would be root's: give it (and the
+    // directory, if this created it) to the data directory's owner, so the
+    // daemon can list, download and rotate it.
+    if path.parent() == Some(dir.as_path()) {
+        give_to_data_dir_owner(&data_dir, &[&dir, &path]);
+    }
     let size = std::fs::metadata(&path)?.len();
     let name = path
         .file_name()
@@ -601,7 +642,7 @@ async fn admin_backup(
             serde_json::json!({"name": name, "size_bytes": size,
                                "includes_releases": include_releases,
                                "file_count": manifest.file_count(),
-                               "trigger": "cli", "actor": "local-admin"}),
+                               "trigger": trigger, "actor": "local-admin"}),
         )
         .await?;
     // Retention applies to the backups directory only.
@@ -616,19 +657,67 @@ async fn admin_backup(
                 .await?;
         }
     }
-    eprintln!(
-        "Backup created ({} files, {} bytes{}).",
-        manifest.file_count(),
+    Ok(CliBackup {
+        path,
         size,
-        if include_releases {
-            ""
-        } else {
-            ", without releases"
+        file_count: manifest.file_count(),
+    })
+}
+
+/// Best effort: chown `paths` to the owner of `data_dir` (only root can,
+/// and only root needs to).
+#[cfg(unix)]
+fn give_to_data_dir_owner(data_dir: &Path, paths: &[&Path]) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(owner) = std::fs::metadata(data_dir) else {
+        return;
+    };
+    for path in paths {
+        let Ok(meta) = std::fs::metadata(path) else {
+            continue;
+        };
+        if meta.uid() != owner.uid() || meta.gid() != owner.gid() {
+            let _ = std::os::unix::fs::chown(path, Some(owner.uid()), Some(owner.gid()));
         }
+    }
+}
+
+#[cfg(not(unix))]
+fn give_to_data_dir_owner(_data_dir: &Path, _paths: &[&Path]) {}
+
+/// `self-update`'s pre-update backup (without releases, like the
+/// dashboard's): opens the database, which works while the daemon runs.
+/// Returns the archive's file name, or `None` when there is no database
+/// yet (nothing to back up).
+pub(crate) async fn pre_update_backup(config: &Config) -> Result<Option<String>, anyhow::Error> {
+    if !config.daemon.database_path.exists() {
+        return Ok(None);
+    }
+    let pool = open_database(config).await?;
+    let created = cli_backup(
+        config,
+        &EventStore::new(pool.clone()),
+        false,
+        None,
+        "update",
+    )
+    .await;
+    pool.close().await;
+    // Run as root, SQLite may have created journal files the daemon's user
+    // couldn't open afterwards.
+    let db = config.daemon.database_path.display().to_string();
+    let files: Vec<PathBuf> = ["", "-wal", "-shm", "-journal"]
+        .iter()
+        .map(|suffix| PathBuf::from(format!("{}{}", db, suffix)))
+        .collect();
+    give_to_data_dir_owner(
+        &config.daemon.resolved_data_dir(),
+        &files.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
     );
-    // Only the path on stdout, so scripts can capture it.
-    println!("{}", path.display());
-    Ok(())
+    Ok(created?
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string()))
 }
 
 /// Is something listening on `host:port`? (A running daemon, most likely.)
@@ -790,6 +879,12 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
         include_releases: config.backup.include_releases,
         aegis_version: DAEMON_VERSION.to_string(),
     };
+    for dir in &config.apps.env_file_dirs {
+        if !dir.is_dir() {
+            tracing::warn!(dir = %dir.display(), "apps.env_file_dirs: not a directory; no env file can be read from it");
+        }
+    }
+    settings.env_file_dirs = config.apps.env_file_dirs.clone();
     let control = ControlPlane::new(event_store.clone(), ProcessSupervisor::new(), settings)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -1142,6 +1237,37 @@ mod tests {
         let streamed_msg = stream.next().await.unwrap().unwrap();
         assert_eq!(streamed_msg.event_type, "StreamedEvent");
         assert!(streamed_msg.payload_json.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn self_update_takes_a_pre_update_backup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.daemon.database_path = dir.path().join("aegis.db");
+        config.daemon.data_dir = Some(dir.path().join("data"));
+        let data_dir = config.daemon.resolved_data_dir();
+        // No database yet: nothing to back up, and no database is created.
+        assert_eq!(pre_update_backup(&config).await.unwrap(), None);
+        assert!(!config.daemon.database_path.exists());
+
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("secrets.key"), [7u8; 32]).unwrap();
+        let pool = open_database(&config).await.unwrap();
+        pool.close().await;
+        let name = pre_update_backup(&config).await.unwrap().unwrap();
+        let backups = backup::list_backups(&backup::backups_dir(&data_dir)).unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].name, name);
+        assert!(!backups[0].includes_releases);
+        // Recorded like the dashboard's pre-update backup.
+        let pool = open_database(&config).await.unwrap();
+        let events = EventStore::new(pool.clone()).get_events().await.unwrap();
+        let created = events
+            .iter()
+            .find(|e| e.event_type == "BackupCreated")
+            .unwrap();
+        assert!(created.payload_json.contains("\"trigger\":\"update\""));
+        pool.close().await;
     }
 
     #[tokio::test]

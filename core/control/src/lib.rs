@@ -10,6 +10,7 @@ mod config_file;
 mod deploy;
 mod docker;
 mod domains;
+mod env;
 mod process;
 mod resources;
 mod rollout;
@@ -35,6 +36,7 @@ pub use aegis_secrets::SecretInfo;
 pub use config_file::ConfigPreview;
 pub use deploy::DeployRequest;
 pub use domains::DomainView;
+pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, ImportResult};
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 pub use rollout::{InstanceView, StandbyView};
@@ -111,6 +113,9 @@ pub struct ControlSettings {
     pub metrics_retention: Duration,
     /// Backup retention and defaults.
     pub backup: backup::BackupSettings,
+    /// Directories apps' env files may be read from (`[apps]
+    /// env_file_dirs`); empty turns env files off.
+    pub env_file_dirs: Vec<PathBuf>,
 }
 
 impl ControlSettings {
@@ -124,6 +129,7 @@ impl ControlSettings {
             sample_interval: Duration::from_secs(2),
             metrics_retention: Duration::from_secs(7 * 24 * 3600),
             backup: backup::BackupSettings::default(),
+            env_file_dirs: Vec::new(),
         }
     }
 }
@@ -473,6 +479,16 @@ impl ControlPlane {
             )));
         };
         let settings = validate_settings(settings)?;
+        // Checked when it changes, so other settings can still be saved if
+        // the daemon configuration changed since.
+        if let Some(path) = settings
+            .env_file
+            .as_ref()
+            .filter(|p| project.settings.env_file.as_ref() != Some(*p))
+        {
+            aegis_config::envfile::validate_setting(path, &self.inner.settings.env_file_dirs)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
         if let Some(strategy) = &settings.strategy {
             self.check_strategy_for(&project, strategy)
                 .map_err(ControlError::FailedPrecondition)?;
@@ -745,6 +761,7 @@ pub(crate) fn validate_settings(
             .into_iter()
             .map(|(k, v)| (k.trim().to_string(), v))
             .collect(),
+        env_file: clean(settings.env_file).filter(|s| !s.is_empty()),
     };
     for (name, value) in &settings.env {
         aegis_secrets::validate_name(name)
