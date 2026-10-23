@@ -109,13 +109,15 @@ enabled = true
 host = "127.0.0.1"                       # only nginx (and local processes) can reach it
 http_port = 8081
 https_port = 8444                        # required and must be free; unused behind nginx
-trusted_proxies = ["127.0.0.1", "::1"]   # keep nginx's X-Forwarded-Proto/-Host
+trusted_proxies = ["127.0.0.1", "::1"]   # keep nginx's X-Forwarded-For/-Proto/-Host as sent
 # response_timeout_secs = 120            # raise it for slow endpoints (also raise nginx's proxy_read_timeout)
 ```
 
 Leave `[proxy.acme]` off: nginx has the certificates. Then `sudo systemctl restart aegis` (`aegis-daemon check-config` runs first and names any mistake).
 
-Without `trusted_proxies`, Aegis overwrites `X-Forwarded-Proto` with `http` (it only sees nginx's plain-HTTP connection), which breaks apps that build absolute URLs or decide on Secure cookies from it. See [Security](security.md#forwarded-headers-and-trusted-proxies) for what trusting a proxy means.
+With `trusted_proxies`, the app gets exactly the `X-Forwarded-For` (and `X-Real-IP`, `Forwarded`) nginx sent, with no extra entry for nginx's connection to Aegis, so the hop count is the same as when nginx proxied to PM2 directly: an Express app with `app.set('trust proxy', 1)` still sees the real client address, for rate limits and logs alike. Aegis 0.8.2 and earlier appended `127.0.0.1` here, so if you raised the hop count to 2 to work around that, set it back to 1.
+
+Without `trusted_proxies`, Aegis overwrites `X-Forwarded-Proto` with `http` (it only sees nginx's plain-HTTP connection), which breaks apps that build absolute URLs or decide on Secure cookies from it, and appends `127.0.0.1` to `X-Forwarded-For`, so a one-hop app sees nginx as every client. See [Security](security.md#forwarded-headers-and-trusted-proxies) for what trusting a proxy means.
 
 ### 5.2 Create the app
 

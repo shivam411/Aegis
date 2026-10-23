@@ -58,13 +58,16 @@ pub fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: Option<&HeaderValue>) 
 }
 
 /// What the app is told about the original request through
-/// `X-Forwarded-Proto` and `X-Forwarded-Host`.
+/// `X-Forwarded-Proto` and `X-Forwarded-Host`, and whether the peer is a
+/// trusted front proxy whose client-address headers are passed on as sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Forwarded {
     /// `"http"` or `"https"`.
     pub proto: &'static str,
     /// The host (with an optional port) the client asked for.
     pub host: String,
+    /// The TCP peer is one of `[proxy] trusted_proxies`.
+    pub trusted: bool,
 }
 
 impl Forwarded {
@@ -85,6 +88,7 @@ impl Forwarded {
         let mut forwarded = Self {
             proto,
             host: host.to_string(),
+            trusted,
         };
         if trusted {
             if let Some(proto) = single_value(headers, "x-forwarded-proto").and_then(parse_proto) {
@@ -173,12 +177,22 @@ pub fn valid_host(value: &str) -> bool {
         })
 }
 
+/// Headers that name the original client, besides `X-Forwarded-For`. Only
+/// a trusted front proxy may set them; from any other peer they are removed.
+const CLIENT_ADDRESS_HEADERS: &[&str] = &["x-real-ip", "forwarded"];
+
 /// Prepares a client's request headers for the upstream app:
 /// - hop-by-hop headers are removed (the upgrade handshake is kept for upgrades);
 /// - `Host` is the host the client asked for;
-/// - `X-Forwarded-For` gets the peer address appended (earlier entries are
-///   whatever the client or a front proxy sent, so apps should trust only
-///   the entries added by proxies they trust);
+/// - `X-Forwarded-For`: from a trusted front proxy ([`Forwarded::trusted`])
+///   it is passed on exactly as sent, so the app sees the same chain (and
+///   hop count) as it would directly behind that proxy; if the proxy sent
+///   none, it is set to the peer address. From any other peer, the peer
+///   address is appended (earlier entries are whatever the client sent, so
+///   apps should trust only the entries added by proxies they trust; the
+///   last entry is always the real peer);
+/// - `X-Real-IP` and `Forwarded` (RFC 7239) are passed on from a trusted
+///   front proxy and removed otherwise, so a client cannot spoof them;
 /// - `X-Forwarded-Proto` and `X-Forwarded-Host` are set from `forwarded`.
 ///   Incoming values are dropped; [`Forwarded::from_request`] decides whether
 ///   a trusted front proxy's values are kept.
@@ -199,13 +213,22 @@ pub fn prepare_request_headers(
         .filter(|v| !v.is_empty())
         .collect();
     let mut chain = previous.join(", ");
-    if !chain.is_empty() {
-        chain.push_str(", ");
+    // A trusted front proxy's chain already names the client; adding the
+    // front proxy itself would add a hop the app does not expect.
+    if !forwarded.trusted || chain.is_empty() {
+        if !chain.is_empty() {
+            chain.push_str(", ");
+        }
+        chain.push_str(&client_ip.to_canonical().to_string());
     }
-    chain.push_str(&client_ip.to_canonical().to_string());
     headers.remove("x-forwarded-for");
     if let Ok(value) = HeaderValue::from_str(&chain) {
         headers.insert("x-forwarded-for", value);
+    }
+    if !forwarded.trusted {
+        for name in CLIENT_ADDRESS_HEADERS {
+            headers.remove(*name);
+        }
     }
     headers.insert(
         "x-forwarded-proto",
@@ -283,7 +306,9 @@ mod tests {
         assert!(forwarded.is_https());
         assert_eq!(headers["x-forwarded-proto"], "https");
         assert_eq!(headers["x-forwarded-host"], "app.example.com");
-        assert_eq!(headers["x-forwarded-for"], "203.0.113.9, 127.0.0.1");
+        // Passed on as nginx sent it: the app sees the same chain (and hop
+        // count) as it would directly behind nginx.
+        assert_eq!(headers["x-forwarded-for"], "203.0.113.9");
         assert_eq!(headers["host"], "app.example.com");
 
         // A port and upper-case scheme are fine.
@@ -317,6 +342,58 @@ mod tests {
         assert_eq!(headers["x-forwarded-host"], "app.example.com");
         // The spoofed entry stays, but the real peer is always appended last.
         assert_eq!(headers["x-forwarded-for"], "10.9.9.9, 198.51.100.7");
+    }
+
+    #[test]
+    fn trusted_proxy_forwarded_for_is_passed_through_unchanged() {
+        // A chain from the front proxy, even split over lines, is kept with
+        // no entry for the front proxy itself.
+        let mut headers = map(&[
+            ("x-forwarded-for", "203.0.113.9, 10.0.0.5"),
+            ("x-forwarded-for", "10.0.0.6"),
+            ("x-real-ip", "203.0.113.9"),
+            ("forwarded", "for=203.0.113.9;proto=https"),
+        ]);
+        prep_from(&mut headers, "127.0.0.1", true);
+        assert_eq!(
+            headers["x-forwarded-for"],
+            "203.0.113.9, 10.0.0.5, 10.0.0.6"
+        );
+        assert_eq!(headers.get_all("x-forwarded-for").iter().count(), 1);
+        assert_eq!(headers["x-real-ip"], "203.0.113.9");
+        assert_eq!(headers["forwarded"], "for=203.0.113.9;proto=https");
+
+        // No X-Forwarded-For (or only an empty one) from the trusted proxy:
+        // the peer address is used, as for any other peer.
+        for pairs in [&[][..], &[("x-forwarded-for", "")][..]] {
+            let mut headers = map(pairs);
+            prep_from(&mut headers, "::ffff:127.0.0.1", true);
+            assert_eq!(headers["x-forwarded-for"], "127.0.0.1");
+        }
+    }
+
+    #[test]
+    fn untrusted_peers_cannot_drop_their_own_address() {
+        // Whatever chain a client sends, its real address is the last
+        // entry, and it cannot name itself through X-Real-IP or Forwarded.
+        for xff in ["", "198.51.100.7", "1.1.1.1, 2.2.2.2", "unknown, ,"] {
+            let mut headers = map(&[
+                ("x-forwarded-for", xff),
+                ("x-real-ip", "1.1.1.1"),
+                ("forwarded", "for=1.1.1.1"),
+                ("forwarded", "for=2.2.2.2;proto=https"),
+            ]);
+            prep_from(&mut headers, "198.51.100.7", false);
+            let chain = headers["x-forwarded-for"].to_str().unwrap().to_string();
+            assert_eq!(
+                chain.rsplit(", ").next(),
+                Some("198.51.100.7"),
+                "{xff:?} -> {chain:?}"
+            );
+            assert_eq!(headers.get_all("x-forwarded-for").iter().count(), 1);
+            assert!(!headers.contains_key("x-real-ip"), "{xff:?}");
+            assert!(!headers.contains_key("forwarded"), "{xff:?}");
+        }
     }
 
     #[test]

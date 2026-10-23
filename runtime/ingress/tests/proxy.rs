@@ -35,11 +35,13 @@ async fn echo_upstream(name: &'static str) -> u16 {
                                 .to_string()
                         };
                         let summary = format!(
-                        "app={name}\nhost={}\nxff={}\nproto={}\nxfhost={}\nte={}\nmethod={}\npath={}\n",
+                        "app={name}\nhost={}\nxff={}\nproto={}\nxfhost={}\nrealip={}\nfwd={}\nte={}\nmethod={}\npath={}\n",
                         header("host"),
                         header("x-forwarded-for"),
                         header("x-forwarded-proto"),
                         header("x-forwarded-host"),
+                        header("x-real-ip"),
+                        header("forwarded"),
                         header("te"),
                         req.method(),
                         req.uri()
@@ -633,12 +635,21 @@ async fn trusted_front_proxy_headers_are_passed_through() {
     assert_eq!(r.status, 200, "{}", r.head);
     assert!(r.body.contains("proto=https\n"), "{}", r.body);
     assert!(r.body.contains("xfhost=a.example.com\n"), "{}", r.body);
-    assert!(
-        r.body.contains("xff=203.0.113.9, 127.0.0.1\n"),
-        "{}",
-        r.body
-    );
+    // X-Forwarded-For is passed on as nginx sent it, with no entry for nginx
+    // itself: an app trusting one proxy hop still sees the real client.
+    assert!(r.body.contains("xff=203.0.113.9\n"), "{}", r.body);
     assert!(r.body.contains("host=a.example.com\n"), "{}", r.body);
+
+    // Without X-Forwarded-For from the front proxy, the peer is used.
+    let r = get_with(
+        p.http_port,
+        "a.example.com",
+        "/",
+        "X-Real-IP: 203.0.113.9\r\n",
+    )
+    .await;
+    assert!(r.body.contains("xff=127.0.0.1\n"), "{}", r.body);
+    assert!(r.body.contains("realip=203.0.113.9\n"), "{}", r.body);
 
     // Malformed values are not passed on, even from a trusted proxy.
     let r = get_with(
@@ -710,6 +721,23 @@ async fn untrusted_peers_cannot_spoof_forwarded_headers() {
     .await;
     assert!(r.body.contains("proto=http\n"), "{}", r.body);
     assert!(r.body.contains("xfhost=a.example.com\n"), "{}", r.body);
+
+    // A spoofed client address chain keeps the real peer last, and
+    // X-Real-IP / Forwarded from an untrusted peer are removed.
+    let r = get_with(
+        p.http_port,
+        "a.example.com",
+        "/",
+        "X-Forwarded-For: 203.0.113.9\r\nX-Real-IP: 203.0.113.9\r\nForwarded: for=203.0.113.9\r\n",
+    )
+    .await;
+    assert!(
+        r.body.contains("xff=203.0.113.9, 127.0.0.1\n"),
+        "{}",
+        r.body
+    );
+    assert!(r.body.contains("realip=-\n"), "{}", r.body);
+    assert!(r.body.contains("fwd=-\n"), "{}", r.body);
 
     // ...and a spoofed X-Forwarded-Proto never skips the HTTPS redirect.
     let (_dir, route) = cert_files("secure.example.com");
