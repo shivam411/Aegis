@@ -118,7 +118,7 @@ TLS 1.2/1.3 via rustls, with HTTP/2 and HTTP/1.1. Aegis re-reads the files withi
 
 This is about the built-in app proxy (`[proxy]`), not the web API's `behind_proxy` above.
 
-By default the app proxy trusts no one: it **replaces** `X-Forwarded-Proto` and `X-Forwarded-Host` on every request with what it saw itself (the listener the request arrived on, and the requested host), and **appends** the connecting peer's address to `X-Forwarded-For`. A client can put anything in the earlier `X-Forwarded-For` entries, so apps should only believe the entries added by proxies they trust (the last one, when the Aegis proxy is the only proxy).
+By default the app proxy trusts no one: it **replaces** `X-Forwarded-Proto` and `X-Forwarded-Host` on every request with what it saw itself (the listener the request arrived on, and the requested host), **appends** the connecting peer's address to `X-Forwarded-For`, and **removes** `X-Real-IP` and `Forwarded` (RFC 7239). A client can put anything in the earlier `X-Forwarded-For` entries, but never remove or replace the last one, so apps should only believe the entries added by proxies they trust (the last one, when the Aegis proxy is the only proxy).
 
 When Aegis runs behind another reverse proxy that terminates TLS (nginx, Caddy), every request arrives from that proxy over plain HTTP, so apps would always see `http`. `[proxy] trusted_proxies` fixes that: for a peer in the list, the incoming `X-Forwarded-Proto` and `X-Forwarded-Host` are passed through (when well formed: `http`/`https` and a plain host[:port], sent once), and `X-Forwarded-Proto: https` also stops the proxy from redirecting the request to HTTPS again.
 
@@ -127,7 +127,7 @@ What this trusts, and the risks:
 - **Anyone who can connect from a trusted address can set these headers.** An app may then believe a plain-HTTP request was HTTPS (and send Secure cookies over it, or skip its own redirect), or build absolute URLs (password-reset links, OAuth redirects) for a host of the caller's choosing. So list only the front proxy's own addresses, and make sure the front proxy **sets** both headers on every request rather than passing a client's values through (nginx: `proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host;`).
 - **Loopback is the safe case.** With `[proxy] host = "127.0.0.1"` and `trusted_proxies = ["127.0.0.1", "::1"]`, only processes on the server can reach the proxy at all. Those include your apps, which could already reach each other's ports directly.
 - **Other addresses** (a load balancer on a private network) are accepted but logged as a warning at startup. Use the narrowest range possible, and firewall the proxy ports so only that host can reach them. Host names are refused (they could change under you), and so are `0.0.0.0/0` and `::/0`.
-- `X-Forwarded-For` is never rewritten: a trusted proxy's chain is kept and the peer is appended, as for everyone else. Aegis itself does not use these headers for any decision except the HTTPS redirect.
+- From a trusted peer, `X-Forwarded-For`, `X-Real-IP` and `Forwarded` are passed through **unchanged** (the trusted proxy's own address is not appended; `X-Forwarded-For` is set to the peer only when the front proxy sent none). The app sees exactly what the front proxy sent, so its "trust N proxy hops" setting stays what it was without Aegis. This is safe only because the front proxy itself appends its client (nginx `$proxy_add_x_forwarded_for`, Caddy by default): configure it so, or clients can choose the address the app sees. Aegis itself does not use these headers for any decision except the HTTPS redirect.
 - ACME HTTP-01 challenges are answered on the plain listener whatever the headers say; they only reveal the public key authorization the CA asks for.
 
 ## App environment: variables, secrets and env files
@@ -203,7 +203,7 @@ See [`upgrading.md`](upgrading.md) for the procedure.
 - Credentials embedded in a repository URL (`https://user:token@…`) are stored in events that `read` tokens can see; they are redacted only in build logs. Prefer SSH deploy keys.
 - Apps run as the same user as the daemon, so a compromised app can read the daemon's database. Per-app users are future work.
 - No built-in ACME for the web API's own TLS (`[web.tls]`); use certbot or a reverse proxy. The app proxy (`[proxy.acme]`) does have it.
-- With `[proxy] trusted_proxies` set, local processes (including your apps) can send their own `X-Forwarded-Proto`/`X-Forwarded-Host` to the app proxy's loopback port; see [Forwarded headers and trusted proxies](#forwarded-headers-and-trusted-proxies).
+- With `[proxy] trusted_proxies` set, local processes (including your apps) can send their own `X-Forwarded-Proto`/`X-Forwarded-Host`/`X-Forwarded-For`/`X-Real-IP`/`Forwarded` to the app proxy's loopback port; see [Forwarded headers and trusted proxies](#forwarded-headers-and-trusted-proxies).
 - Resource limits constrain CPU, memory and process count, not disk or network use. An app that forks and calls `setsid` still stays in its cgroup (so its limits apply), but outside cgroups (limits unavailable) such children aren't counted in the app's metrics.
 
 ## The web dashboard

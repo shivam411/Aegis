@@ -220,7 +220,7 @@ enabled = false            # off by default
 host = "0.0.0.0"           # address both listeners bind to
 http_port = 80             # HTTP, ACME challenges, redirects to HTTPS
 https_port = 443           # HTTPS; certificates chosen by SNI
-trusted_proxies = []       # front proxies whose X-Forwarded-Proto/-Host are kept, e.g. ["127.0.0.1", "::1"]
+trusted_proxies = []       # front proxies whose X-Forwarded-* headers are kept, e.g. ["127.0.0.1", "::1"]
 response_timeout_secs = 120    # how long an app may take to send response headers (1-86400)
 connect_timeout_secs = 5       # how long to wait for a connection to the app (1-300)
 
@@ -236,7 +236,7 @@ tls = "acme"               # or "files" with cert_path / key_path
 
 With the proxy on, the daemon serves each app on the domains mapped to it (dashboard Settings tab, or `POST /api/v1/projects/{p}/domains`). Requests are routed by `Host` to the app's live process on `127.0.0.1`. Unknown hosts get a 404 page, and an app that isn't running gets a 502. The proxy:
 
-- forwards `X-Forwarded-For` (the address of the connecting peer is appended, so apps should trust only the entries added by proxies they trust), `X-Forwarded-Proto` and `X-Forwarded-Host`, and keeps the original `Host`. `X-Forwarded-Proto` and `X-Forwarded-Host` are set by the proxy and anything the client sent is replaced, unless the request comes from a [trusted front proxy](#running-behind-another-reverse-proxy-nginx-caddy);
+- forwards `X-Forwarded-For` (the address of the connecting peer is appended, so apps should trust only the entries added by proxies they trust), `X-Forwarded-Proto` and `X-Forwarded-Host`, and keeps the original `Host`. `X-Forwarded-Proto` and `X-Forwarded-Host` are set by the proxy and anything the client sent is replaced, and `X-Real-IP` and `Forwarded` are removed, unless the request comes from a [trusted front proxy](#running-behind-another-reverse-proxy-nginx-caddy);
 - removes hop-by-hop headers;
 - passes WebSocket and other `Upgrade` connections through;
 - streams request and response bodies;
@@ -285,10 +285,11 @@ location / {
 `trusted_proxies` is a list of IP addresses and CIDR ranges (`"10.0.0.0/8"`, `"fd00::/8"`). It is empty by default. When a request's TCP peer is in the list:
 
 - `X-Forwarded-Proto` and `X-Forwarded-Host` are passed to the app as the front proxy sent them, if they are well formed: the protocol must be exactly `http` or `https`, the host a host name or IP address with an optional port, each sent once. Anything else is ignored and the proxy's own values are used.
-- `X-Forwarded-For` is kept and the peer's address is appended, as for every request.
+- `X-Forwarded-For` is passed to the app unchanged: the front proxy's address is **not** appended. The app sees the same `X-Forwarded-For` it would see directly behind nginx, so a hop count configured for that setup (Express `app.set('trust proxy', 1)`, Rails/Django "one proxy" settings) keeps working after Aegis is put in between. If the front proxy sent no `X-Forwarded-For`, it is set to the peer's address.
+- `X-Real-IP` and `Forwarded` (RFC 7239) are passed through as sent.
 - `X-Forwarded-Proto: https` counts as HTTPS, so a domain with a certificate (`acme` or `files`) is not redirected again (no redirect loop). A request the front proxy marks as `http` is redirected to `https://<domain>/...` without a port, because the public HTTPS port is the front proxy's.
 
-From any other peer, both headers are replaced, so clients can't spoof them, and the HTTPS redirect is decided by the listener the request arrived on. With `host = "127.0.0.1"` only processes on the machine can connect at all. Host names are refused (list addresses), and so are `0.0.0.0/0` and `::/0`, which would trust everyone. Entries outside loopback are accepted with a warning at startup: anything that can connect from those addresses can claim to be HTTPS. See [Security](security.md#forwarded-headers-and-trusted-proxies).
+From any other peer, `X-Forwarded-Proto` and `X-Forwarded-Host` are replaced, the peer's address is appended to `X-Forwarded-For` (so its last entry is always the real peer), and `X-Real-IP` and `Forwarded` are removed, so clients can't spoof them. The HTTPS redirect is decided by the listener the request arrived on. With `host = "127.0.0.1"` only processes on the machine can connect at all. Host names are refused (list addresses), and so are `0.0.0.0/0` and `::/0`, which would trust everyone. Entries outside loopback are accepted with a warning at startup: anything that can connect from those addresses can claim to be HTTPS. See [Security](security.md#forwarded-headers-and-trusted-proxies).
 
 **Zero-downtime deployments.** For an app with at least one domain, each release gets its own free local port, passed to the app as `PORT`. This overrides `deploy.port` and any `PORT` in `[env]`, so the app must listen on `$PORT`. If the health check URL names the app's configured port, it is probed on the release's port instead. A URL naming another port is left alone.
 
