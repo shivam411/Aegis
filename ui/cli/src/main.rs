@@ -115,6 +115,36 @@ enum Commands {
         #[arg(short, long)]
         branch: Option<String>,
     },
+    /// Delete an app: stop its processes and remove its domains, secrets,
+    /// deploy key, webhook secret, schedule and releases. Its events stay
+    /// in the history; its name and domains can be used again
+    Delete {
+        /// Project id or name
+        project: String,
+        /// Don't ask; required when not running in a terminal
+        #[arg(short, long)]
+        yes: bool,
+        /// Keep the release directories and logs on disk
+        #[arg(long)]
+        keep_releases: bool,
+    },
+    /// Change where an app's code comes from (takes effect at the next deployment)
+    Source {
+        /// Project id or name
+        project: String,
+        /// Deploy from this git repository...
+        #[arg(long, conflicts_with = "dir")]
+        repo: Option<String>,
+        /// ...at this branch (default: the app's current branch)
+        #[arg(short, long, requires = "repo")]
+        branch: Option<String>,
+        /// ...or from this folder on the server
+        #[arg(long)]
+        dir: Option<String>,
+        /// Build and run only this folder of the source (monorepos)
+        #[arg(long)]
+        subdir: Option<String>,
+    },
     /// Restart an app's process
     Restart {
         /// Process id, or project id/name (defaults to ./aegis.toml)
@@ -877,6 +907,89 @@ async fn run() -> Result<(), anyhow::Error> {
         Commands::Restart { target } => {
             let process = control_process(&mut daemon, target, ProcessAction::Restart).await?;
             println!("Restarted: {}", describe_process(&process));
+        }
+        Commands::Delete {
+            project,
+            yes,
+            keep_releases,
+        } => {
+            if !yes {
+                use std::io::IsTerminal;
+                if !std::io::stdin().is_terminal() {
+                    anyhow::bail!(
+                        "Deleting an app can't be undone; pass --yes to confirm (not running in a terminal)"
+                    );
+                }
+                let what = if keep_releases {
+                    "its processes are stopped and its domains, secrets, deploy key, webhook secret and schedule are removed (releases and logs are kept on disk)"
+                } else {
+                    "its processes are stopped and its domains, secrets, deploy key, webhook secret, schedule, releases and logs are removed"
+                };
+                println!("Deleting '{}': {}. This can't be undone.", project, what);
+                if !confirm("Delete it?") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+            let deleted = rpc(daemon
+                .client()
+                .await?
+                .delete_project(aegis_api::aegis::DeleteProjectRequest {
+                    project,
+                    keep_releases,
+                })
+                .await)?;
+            println!(
+                "Deleted {} ({}): stopped {} process(es), removed {} secret(s){}.",
+                deleted.name,
+                short(&deleted.project_id),
+                deleted.stopped_processes,
+                deleted.secrets_removed,
+                if deleted.domains.is_empty() {
+                    String::new()
+                } else {
+                    format!(", freed {}", deleted.domains.join(", "))
+                }
+            );
+            if deleted.releases_kept {
+                println!("Releases and logs kept in {}.", deleted.kept_dir);
+            }
+        }
+        Commands::Source {
+            project,
+            repo,
+            branch,
+            dir,
+            subdir,
+        } => {
+            if repo.is_none() == dir.is_none() {
+                anyhow::bail!("Give --repo URL [--branch B] or --dir PATH");
+            }
+            let dir = match dir {
+                // Relative paths are relative to where the CLI runs.
+                Some(d) => std::path::absolute(&d)?.to_string_lossy().to_string(),
+                None => String::new(),
+            };
+            let updated = rpc(daemon
+                .client()
+                .await?
+                .change_source(aegis_api::aegis::ChangeSourceRequest {
+                    project,
+                    repository_url: repo.unwrap_or_default(),
+                    branch: branch.unwrap_or_default(),
+                    source_dir: dir,
+                    source_subdir: subdir.unwrap_or_default(),
+                })
+                .await)?;
+            let source = if updated.repository_url.is_empty() {
+                updated.source_dir.clone()
+            } else {
+                format!("{} @ {}", updated.repository_url, updated.branch)
+            };
+            println!(
+                "{} now deploys from {}; it takes effect at the next deployment.",
+                updated.name, source
+            );
         }
         Commands::Schedule {
             project_id,

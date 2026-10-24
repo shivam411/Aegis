@@ -253,6 +253,15 @@ impl ArtifactStore {
         Ok(fingerprint.sha256 == meta.sha256_checksum)
     }
 
+    /// Removes a release's stored artifact and metadata (its app was
+    /// deleted). Missing ones are fine.
+    pub async fn remove(&self, release_id: &ReleaseId) -> Result<(), anyhow::Error> {
+        match fs::remove_dir_all(self.release_dir(release_id)).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
     /// Removes older artifacts beyond the retention count.
     pub async fn cleanup(&self, retain_count: usize) -> Result<usize, anyhow::Error> {
         let releases_dir = self.base_dir.join("releases");

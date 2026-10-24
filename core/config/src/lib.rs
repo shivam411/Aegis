@@ -773,6 +773,35 @@ pub fn validate_instances(instances: u32) -> Result<(), String> {
     }
 }
 
+/// Longest health-check timeout the dashboard accepts (one hour).
+pub const MAX_HEALTH_CHECK_TIMEOUT_SECS: u64 = 3600;
+/// Longest drain timeout the dashboard accepts (one hour).
+pub const MAX_DRAIN_TIMEOUT_SECS: u64 = 3600;
+
+/// Checks a health-check timeout in seconds (1-3600).
+pub fn validate_health_check_timeout(secs: u64) -> Result<(), String> {
+    if (1..=MAX_HEALTH_CHECK_TIMEOUT_SECS).contains(&secs) {
+        Ok(())
+    } else {
+        Err(format!(
+            "The health check timeout must be between 1 and {} seconds (got {})",
+            MAX_HEALTH_CHECK_TIMEOUT_SECS, secs
+        ))
+    }
+}
+
+/// Checks a drain timeout in seconds (0-3600).
+pub fn validate_drain_timeout(secs: u64) -> Result<(), String> {
+    if secs <= MAX_DRAIN_TIMEOUT_SECS {
+        Ok(())
+    } else {
+        Err(format!(
+            "The drain timeout must be between 0 and {} seconds (got {})",
+            MAX_DRAIN_TIMEOUT_SECS, secs
+        ))
+    }
+}
+
 /// `[run]`: how a release runs. By default an app is a plain process
 /// (`build.start_command`); `runtime = "docker"` runs it in a container
 /// built from a Dockerfile in the release (or from a prebuilt image).
@@ -1131,6 +1160,14 @@ pub struct ProjectOverrides {
     /// Instances to run (`[run] instances`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instances: Option<u32>,
+    /// How long a new release may take to become healthy
+    /// (`[deploy] health_check_timeout_secs`), 1-3600.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_check_timeout_secs: Option<u64>,
+    /// Grace period for in-flight requests and SIGTERM before SIGKILL when a
+    /// release stops (`[deploy] drain_timeout_secs`), 0-3600.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drain_timeout_secs: Option<u64>,
     /// Plain (non-secret) environment variables, merged over `[env]`.
     /// Secrets are kept elsewhere, encrypted, and never written to a release.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -1171,6 +1208,12 @@ impl ProjectOverrides {
         }
         if let Some(instances) = self.instances {
             file.run.instances = Some(instances);
+        }
+        if let Some(secs) = self.health_check_timeout_secs {
+            file.deploy.health_check_timeout_secs = Some(secs);
+        }
+        if let Some(secs) = self.drain_timeout_secs {
+            file.deploy.drain_timeout_secs = Some(secs);
         }
         file.env
             .extend(self.env.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -1503,6 +1546,43 @@ strategy = "GracefulSwitch"
         .apply_to(&mut file);
         assert_eq!(file.deploy.strategy.as_deref(), Some("BlueGreen"));
         assert_eq!(file.run.instances, Some(4));
+    }
+
+    #[test]
+    fn test_timeout_overrides() {
+        let mut file = ProjectFile::parse(
+            "[deploy]
+health_check_timeout_secs = 30
+drain_timeout_secs = 10
+",
+        )
+        .unwrap();
+        // Unset overrides keep the file's values.
+        ProjectOverrides::default().apply_to(&mut file);
+        assert_eq!(file.deploy.health_check_timeout_secs, Some(30));
+        assert_eq!(file.deploy.drain_timeout_secs, Some(10));
+        ProjectOverrides {
+            health_check_timeout_secs: Some(90),
+            drain_timeout_secs: Some(0),
+            ..Default::default()
+        }
+        .apply_to(&mut file);
+        assert_eq!(file.deploy.health_check_timeout_secs, Some(90));
+        assert_eq!(file.deploy.drain_timeout_secs, Some(0));
+        // Settings saved before the fields existed still load.
+        let old: ProjectOverrides = toml::from_str(
+            "port = 3000
+",
+        )
+        .unwrap();
+        assert_eq!(old.health_check_timeout_secs, None);
+        assert!(validate_health_check_timeout(1).is_ok());
+        assert!(validate_health_check_timeout(3600).is_ok());
+        assert!(validate_health_check_timeout(0).is_err());
+        assert!(validate_health_check_timeout(3601).is_err());
+        assert!(validate_drain_timeout(0).is_ok());
+        assert!(validate_drain_timeout(3600).is_ok());
+        assert!(validate_drain_timeout(3601).is_err());
     }
 
     #[test]

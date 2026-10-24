@@ -147,6 +147,15 @@ fn user_only(path: &str) -> bool {
         || (section == Some("env") && path.contains("/env/import"))
 }
 
+/// `DELETE /api/v1/projects/<project>`: deleting an app (its releases,
+/// secrets and domains) is for a signed-in admin, never an API token.
+fn deletes_project(method: &Method, path: &str) -> bool {
+    *method == Method::DELETE
+        && path
+            .strip_prefix("/api/v1/projects/")
+            .is_some_and(|rest| !rest.is_empty() && !rest.trim_end_matches('/').contains('/'))
+}
+
 /// Mapping a domain decides where public traffic (and certificates) go, so
 /// even deploy tokens may only read domains.
 fn changes_domains(path: &str) -> bool {
@@ -213,7 +222,7 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
     let mutating = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     match &principal {
         Principal::Token { scope, .. } => {
-            if user_only(&path) {
+            if user_only(&path) || deletes_project(req.method(), &path) {
                 return ApiError::forbidden(
                     "This endpoint requires a signed-in user, not an API token",
                 )
@@ -848,5 +857,19 @@ mod tests {
             assert!(user_only(p), "{p}");
         }
         assert!(user_only("/api/v1/projects/web/deploy-key"));
+        // Deleting an app: admins, signed in. Changing its source: admins.
+        assert_eq!(need(Method::DELETE, "/api/v1/projects/web"), Role::Admin);
+        assert_eq!(
+            need(Method::PUT, "/api/v1/projects/web/source"),
+            Role::Admin
+        );
+        assert!(deletes_project(&Method::DELETE, "/api/v1/projects/web"));
+        assert!(deletes_project(&Method::DELETE, "/api/v1/projects/web/"));
+        assert!(!deletes_project(&Method::GET, "/api/v1/projects/web"));
+        assert!(!deletes_project(
+            &Method::DELETE,
+            "/api/v1/projects/web/domains/a.example"
+        ));
+        assert!(!deletes_project(&Method::DELETE, "/api/v1/projects/"));
     }
 }

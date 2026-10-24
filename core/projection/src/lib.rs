@@ -163,6 +163,19 @@ pub trait Projection: Send + Sync {
     fn apply_event(&mut self, event: &Event);
 }
 
+/// A project removed with `ProjectDeleted`, remembered so files left on
+/// disk by an interrupted deletion can be cleaned up on the next boot, and
+/// so late events about it don't bring parts of it back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletedProject {
+    pub id: ProjectId,
+    pub name: String,
+    /// The operator asked to keep its release directories on disk.
+    pub keep_releases: bool,
+    /// Its releases at the time, for removing their artifact metadata.
+    pub release_ids: Vec<ReleaseId>,
+}
+
 #[derive(Default)]
 struct State {
     projects: HashMap<ProjectId, ProjectState>,
@@ -170,6 +183,8 @@ struct State {
     deployments: HashMap<DeploymentId, DeploymentState>,
     processes: HashMap<ProcessId, ProcessState>,
     servers: HashMap<ServerId, ServerState>,
+    /// Deleted projects (until a project with the same id is created again).
+    deleted: HashMap<ProjectId, DeletedProject>,
     seq: u64,
 }
 
@@ -240,7 +255,62 @@ impl ProjectionEngine {
         let seq = st.seq;
         let at = event.created_at.clone();
 
+        // Events about a deleted project (e.g. its processes reported
+        // stopping after the deletion was recorded) change nothing; only
+        // registering the id again brings it back, empty.
+        if event.event_type != "ProjectCreated" {
+            if let Some(id) = id_field::<ProjectId>(&payload, "project_id") {
+                if st.deleted.contains_key(&id) {
+                    return;
+                }
+            }
+        }
+
         match event.event_type.as_str() {
+            "ProjectDeleted" => {
+                let Some(id) = id_field::<ProjectId>(&payload, "project_id") else {
+                    return;
+                };
+                let Some(project) = st.projects.remove(&id) else {
+                    return;
+                };
+                let release_ids: Vec<ReleaseId> = st
+                    .releases
+                    .values()
+                    .filter(|r| r.project_id == id)
+                    .map(|r| r.id)
+                    .collect();
+                st.releases.retain(|_, r| r.project_id != id);
+                st.deployments.retain(|_, d| d.project_id != id);
+                st.processes.retain(|_, p| p.project_id != id);
+                let keep_releases = payload
+                    .get("keep_releases")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                st.deleted.insert(
+                    id,
+                    DeletedProject {
+                        id,
+                        name: project.name,
+                        keep_releases,
+                        release_ids,
+                    },
+                );
+            }
+            "ProjectSourceChanged" => {
+                if let Some(project) = id_field::<ProjectId>(&payload, "project_id")
+                    .and_then(|id| st.projects.get_mut(&id))
+                {
+                    project.repository_url =
+                        string_field(&payload, "repository_url").unwrap_or_default();
+                    if let Some(branch) = string_field(&payload, "branch").filter(|b| !b.is_empty())
+                    {
+                        project.branch = branch;
+                    }
+                    project.source_dir = string_field(&payload, "source_dir");
+                    project.source_subdir = string_field(&payload, "source_subdir");
+                }
+            }
             "ProjectCreated" => {
                 let (Some(id), Some(name)) = (
                     id_field::<ProjectId>(&payload, "project_id"),
@@ -248,6 +318,8 @@ impl ProjectionEngine {
                 ) else {
                     return;
                 };
+                // A deleted project's id registered again starts afresh.
+                st.deleted.remove(&id);
                 let previous = st.projects.get(&id).cloned();
                 st.projects.insert(
                     id,
@@ -660,6 +732,17 @@ impl ProjectionEngine {
 
     pub fn get_project(&self, id: &ProjectId) -> Option<ProjectState> {
         self.state.read().unwrap().projects.get(id).cloned()
+    }
+
+    /// Projects deleted with `ProjectDeleted` (and not registered again).
+    pub fn deleted_projects(&self) -> Vec<DeletedProject> {
+        self.state
+            .read()
+            .unwrap()
+            .deleted
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Deployments, oldest first.
@@ -1191,5 +1274,110 @@ mod tests {
         assert_eq!(engine.get_projects()[0].name, "replayed-app");
         assert!(engine.get_releases().is_empty());
         assert!(engine.get_servers().is_empty());
+    }
+
+    #[test]
+    fn test_project_deleted_drops_everything_and_ignores_late_events() {
+        let engine = ProjectionEngine::new();
+        let (keep, gone) = (ProjectId::new(), ProjectId::new());
+        let (k, g) = (keep.to_string(), gone.to_string());
+        let release = ReleaseId::new();
+        let process = ProcessId::new();
+        let dep = DeploymentId::new();
+        let events = vec![
+            ev(
+                "ProjectCreated",
+                serde_json::json!({"project_id": k, "name": "keep"}),
+            ),
+            ev(
+                "ProjectCreated",
+                serde_json::json!({"project_id": g, "name": "web",
+                "repository_url": "https://github.com/acme/web.git"}),
+            ),
+            ev(
+                "DomainMapped",
+                serde_json::json!({"project_id": g, "domain": "web.example.com", "tls": "acme"}),
+            ),
+            ev(
+                "DeploymentQueued",
+                serde_json::json!({"deployment_id": dep.to_string(), "project_id": g}),
+            ),
+            ev(
+                "ReleaseCreated",
+                serde_json::json!({"release_id": release.to_string(), "project_id": g,
+                "deployment_id": dep.to_string(), "version": "r1"}),
+            ),
+            ev(
+                "ProcessStarted",
+                serde_json::json!({"process_id": process.to_string(), "project_id": g,
+                "release_version": "r1", "port": 4100}),
+            ),
+            ev(
+                "ReleasePromoted",
+                serde_json::json!({"release_id": release.to_string(), "project_id": g,
+                "version": "r1", "process_id": process.to_string()}),
+            ),
+            ev(
+                "ProjectDeleted",
+                serde_json::json!({"project_id": g, "name": "web", "keep_releases": false}),
+            ),
+            // Reported after the deletion was recorded.
+            ev(
+                "ProcessStopped",
+                serde_json::json!({"process_id": process.to_string(), "project_id": g, "reason": "requested"}),
+            ),
+            ev(
+                "ProcessStarted",
+                serde_json::json!({"process_id": ProcessId::new().to_string(), "project_id": g}),
+            ),
+            ev(
+                "DeploymentQueued",
+                serde_json::json!({"deployment_id": DeploymentId::new().to_string(), "project_id": g}),
+            ),
+        ];
+        engine.replay_from_store(&events);
+        assert!(engine.get_project(&gone).is_none());
+        assert!(engine.get_project(&keep).is_some());
+        assert!(engine.get_project_releases(&gone).is_empty());
+        assert!(engine.get_processes().is_empty());
+        assert!(engine.get_deployments().is_empty());
+        let deleted = engine.deleted_projects();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].name, "web");
+        assert_eq!(deleted[0].release_ids, vec![release]);
+        assert!(!deleted[0].keep_releases);
+
+        // The same id registered again starts empty.
+        engine.apply_event(&ev(
+            "ProjectCreated",
+            serde_json::json!({"project_id": g, "name": "web"}),
+        ));
+        let again = engine.get_project(&gone).unwrap();
+        assert!(again.domains.is_empty());
+        assert_eq!(again.current_release, None);
+        assert!(engine.deleted_projects().is_empty());
+    }
+
+    #[test]
+    fn test_project_source_changed() {
+        let engine = ProjectionEngine::new();
+        let id = ProjectId::new();
+        let p = id.to_string();
+        engine.apply_event(&ev("ProjectCreated", serde_json::json!({"project_id": p, "name": "app",
+            "repository_url": "https://github.com/acme/app.git", "branch": "main", "source_subdir": "web"})));
+        engine.apply_event(&ev("ProjectSourceChanged", serde_json::json!({"project_id": p,
+            "repository_url": "", "branch": null, "source_dir": "/opt/apps/app", "source_subdir": null})));
+        let project = engine.get_project(&id).unwrap();
+        assert_eq!(project.repository_url, "");
+        assert_eq!(project.source_dir.as_deref(), Some("/opt/apps/app"));
+        assert_eq!(project.source_subdir, None);
+        assert_eq!(project.branch, "main");
+        engine.apply_event(&ev("ProjectSourceChanged", serde_json::json!({"project_id": p,
+            "repository_url": "git@github.com:acme/app.git", "branch": "prod", "source_dir": null, "source_subdir": "api"})));
+        let project = engine.get_project(&id).unwrap();
+        assert_eq!(project.repository_url, "git@github.com:acme/app.git");
+        assert_eq!(project.branch, "prod");
+        assert_eq!(project.source_dir, None);
+        assert_eq!(project.source_subdir.as_deref(), Some("api"));
     }
 }

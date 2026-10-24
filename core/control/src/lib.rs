@@ -11,6 +11,7 @@ mod deploy;
 mod docker;
 mod domains;
 mod env;
+mod lifecycle;
 pub mod ports;
 mod process;
 mod resources;
@@ -40,6 +41,7 @@ pub use config_file::ConfigPreview;
 pub use deploy::DeployRequest;
 pub use domains::DomainView;
 pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, ImportResult};
+pub use lifecycle::{DeletedApp, SourceChange};
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 pub use rollout::{InstanceView, StandbyView};
@@ -400,37 +402,13 @@ impl ControlPlane {
             ));
         }
         let id = req.project_id.unwrap_or_default();
-        let source_dir = match req.source_dir {
-            Some(dir) => Some(
-                dir.canonicalize()
-                    .map_err(|e| {
-                        ControlError::InvalidArgument(format!(
-                            "Source directory {}: {}",
-                            dir.display(),
-                            e
-                        ))
-                    })?
-                    .to_string_lossy()
-                    .to_string(),
-            ),
-            None => None,
-        };
-        if !req.repository_url.is_empty() {
-            aegis_builder::validate_repository_url(&req.repository_url)
-                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-        }
-        if !req.branch.is_empty() {
-            aegis_builder::validate_git_ref(&req.branch)
-                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-        }
-        let source_subdir = match req.source_subdir.as_deref().map(str::trim) {
-            Some(sub) if !sub.is_empty() => {
-                aegis_builder::validate_subdir(sub)
-                    .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-                Some(sub.trim_matches('/').to_string())
-            }
-            _ => None,
-        };
+        let source = validate_source(
+            req.source_dir,
+            &req.repository_url,
+            &req.branch,
+            req.source_subdir.as_deref(),
+        )?;
+        let (source_dir, source_subdir) = (source.source_dir, source.source_subdir);
         let branch = if req.branch.is_empty() {
             "main".to_string()
         } else {
@@ -792,6 +770,60 @@ impl ControlPlane {
     }
 }
 
+/// A project source checked the way registration checks it.
+pub(crate) struct ValidSource {
+    /// Canonical path of the server folder, if the source is one.
+    pub source_dir: Option<String>,
+    /// Trimmed subdirectory without leading/trailing slashes.
+    pub source_subdir: Option<String>,
+}
+
+/// Validates a project's source as registration does: the folder must
+/// exist (symbolic links are resolved), the repository URL, branch and
+/// subdirectory must be well-formed.
+pub(crate) fn validate_source(
+    source_dir: Option<PathBuf>,
+    repository_url: &str,
+    branch: &str,
+    source_subdir: Option<&str>,
+) -> ControlResult<ValidSource> {
+    let source_dir = match source_dir {
+        Some(dir) => {
+            let canonical = dir.canonicalize().map_err(|e| {
+                ControlError::InvalidArgument(format!("Source directory {}: {}", dir.display(), e))
+            })?;
+            if !canonical.is_dir() {
+                return Err(ControlError::InvalidArgument(format!(
+                    "Source directory {} is not a directory",
+                    dir.display()
+                )));
+            }
+            Some(canonical.to_string_lossy().to_string())
+        }
+        None => None,
+    };
+    if !repository_url.is_empty() {
+        aegis_builder::validate_repository_url(repository_url)
+            .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+    }
+    if !branch.is_empty() {
+        aegis_builder::validate_git_ref(branch)
+            .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+    }
+    let source_subdir = match source_subdir.map(str::trim) {
+        Some(sub) if !sub.is_empty() => {
+            aegis_builder::validate_subdir(sub)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+            Some(sub.trim_matches('/').to_string())
+        }
+        _ => None,
+    };
+    Ok(ValidSource {
+        source_dir,
+        source_subdir,
+    })
+}
+
 /// Trims and validates dashboard settings.
 pub(crate) fn validate_settings(
     settings: aegis_config::ProjectOverrides,
@@ -806,6 +838,8 @@ pub(crate) fn validate_settings(
         health_check_url: clean(settings.health_check_url),
         strategy: clean(settings.strategy).filter(|s| !s.is_empty()),
         instances: settings.instances,
+        health_check_timeout_secs: settings.health_check_timeout_secs,
+        drain_timeout_secs: settings.drain_timeout_secs,
         env: settings
             .env
             .into_iter()
@@ -826,6 +860,12 @@ pub(crate) fn validate_settings(
     }
     if let Some(instances) = settings.instances {
         aegis_config::validate_instances(instances).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(secs) = settings.health_check_timeout_secs {
+        aegis_config::validate_health_check_timeout(secs).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(secs) = settings.drain_timeout_secs {
+        aegis_config::validate_drain_timeout(secs).map_err(ControlError::InvalidArgument)?;
     }
     if let Some(url) = settings
         .health_check_url

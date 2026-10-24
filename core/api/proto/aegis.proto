@@ -15,6 +15,11 @@ service AegisDaemon {
   rpc ControlProcess(ControlProcessRequest) returns (ProcessInfo);
   // Sets a project's daily auto-deployment time (UTC).
   rpc ConfigureSchedule(ConfigureScheduleRequest) returns (ProjectInfo);
+  // Deletes an app: stops its processes, removes its domains, secrets,
+  // deploy key, webhook secret, schedule and (unless kept) its releases.
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+  // Changes where an app's code comes from (git or a server folder).
+  rpc ChangeSource(ChangeSourceRequest) returns (ProjectInfo);
 
   // Queries
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
@@ -173,6 +178,36 @@ message ConfigureScheduleRequest {
   uint32 minute = 3;
   // Defaults to the project's branch.
   string branch = 4;
+}
+
+message DeleteProjectRequest {
+  // Project id or name.
+  string project = 1;
+  // Keep the release directories and logs on disk.
+  bool keep_releases = 2;
+}
+
+message DeleteProjectResponse {
+  string project_id = 1;
+  string name = 2;
+  uint32 stopped_processes = 3;
+  repeated string domains = 4;
+  uint64 secrets_removed = 5;
+  bool releases_kept = 6;
+  // Where the kept releases are (keep_releases).
+  string kept_dir = 7;
+}
+
+message ChangeSourceRequest {
+  // Project id or name.
+  string project = 1;
+  // A git repository, or...
+  string repository_url = 2;
+  string branch = 3;
+  // ...a folder on the server.
+  string source_dir = 4;
+  // Build and run only this folder of the source.
+  string source_subdir = 5;
 }
 
 message ListProjectsRequest {}

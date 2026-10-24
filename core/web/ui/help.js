@@ -174,6 +174,8 @@ export const HELP = {
       ['Port / Health check URL', 'Where the app listens, and the URL that must answer (below 500) before a release goes live.'],
       ['No HTTP health check', 'Treat the release as healthy while its process stays up.'],
       ['Default strategy / Instances', 'The strategy used when a deployment does not pick one, and how many copies to run (more than one needs a domain).'],
+      ['Health check timeout', 'Seconds a new release may take to become healthy before the deployment fails and the previous release keeps serving (1-3600, default 30; [deploy] health_check_timeout_secs). Raise it for apps that start slowly.'],
+      ['Drain timeout', 'Seconds a stopping release gets to finish in-flight requests and exit after SIGTERM before it is killed (0-3600, default 10; [deploy] drain_timeout_secs).'],
       ['Environment variables', 'Plain settings written into each release. Use Secrets for passwords and keys.'],
       ['View aegis.toml / Show detected defaults', 'Shows the file the next release gets, or what auto-detection would choose.'],
     ],
@@ -198,6 +200,7 @@ export const HELP = {
       ['Copy', 'Copies the public key line (ssh-ed25519 …).'],
       ['Test access', 'Runs git ls-remote with the key and shows the result, or git\'s error with what to do about it.'],
       ['Generate a new key / Delete key', 'Replaces or removes the key; also update the repository\'s deploy keys.'],
+      ['Change source', 'Switch between a git repository (URL, branch, optional app folder) and a folder on this server. Checked like a new app\'s source; the next deployment uses it, and the running release keeps serving until then. The deploy key is kept.'],
     ],
     roles: 'Admins.',
     docs: 'settings.md#repository',
@@ -224,6 +227,16 @@ export const HELP = {
     ],
     roles: 'Admins.',
     docs: 'settings.md#secrets',
+  },
+  'app.delete': {
+    title: 'Danger zone',
+    summary: 'Deleting an app stops all its processes (they get the drain timeout to finish requests), stops serving its domains, and removes its secrets, deploy key, webhook secret, daily deploy and releases. Its events stay in the history. Its name and domains can be used again right away. Certificates already issued for its domains are kept, so mapping a domain again needs no new certificate.',
+    controls: [
+      ['Delete app', 'Asks you to type the app\'s name. Not possible while a deployment is queued or running.'],
+      ['Keep the release directories and logs', 'Leaves them on the server (projects/<id> in the data directory) to copy anything out by hand.'],
+    ],
+    roles: 'Admins, signed in (not API tokens).',
+    docs: 'settings.md#delete-the-app',
   },
   'app.schedule': {
     title: 'Daily deploy',

@@ -63,7 +63,7 @@ async fn prepare_admin_account(config: &Config, auth: &AuthStore) -> Result<(), 
     Ok(())
 }
 
-/// Registers a `ScheduleConfigured` event with the scheduler.
+/// Applies a `ScheduleConfigured` (or `ProjectDeleted`) event to the scheduler.
 fn apply_schedule(scheduler: &aegis_scheduler::SchedulerEngine, event: &aegis_types::Event) {
     let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload_json) else {
         return;
@@ -74,6 +74,11 @@ fn apply_schedule(scheduler: &aegis_scheduler::SchedulerEngine, event: &aegis_ty
     else {
         return;
     };
+    // A deleted app's daily deploy goes with it.
+    if event.event_type == "ProjectDeleted" {
+        scheduler.remove_schedule(&project_id);
+        return;
+    }
     let hour = payload["hour"].as_u64().unwrap_or(0) as u32;
     let minute = payload["minute"].as_u64().unwrap_or(0) as u32;
     let branch = payload["branch"].as_str().unwrap_or("main").to_string();
@@ -131,7 +136,26 @@ const USAGE: &str = "Usage:
                                          signature check (unsigned release, or a build without a
                                          release key); SHA-256 is still checked. Not recommended
 
-The configuration is read from $AEGIS_CONFIG (default: ./aegis.toml).";
+The configuration is read from $AEGIS_CONFIG; when it is unset, from ./aegis.toml if it
+exists, else from /etc/aegis/aegis.toml (install.sh --server) if that exists.";
+
+/// The configuration in the working directory (development setups).
+const LOCAL_CONFIG: &str = "aegis.toml";
+/// Where `install.sh --server` writes the configuration.
+pub(crate) const SYSTEM_CONFIG: &str = "/etc/aegis/aegis.toml";
+
+/// The configuration file to read: `$AEGIS_CONFIG` when set, else
+/// `./aegis.toml` when it exists, else `/etc/aegis/aegis.toml` when it
+/// exists (a server install, e.g. `sudo aegis-daemon self-update` run from
+/// root's home), else `./aegis.toml` (built-in defaults when missing).
+fn resolve_config_path(env: Option<String>, local_exists: bool, system: &Path) -> String {
+    match env.filter(|p| !p.trim().is_empty()) {
+        Some(path) => path,
+        None if local_exists => LOCAL_CONFIG.to_string(),
+        None if system.is_file() => system.display().to_string(),
+        None => LOCAL_CONFIG.to_string(),
+    }
+}
 
 /// Where the first-boot admin password is written (mode 0600).
 fn initial_password_path(config: &Config) -> PathBuf {
@@ -184,7 +208,11 @@ async fn run() -> Result<(), anyhow::Error> {
     // 1. Load config. The daemon must not create aegis.toml itself: `aegis init`
     // owns that file, and a pre-existing daemon-only file made init skip writing
     // the [project] section, so every deploy got a fresh random project ID.
-    let config_path = std::env::var("AEGIS_CONFIG").unwrap_or_else(|_| "aegis.toml".to_string());
+    let config_path = resolve_config_path(
+        std::env::var("AEGIS_CONFIG").ok(),
+        Path::new(LOCAL_CONFIG).exists(),
+        Path::new(SYSTEM_CONFIG),
+    );
     let config = Config::load(&config_path)?;
     validate_config(&config)?;
 
@@ -206,7 +234,7 @@ async fn run() -> Result<(), anyhow::Error> {
             Ok(())
         }
         ["admin", rest @ ..] => admin(&config, rest).await,
-        ["self-update", rest @ ..] => self_update::command(&config, rest).await,
+        ["self-update", rest @ ..] => self_update::command(&config, &config_path, rest).await,
         ["-h" | "--help" | "help"] => {
             println!("{}", USAGE);
             Ok(())
@@ -957,7 +985,10 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
     // 6. Scheduler: restore persisted schedules, then follow new ones.
     let scheduler = Arc::new(aegis_scheduler::SchedulerEngine::new());
     for event in event_store.get_events().await? {
-        if event.event_type == "ScheduleConfigured" {
+        if matches!(
+            event.event_type.as_str(),
+            "ScheduleConfigured" | "ProjectDeleted"
+        ) {
             apply_schedule(&scheduler, &event);
         }
     }
@@ -966,7 +997,12 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
     tokio::spawn(async move {
         loop {
             match schedule_rx.recv().await {
-                Ok(event) if event.event_type == "ScheduleConfigured" => {
+                Ok(event)
+                    if matches!(
+                        event.event_type.as_str(),
+                        "ScheduleConfigured" | "ProjectDeleted"
+                    ) =>
+                {
                     apply_schedule(&scheduler_for_events, &event)
                 }
                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -1281,6 +1317,44 @@ mod tests {
             .unwrap();
         assert!(created.payload_json.contains("\"trigger\":\"update\""));
         pool.close().await;
+        // Private, whoever runs it (root's archive is then given to the
+        // data directory's owner).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let dir = backup::backups_dir(&data_dir);
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&dir.join(&name)), 0o600);
+            let owner = std::fs::metadata(&data_dir).unwrap().uid();
+            assert_eq!(std::fs::metadata(dir.join(&name)).unwrap().uid(), owner);
+        }
+    }
+
+    #[test]
+    fn config_lookup_order() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let system = dir.path().join("aegis.toml");
+        let env = |s: &str| Some(s.to_string());
+        // AEGIS_CONFIG wins.
+        assert_eq!(
+            resolve_config_path(env("/srv/a.toml"), true, &system),
+            "/srv/a.toml"
+        );
+        // No server config: ./aegis.toml (defaults when missing).
+        assert_eq!(resolve_config_path(None, false, &system), "aegis.toml");
+        std::fs::write(&system, "[daemon]\n").unwrap();
+        // ./aegis.toml when there is one...
+        assert_eq!(resolve_config_path(None, true, &system), "aegis.toml");
+        // ...else the server's configuration.
+        assert_eq!(
+            resolve_config_path(None, false, &system),
+            system.display().to_string()
+        );
+        assert_eq!(
+            resolve_config_path(env(" "), false, &system),
+            system.display().to_string()
+        );
     }
 
     #[tokio::test]

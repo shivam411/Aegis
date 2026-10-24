@@ -326,6 +326,18 @@ impl SecretStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Deletes all of a project's secrets and its deploy key (the project
+    /// was deleted). Returns how many secrets there were.
+    pub async fn remove_project(&self, project_id: &str) -> Result<u64, anyhow::Error> {
+        let result = sqlx::query("DELETE FROM secrets WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&self.inner.pool)
+            .await?;
+        self.inner.cache.lock().unwrap().remove(project_id);
+        self.remove_deploy_key(project_id).await?;
+        Ok(result.rows_affected())
+    }
+
     /// A project's secret names, sorted.
     pub fn list(&self, project_id: &str) -> Vec<SecretInfo> {
         self.inner

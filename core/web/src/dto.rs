@@ -476,6 +476,14 @@ pub struct ProjectSettingsDto {
     /// Instances to run, 1-16 (more than 1 needs a domain on the built-in
     /// proxy). Takes effect with the next deployment.
     pub instances: Option<u32>,
+    /// Seconds a new release may take to become healthy (1-3600; aegis.toml
+    /// `[deploy] health_check_timeout_secs`, default 30). Raise it for apps
+    /// that start slowly.
+    pub health_check_timeout_secs: Option<u64>,
+    /// Seconds a stopping release gets to finish in-flight requests and
+    /// exit after SIGTERM (0-3600; aegis.toml `[deploy] drain_timeout_secs`,
+    /// default 10).
+    pub drain_timeout_secs: Option<u64>,
     /// Plain environment variables, merged over aegis.toml's `[env]` and
     /// written into each release. Use secrets for sensitive values.
     pub env: std::collections::BTreeMap<String, String>,
@@ -498,6 +506,8 @@ impl From<aegis_config::ProjectOverrides> for ProjectSettingsDto {
             health_check_url: o.health_check_url,
             strategy: o.strategy,
             instances: o.instances,
+            health_check_timeout_secs: o.health_check_timeout_secs,
+            drain_timeout_secs: o.drain_timeout_secs,
             env: o.env,
             env_file: o.env_file,
         }
@@ -515,8 +525,59 @@ impl From<ProjectSettingsDto> for aegis_config::ProjectOverrides {
             health_check_url: d.health_check_url,
             strategy: d.strategy,
             instances: d.instances,
+            health_check_timeout_secs: d.health_check_timeout_secs,
+            drain_timeout_secs: d.drain_timeout_secs,
             env: d.env,
             env_file: d.env_file,
+        }
+    }
+}
+
+/// A new source for an existing app: a git repository (`repository_url`,
+/// optional `branch` and `source_subdir`) or a folder on the server
+/// (`source_dir`, optional `source_subdir`). Give exactly one of
+/// `repository_url` and `source_dir`. Validated like registration; takes
+/// effect at the next deployment.
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChangeSourceRequest {
+    pub repository_url: Option<String>,
+    /// Branch to deploy (default: the app's current branch, else main).
+    pub branch: Option<String>,
+    /// Absolute path of a folder on the server.
+    pub source_dir: Option<String>,
+    /// Build and run only this folder of the source (monorepos).
+    pub source_subdir: Option<String>,
+}
+
+/// What deleting an app did.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DeletedProjectDto {
+    pub project_id: String,
+    pub name: String,
+    /// Processes (instances, standby) that were stopped.
+    pub stopped_processes: usize,
+    /// Domains the built-in proxy no longer serves; they can be mapped
+    /// to another app right away.
+    pub domains: Vec<String>,
+    /// Secrets that were deleted.
+    pub secrets_removed: u64,
+    /// The release directories and logs were kept on disk.
+    pub releases_kept: bool,
+    /// Where they are, with `keep_releases`.
+    pub kept_dir: Option<String>,
+}
+
+impl From<aegis_control::DeletedApp> for DeletedProjectDto {
+    fn from(d: aegis_control::DeletedApp) -> Self {
+        Self {
+            project_id: d.project_id,
+            name: d.name,
+            stopped_processes: d.stopped_processes,
+            domains: d.domains,
+            secrets_removed: d.secrets_removed,
+            releases_kept: d.releases_kept,
+            kept_dir: d.kept_dir,
         }
     }
 }

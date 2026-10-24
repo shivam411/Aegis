@@ -694,3 +694,145 @@ async fn blue_green_keeps_the_old_set_for_an_instant_rollback() {
     assert_eq!(running(control, project).len(), 2);
     control.shutdown().await;
 }
+
+#[tokio::test]
+async fn deleting_a_running_multi_instance_app_frees_its_domain_ports_and_name() {
+    let app = app("[run]\ninstances = 2\n").await;
+    let (control, project, proxy) = (&app.control, app.project, &app.proxy);
+    assert_eq!(deploy(&app, "r1", None).await.status, "Success");
+    let instances = running(control, project);
+    assert_eq!(instances.len(), 2, "{instances:?}");
+    let ports: Vec<u16> = instances.iter().map(|r| r.2).collect();
+    assert_eq!(serving(proxy.port).await.as_deref(), Some("r1"));
+    control
+        .set_secret(project, "TOKEN", "s3cret")
+        .await
+        .unwrap();
+    let project_dir = app.data.path().join("projects").join(project.to_string());
+    assert!(project_dir.is_dir());
+
+    // Refused while a deployment is queued or running.
+    let queued = control
+        .queue_deployment(DeployRequest {
+            project_id: project,
+            version: Some("r2".into()),
+            trigger: "test".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    match control.delete_project(project, false).await {
+        Err(aegis_control::ControlError::FailedPrecondition(m)) => {
+            assert!(m.contains("deployment"), "{m}")
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(wait_deployment(control, queued).await.status, "Success");
+
+    let deleted = control.delete_project(project, false).await.unwrap();
+    assert_eq!(deleted.name, "web");
+    assert_eq!(deleted.stopped_processes, 2);
+    assert_eq!(deleted.domains, vec![DOMAIN.to_string()]);
+    assert_eq!(deleted.secrets_removed, 1);
+
+    // Nothing left in the proxy, the processes or on disk.
+    assert!(proxy.ingress.routes().domain(DOMAIN).is_none());
+    assert!(proxy.ingress.upstreams(&project.to_string()).is_empty());
+    assert!(!matches!(
+        via_proxy(proxy.port, "/version.txt").await,
+        Ok((200, _))
+    ));
+    assert!(control.projection().get_project(&project).is_none());
+    assert!(control.list_processes(Some(&project)).is_empty());
+    assert!(control
+        .supervisor()
+        .list_processes()
+        .iter()
+        .all(|p| p.project_id != project));
+    assert!(control.list_secrets(&project).is_empty());
+    assert!(!project_dir.exists());
+    let busy = busy_ports(&ports).await;
+    assert!(
+        busy.is_empty(),
+        "ports still in use after the delete: {busy:?}"
+    );
+    // The history stays, ending with the deletion.
+    let recorded = events_of(control, project, "ProjectDeleted").await;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["name"], "web");
+    assert_eq!(recorded[0]["domains"][0], DOMAIN);
+    assert!(!events_of(control, project, "DeploymentCompleted")
+        .await
+        .is_empty());
+
+    // The name and the domain can be used again at once.
+    let again = control
+        .register_project(RegisterProject {
+            name: "web".into(),
+            source_dir: Some(app.src.path().to_path_buf()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_ne!(again.id, project);
+    assert_eq!(control.resolve_project("web").unwrap().id, again.id);
+    control
+        .map_domain(again.id, DOMAIN, "off", None, None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        control.delete_project(project, false).await,
+        Err(aegis_control::ControlError::NotFound(_))
+    ));
+    control.shutdown().await;
+
+    // A daemon restart doesn't bring the deleted app back.
+    let App {
+        store, data, proxy, ..
+    } = app;
+    drop(proxy);
+    let control = new_control(&store, data.path()).await;
+    assert_eq!(control.recover().await, 0);
+    assert!(control.projection().get_project(&project).is_none());
+    assert!(control.list_processes(Some(&project)).is_empty());
+    assert_eq!(control.resolve_project("web").unwrap().id, again.id);
+    control.shutdown().await;
+}
+
+/// The ports among `ports` that can't be bound (still in use).
+async fn busy_ports(ports: &[u16]) -> Vec<u16> {
+    let mut busy = Vec::new();
+    for port in ports {
+        let mut free = false;
+        for _ in 0..50 {
+            if std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok() {
+                free = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !free {
+            busy.push(*port);
+        }
+    }
+    busy
+}
+
+#[tokio::test]
+async fn deleting_with_keep_releases_leaves_the_files() {
+    let app = app("").await;
+    let (control, project) = (&app.control, app.project);
+    assert_eq!(deploy(&app, "r1", None).await.status, "Success");
+    let deleted = control.delete_project(project, true).await.unwrap();
+    assert!(deleted.releases_kept);
+    let dir = app.data.path().join("projects").join(project.to_string());
+    assert_eq!(deleted.kept_dir.as_deref(), Some(dir.to_str().unwrap()));
+    assert!(dir.join("releases").join("r1").is_dir());
+    assert!(control.projection().get_project(&project).is_none());
+    // A restart's cleanup keeps them too.
+    control.shutdown().await;
+    let control = new_control(&app.store, app.data.path()).await;
+    control.recover().await;
+    assert!(dir.join("releases").join("r1").is_dir());
+    control.shutdown().await;
+}

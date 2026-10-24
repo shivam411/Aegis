@@ -256,6 +256,18 @@ expect_serving v1
 acurl -sS -X PUT -H 'Content-Type: application/json' -d '{"hour":3,"minute":30}' "$API/projects/smoke-app/schedule" \
   | json '["schedule"]["hour"]' | grep -qx 3 || fail "HTTP schedule"
 
+step "CLI: delete an app"
+if aegis delete smoke-app </dev/null >"$WORK/out.txt" 2>&1; then
+  fail "delete without --yes outside a terminal was not refused"
+fi
+expect_serving v1
+aegis delete smoke-app --yes | tee "$WORK/out.txt"
+grep -q "Deleted smoke-app" "$WORK/out.txt" || fail "aegis delete output"
+expect_down
+aegis list | grep -q smoke-app && fail "deleted app still listed"
+[ ! -d "$WORK/data/projects" ] || [ -z "$(ls -A "$WORK/data/projects")" ] || fail "release directories left behind"
+acurl -sS "$API/events?limit=1000" | grep -q '"event_type":"ProjectDeleted"' || fail "ProjectDeleted not recorded"
+
 step "Daemon shutdown is not held up by an open event stream"
 kill -0 "$SSE_PID" 2>/dev/null || fail "SSE client ended early"
 START=$(date +%s)

@@ -16,6 +16,8 @@ The **Build & run** card holds the app's dashboard settings. A blank field means
 | **No HTTP health check** | The release counts as healthy while its process stays up. Use it for workers without an HTTP port. |
 | **Default strategy** | Used when a deployment doesn't choose one. Rolling and Blue-green need a domain on the built-in proxy. See [strategies](deploy.md#strategies). |
 | **Instances** | How many copies of the app to run (1–16). More than one needs a domain on the built-in proxy. Resource limits apply to each instance. |
+| **Health check timeout (seconds)** | How long a new release may take to become healthy (1–3600; `aegis.toml` `[deploy] health_check_timeout_secs`, default 30). If it isn't healthy by then, the deployment fails and the previous release keeps serving. Raise it for apps that start slowly (e.g. 90 for an app that needs 75 s). |
+| **Drain timeout (seconds)** | How long a stopping release gets to finish in-flight requests and exit after SIGTERM before it is killed (0–3600; `[deploy] drain_timeout_secs`, default 10). It applies to releases built after the change. |
 | **Environment variables** | `NAME = value` rows, merged over `[env]` in `aegis.toml` (and over the [env file](#env-file)) and written into each release. **Add variable** adds a row, **Remove** deletes one. Use [Secrets](#secrets) for passwords and keys. |
 
 Buttons in the card header:
@@ -23,7 +25,7 @@ Buttons in the card header:
 - **View aegis.toml** shows the `aegis.toml` the next release will get: the app's own file with the dashboard settings merged in (secrets are never included). **Copy** puts it on the clipboard, so you can commit it to the repository.
 - **Show detected defaults** runs auto-detection again and shows what it would pick as the placeholders of the fields.
 
-**Save settings** first shows the change as a diff of `aegis.toml` (green lines added, red lines removed). Confirm with **Save settings** in that dialog. Settings apply to the **next** deployment; releases that are already built keep the settings they were built with.
+**Save settings** first shows the change as a diff of `aegis.toml` (green lines added, red lines removed). Confirm with **Save settings** in that dialog. Settings apply to the **next** deployment; releases that are already built keep the settings they were built with. Dashboard settings win over the app's `aegis.toml`; the form always saves every field, so clearing a field (blank) goes back to the file's value.
 
 ## Repository
 
@@ -34,6 +36,10 @@ Where deployments get the code (the repository URL and branch, or the directory,
 - **Test access** runs `git ls-remote` with the key and shows whether it worked, with git's error and what to do when it didn't (key not added yet, wrong repository, unknown host key).
 - With a key, an `https://github.com/…` URL is cloned over SSH (`git@github.com:…`); the card says so. Other HTTPS URLs and local directories can't use a key. Every deployment uses the key: from the dashboard, the CLI, webhooks and the daily schedule.
 - **Generate a new key** replaces the key (the old one stops being used; remove it on GitHub too). **Delete key** removes it; deployments of a private repository then fail until a new key is added.
+
+### Change source
+
+**Change source** (in the card header) switches the app between a **Git repository** (Repository URL, Branch) and a **Folder on this server** (an absolute path the daemon can read), with an optional **App folder** for monorepos. It's checked like a new app's source: the folder must exist, and the URL, branch and app folder must be safe. **Save source** asks for confirmation; the change applies to the **next** deployment, while the running release keeps serving. A blank branch keeps the app's current one. The deploy key is kept (it isn't used for a folder). The change is recorded as a `ProjectSourceChanged` event. From the CLI: `aegis source <app> --repo URL [--branch B]` or `--dir PATH`.
 
 ## Environment
 
@@ -105,3 +111,16 @@ Deploy on every push to the app's branch (git apps only).
 ## About
 
 Fixed facts: the project id (used by the CLI and API), the runtime, whether it runs as a **Process** or a **Docker container** (with the image), when it was created, and its source.
+
+## Delete the app
+
+The **Danger zone** card at the bottom has **Delete app** (admins only). The dialog lists what goes away and asks you to type the app's name; **Delete this app** stays disabled until it matches. Tick **Keep the release directories and logs on the server** to leave them in `<data_dir>/projects/<id>/` to copy anything out by hand (delete that folder yourself later).
+
+Deleting:
+
+- stops every process of the app (all instances, and a Blue-green standby). Its domains are taken out of the proxy first, then running requests get the app's drain timeout to finish;
+- stops serving its domains, which can be mapped to another app right away. Certificates already issued are kept on the server, so mapping the domain again needs no new certificate;
+- deletes its secrets, deploy key, webhook secret, env file setting, daily deploy, resource limits and (unless kept) its releases, logs and Docker images;
+- records a `ProjectDeleted` event. The app's history stays in [Events](events.md); the app disappears from the dashboard, and its name can be used for a new app at once.
+
+It can't be undone, and isn't possible while a deployment of the app is queued or running (wait for it to finish). Restarting Aegis never brings a deleted app back. From the CLI: `aegis delete <app>` (asks for confirmation; `--yes` skips it, `--keep-releases` keeps the files).

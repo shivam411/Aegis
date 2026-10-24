@@ -146,6 +146,24 @@ helper, takes none: the daemon backed up before asking. `aegis upgrade`, the
 per-user CLI command, takes none either; run `aegis-daemon admin backup`
 first.)
 
+**Which configuration (and database) it uses.** `aegis-daemon` reads
+`$AEGIS_CONFIG` when it is set; otherwise `./aegis.toml` if the current
+directory has one; otherwise `/etc/aegis/aegis.toml` if it exists (the file
+`install.sh --server` writes); otherwise built-in defaults. So a plain
+`sudo aegis-daemon self-update` on a server install finds the server's
+database (`/var/lib/aegis/aegis.db`) and data directory without
+`AEGIS_CONFIG`. It prints the configuration, database and data directory it
+uses before downloading anything. Run as root, the backup still reads the
+real database and data directory; the archive (mode 0600) and the backups
+directory (mode 0700) are given to the data directory's owner (the `aegis`
+user), as are SQLite journal files the backup may have created.
+
+On a server install (configuration in `/etc/aegis/aegis.toml`, or the
+`aegis.service` unit installed), a missing database is an error rather than
+"nothing to back up": `self-update` stops before downloading, names the
+database path and configuration it looked at, and asks you to set
+`AEGIS_CONFIG` or to run again with `--no-backup` to update without a backup.
+
 ## Never downgrades, and major versions need a decision
 
 - The dashboard and the helper only install a release **newer** than the

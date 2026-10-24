@@ -1139,6 +1139,93 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "delete_project",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "confirm",
+            "in": "query",
+            "description": "The app's name (or id), repeated to confirm the deletion.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "keep_releases",
+            "in": "query",
+            "description": "Keep the release directories and logs on disk (under\n`<data_dir>/projects/<id>`); they are deleted by default.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted: its processes are stopped, its domains, secrets, deploy key, webhook secret and schedule are gone, and its name and domains can be used again. Its events stay in the history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`confirm` doesn't match the app's name or id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin, or an API token (signed-in users only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A deployment of the app is queued or running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/projects/{project}/deploy": {
@@ -2218,6 +2305,67 @@
         }
       }
     },
+    "/api/v1/projects/{project}/source": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "change_source",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeSourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; the next deployment uses the new source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/webhook": {
       "get": {
         "tags": [
@@ -3040,6 +3188,44 @@
         },
         "additionalProperties": false
       },
+      "ChangeSourceRequest": {
+        "type": "object",
+        "description": "A new source for an existing app: a git repository (`repository_url`,\noptional `branch` and `source_subdir`) or a folder on the server\n(`source_dir`, optional `source_subdir`). Give exactly one of\n`repository_url` and `source_dir`. Validated like registration; takes\neffect at the next deployment.",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Branch to deploy (default: the app's current branch, else main).",
+            "default": null
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "source_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absolute path of a folder on the server.",
+            "default": null
+          },
+          "source_subdir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Build and run only this folder of the source (monorepos).",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
       "CheckAccessRequest": {
         "type": "object",
         "properties": {
@@ -3206,6 +3392,55 @@
           }
         },
         "additionalProperties": false
+      },
+      "DeletedProjectDto": {
+        "type": "object",
+        "description": "What deleting an app did.",
+        "required": [
+          "project_id",
+          "name",
+          "stopped_processes",
+          "domains",
+          "secrets_removed",
+          "releases_kept"
+        ],
+        "properties": {
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Domains the built-in proxy no longer serves; they can be mapped\nto another app right away."
+          },
+          "kept_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where they are, with `keep_releases`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "releases_kept": {
+            "type": "boolean",
+            "description": "The release directories and logs were kept on disk."
+          },
+          "secrets_removed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Secrets that were deleted.",
+            "minimum": 0
+          },
+          "stopped_processes": {
+            "type": "integer",
+            "description": "Processes (instances, standby) that were stopped.",
+            "minimum": 0
+          }
+        }
       },
       "DeployAccepted": {
         "type": "object",
@@ -4582,6 +4817,16 @@
             ],
             "default": null
           },
+          "drain_timeout_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds a stopping release gets to finish in-flight requests and\nexit after SIGTERM (0-3600; aegis.toml `[deploy] drain_timeout_secs`,\ndefault 10).",
+            "default": null,
+            "minimum": 0
+          },
           "env": {
             "type": "object",
             "description": "Plain environment variables, merged over aegis.toml's `[env]` and\nwritten into each release. Use secrets for sensitive values.",
@@ -4600,6 +4845,16 @@
             ],
             "description": "Absolute path of an env file on the server (dotenv syntax), read at\nevery build and every process start. It must be inside a directory\nlisted in the daemon's `[apps] env_file_dirs`. Its values are never\nstored; Variables and Secrets override them. Omit (or send `null`)\nfor none: like every field here, an omitted value is cleared.",
             "default": null
+          },
+          "health_check_timeout_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds a new release may take to become healthy (1-3600; aegis.toml\n`[deploy] health_check_timeout_secs`, default 30). Raise it for apps\nthat start slowly.",
+            "default": null,
+            "minimum": 0
           },
           "health_check_url": {
             "type": [

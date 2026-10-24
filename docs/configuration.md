@@ -55,8 +55,8 @@ NODE_ENV = "production"
 | `run.instances` | `1` | Copies of the app to run, 1-16, each with its own `PORT`, log file, restart policy and resource limits. More than 1 needs a domain on the built-in proxy, which spreads requests over them. |
 | `deploy.port` | Detected | Exported as `PORT` unless `[env]` sets `PORT`. Behind the built-in proxy each release gets its own `PORT` instead. |
 | `deploy.health_check_url` | `http://127.0.0.1:<port>/health` | Any HTTP response below 500 counts as healthy. Use `tcp://host:port` for a TCP-only check. With an empty string, the release counts as healthy if its process stays up for 3 seconds. |
-| `deploy.health_check_timeout_secs` | `30` | How long a new release may take to become healthy before it is rolled back. |
-| `deploy.drain_timeout_secs` | `10` | Grace period between SIGTERM and SIGKILL when stopping the app. |
+| `deploy.health_check_timeout_secs` | `30` | How long a new release may take to become healthy before it is rolled back. Also settable in the dashboard (Settings → Build & run, 1-3600), which overrides this file. |
+| `deploy.drain_timeout_secs` | `10` | Grace period between SIGTERM and SIGKILL when stopping the app (and, behind the proxy, for in-flight requests to finish). Also settable in the dashboard (0-3600), which overrides this file. |
 | `deploy.max_retained_versions` | `2` | Release directories kept on disk for rollback, including the live one. |
 | `deploy.restart_policy` | `always` | What the supervisor does when the app exits. A crash loop (more than 5 restarts within 2 minutes) stops restarting and marks the process `Failed`. |
 | `[env]` | none | Environment variables for build commands and the app. |
@@ -128,6 +128,14 @@ An app can read a `.env` file that already exists on the server, for example the
 
 Builds also get `AEGIS_RELEASE_VERSION`. A name that is both a Secret and in the env file has the env file's value during the build and the secret's value when the app runs: anything the build needs must come from 1-3. Secrets are never given to builds, because build output (`<data_dir>/projects/<id>/logs/deploy-<id>.log`) is shown in the dashboard and a build command can print its environment; that applies to env file values too, so don't put values in an env file that a build script echoes and that deployers shouldn't read.
 
+### Dashboard settings and aegis.toml
+
+Build & run settings saved in the dashboard (or `PUT /api/v1/projects/{p}/settings`) override the matching `aegis.toml` keys from the next deployment: commands, `deploy.port`, `deploy.health_check_url`, `deploy.health_check_timeout_secs`, `deploy.drain_timeout_secs`, `deploy.strategy`, `run.instances` and `[env]`. They are written into each new release's `aegis.toml`, so releases stay self-contained and a rollback uses the values it was built with. This is how an app deployed from a server folder or a repository you don't control gets, say, a 90-second health check timeout. A settings request replaces all overrides: a field it leaves out falls back to `aegis.toml`.
+
+### Changing an app's source
+
+An app's source can be switched between a repository (URL, branch, optional app folder) and a folder on the server (Settings → Repository → *Change source*, `PUT /api/v1/projects/{p}/source`, or `aegis source <app> --repo URL [--branch B] | --dir PATH [--subdir S]`). It is checked like a new app's source (the folder must exist on the server; the URL, branch and app folder must be safe), takes effect at the next deployment (the running release keeps serving), and is recorded as `ProjectSourceChanged`. The deploy key is kept (and unused for a folder).
+
 ### What a deployment copies
 
 - With `aegis deploy` in a project directory, Aegis copies that directory. In a git work tree it copies tracked files plus untracked files that aren't ignored, and always includes `aegis.toml`. Outside git, it skips `.git`, `node_modules`, `target`, virtualenvs, `__pycache__` and `*.db` files.
@@ -140,7 +148,7 @@ Builds also get `AEGIS_RELEASE_VERSION`. A name that is both a Secret and in the
 
 ## 2. Daemon configuration
 
-The daemon reads `aegis.toml` from its working directory, or the file named by the `AEGIS_CONFIG` environment variable. `install.sh --server` puts it in `/etc/aegis/aegis.toml`. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
+The daemon (and every `aegis-daemon` command, such as `self-update` and `admin backup`) reads its configuration from, in this order: the file named by the `AEGIS_CONFIG` environment variable; else `./aegis.toml` in its working directory, if it exists; else `/etc/aegis/aegis.toml`, if it exists (where `install.sh --server` puts it, so `sudo aegis-daemon self-update` run from any directory finds the server's database); else the built-in defaults. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
 
 ```toml
 [daemon]

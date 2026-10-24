@@ -2403,6 +2403,8 @@ async function settingsTab(body, ctx) {
     STRATEGIES.map(([value, label]) => h('option', { value }, label)));
   strategyIn.value = s.strategy || '';
   const instancesIn = h('input', { id: 'set-instances', name: 'instances', type: 'number', min: 1, max: 16, value: s.instances ?? '', placeholder: '1' });
+  const healthTimeoutIn = h('input', { id: 'set-health-timeout', name: 'health_check_timeout_secs', type: 'number', min: 1, max: 3600, step: 1, value: s.health_check_timeout_secs ?? '', placeholder: '30' });
+  const drainTimeoutIn = h('input', { id: 'set-drain-timeout', name: 'drain_timeout_secs', type: 'number', min: 0, max: 3600, step: 1, value: s.drain_timeout_secs ?? '', placeholder: '10' });
   const env = envEditor(s.env, 'env');
   const processOnly = h('input', { type: 'checkbox', id: 'set-process-only', checked: s.health_check_url === '' });
   const syncHealth = () => {
@@ -2437,6 +2439,21 @@ async function settingsTab(body, ctx) {
       if (inputs.port.value) req.port = Number(inputs.port.value);
       if (strategyIn.value) req.strategy = strategyIn.value;
       if (instancesIn.value) req.instances = Number(instancesIn.value);
+      // Every field is sent: a settings save clears what it leaves out.
+      for (const [input, key, min, label] of [
+        [healthTimeoutIn, 'health_check_timeout_secs', 1, 'Health check timeout'],
+        [drainTimeoutIn, 'drain_timeout_secs', 0, 'Drain timeout'],
+      ]) {
+        const raw = input.value.trim();
+        if (!raw) continue;
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < min || n > 3600) {
+          toast(`${label} must be a whole number of seconds from ${min} to 3600`, 'bad');
+          input.focus();
+          return;
+        }
+        req[key] = n;
+      }
       if (processOnly.checked) req.health_check_url = '';
       else if (inputs.health_check_url.value.trim()) req.health_check_url = inputs.health_check_url.value.trim();
       try {
@@ -2469,6 +2486,11 @@ async function settingsTab(body, ctx) {
         h('span', { class: 'hint' }, 'Used when a deployment does not pick one. Rolling and Blue-green need a domain on the built-in proxy.')),
       h('div', { class: 'field' }, h('label', { for: 'set-instances' }, 'Instances'), instancesIn,
         h('span', { class: 'hint' }, 'Copies of the app behind the built-in proxy (1-16; more than 1 needs a domain). Resource limits apply to each instance.'))),
+    h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'set-health-timeout' }, 'Health check timeout (seconds)'), healthTimeoutIn,
+        h('span', { class: 'hint' }, 'How long a new release may take to become healthy before the deployment fails (1-3600; default 30). Raise it for apps that start slowly.')),
+      h('div', { class: 'field' }, h('label', { for: 'set-drain-timeout' }, 'Drain timeout (seconds)'), drainTimeoutIn,
+        h('span', { class: 'hint' }, 'How long a stopping release gets to finish requests and exit before it is killed (0-3600; default 10).'))),
     h('fieldset', { class: 'field env' },
       h('legend', {}, 'Environment variables'),
       h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and over the env file, and written into each release. Use Secrets for passwords and keys.'),
@@ -2516,7 +2538,53 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, dangerCard(ctx)));
+}
+
+/** Settings → Danger zone: delete the app (typing its name to confirm). */
+function dangerCard(ctx) {
+  const project = ctx.project();
+  const deleteBtn = h('button', { class: 'btn danger', type: 'button', 'data-action': 'delete-app' }, 'Delete app');
+  deleteBtn.addEventListener('click', async () => {
+    let keepReleases = false;
+    const result = await modal(() => {
+      const nameIn = h('input', { id: 'delete-confirm', class: 'mono', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'App name' });
+      const keep = h('input', { type: 'checkbox', id: 'delete-keep-releases', name: 'keep_releases' });
+      const ok = h('button', { class: 'btn danger solid', value: 'ok', type: 'submit', disabled: true, 'data-confirm': '' }, 'Delete this app');
+      nameIn.addEventListener('input', () => {
+        ok.disabled = nameIn.value.trim() !== project.name;
+      });
+      const form = h('form', {
+        method: 'dialog',
+        onsubmit: () => {
+          keepReleases = keep.checked;
+        },
+      },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, `Delete ${project.name}?`),
+        h('p', { class: 'muted' }, 'Its processes are stopped (requests in flight get the drain timeout to finish), and its domains, secrets, deploy key, webhook secret, schedule, releases and logs are removed. Its history stays in Events. This can\'t be undone.'),
+        (project.domains || []).length
+          ? h('p', { class: 'small' }, 'Domains that stop being served: ', project.domains.map((d, i) => [i ? ', ' : '', h('code', {}, d.domain)]))
+          : null,
+        h('label', { class: 'small', for: 'delete-keep-releases' }, keep, ' Keep the release directories and logs on the server'),
+        h('div', { class: 'field' }, h('label', { for: 'delete-confirm' }, 'Type ', h('code', {}, project.name), ' to confirm'), nameIn)),
+      h('div', { class: 'form-actions' },
+        h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+        ok));
+      setTimeout(() => nameIn.focus(), 0);
+      return form;
+    });
+    if (result !== 'ok') return;
+    const query = `confirm=${enc(project.name)}${keepReleases ? '&keep_releases=true' : ''}`;
+    const res = await run(deleteBtn, () => api('DELETE', `/projects/${enc(project.id)}?${query}`),
+      (r) => `Deleted ${r.name}${r.domains.length ? `; ${r.domains.join(', ')} can be used again` : ''}`);
+    if (res) go('/');
+  });
+  return h('section', { class: 'card danger-zone', 'data-card': 'danger-zone' },
+    cardHeader('Danger zone', 'app.delete'),
+    h('div', { class: 'card-body' },
+      h('p', { class: 'muted small' }, 'Deleting the app stops it and removes its domains, secrets, deploy key, webhook secret, schedule and releases. Its name and domains can be used again right away. Not possible while a deployment is running.'),
+      h('div', { class: 'form-actions' }, deleteBtn)));
 }
 
 // --- Repository and deploy key (Settings tab, wizard) ------------------
@@ -2618,15 +2686,71 @@ function deployKeyPanel(project, ctx) {
 }
 
 /** Settings → Repository: the app's source and its deploy key. */
-function repositoryCard(ctx) {
+function repositoryCard(ctx, rerender) {
   const project = ctx.project();
   const facts = h('dl', { class: 'facts' },
-    h('div', {}, h('dt', {}, 'Source'), h('dd', { class: 'mono small truncate', title: sourceText(project) }, sourceText(project))),
+    h('div', {}, h('dt', {}, 'Source'), h('dd', { class: 'mono small truncate', title: sourceText(project), 'data-source': '' }, sourceText(project))),
     project.source_subdir ? h('div', {}, h('dt', {}, 'App folder'), h('dd', { class: 'mono small' }, project.source_subdir)) : null);
+  const changeBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'change-source' }, 'Change source');
+  const changePanel = h('div', { 'data-change-source': '' });
+  changeBtn.addEventListener('click', () => {
+    if (changePanel.firstChild) {
+      changePanel.replaceChildren();
+      return;
+    }
+    const git = !project.source_dir;
+    const kindGit = h('input', { type: 'radio', name: 'source-kind', id: 'source-kind-git', value: 'git', checked: git });
+    const kindDir = h('input', { type: 'radio', name: 'source-kind', id: 'source-kind-dir', value: 'dir', checked: !git });
+    const repoIn = h('input', { id: 'source-repo', class: 'mono', value: project.repository_url || '', placeholder: 'git@github.com:owner/repo.git', autocomplete: 'off', spellcheck: 'false' });
+    const branchIn = h('input', { id: 'source-branch', class: 'mono', value: project.repository_url ? project.branch : '', placeholder: project.branch || 'main' });
+    const dirIn = h('input', { id: 'source-dir', class: 'mono', value: project.source_dir || '', placeholder: '/opt/apps/my-app', autocomplete: 'off', spellcheck: 'false' });
+    const subIn = h('input', { id: 'source-subdir', class: 'mono', value: project.source_subdir || '', placeholder: '(the whole source)' });
+    const gitFields = h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'source-repo' }, 'Repository URL'), repoIn),
+      h('div', { class: 'field' }, h('label', { for: 'source-branch' }, 'Branch'), branchIn));
+    const dirFields = h('div', { class: 'field' }, h('label', { for: 'source-dir' }, 'Server folder path'), dirIn,
+      h('span', { class: 'hint' }, 'An absolute path the Aegis daemon can read. Each deployment copies it.'));
+    const sync = () => {
+      gitFields.hidden = !kindGit.checked;
+      dirFields.hidden = kindGit.checked;
+    };
+    kindGit.addEventListener('change', sync);
+    kindDir.addEventListener('change', sync);
+    sync();
+    const saveBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'save-source' }, 'Save source');
+    const form = h('form', {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const req = kindGit.checked
+          ? { repository_url: repoIn.value.trim(), branch: branchIn.value.trim() || null }
+          : { source_dir: dirIn.value.trim() };
+        req.source_subdir = subIn.value.trim() || null;
+        const ok = await confirmDialog({
+          title: 'Change the source?',
+          message: 'The next deployment builds from the new source. The running release keeps serving until then.'
+            + (kindGit.checked ? '' : ' The deploy key (if any) is kept but not used for a folder.'),
+          confirmLabel: 'Change source',
+        });
+        if (!ok) return;
+        const res = await run(saveBtn, () => api('PUT', `/projects/${enc(project.id)}/source`, req), 'Source changed; it applies to the next deployment');
+        if (res && rerender) rerender();
+      },
+    },
+    h('div', { class: 'row' },
+      h('label', { class: 'small', for: 'source-kind-git' }, kindGit, ' Git repository'),
+      h('label', { class: 'small', for: 'source-kind-dir' }, kindDir, ' Folder on this server')),
+    gitFields, dirFields,
+    h('div', { class: 'field' }, h('label', { for: 'source-subdir' }, 'App folder (optional)'), subIn,
+      h('span', { class: 'hint' }, 'Build and run only this folder of the source, e.g. apps/web in a monorepo.')),
+    h('div', { class: 'form-actions' }, saveBtn));
+    changePanel.replaceChildren(form);
+    (git ? repoIn : dirIn).focus();
+  });
   return h('section', { class: 'card', id: 'repository', 'data-card': 'repository' },
-    cardHeader('Repository', 'app.repository'),
+    cardHeader('Repository', 'app.repository', h('span', { class: 'spacer' }), changeBtn),
     h('div', { class: 'card-body' },
       facts,
+      changePanel,
       project.repository_url
         ? h('div', {}, h('h3', {}, 'Deploy key'), deployKeyPanel(project, ctx))
         : h('p', { class: 'muted small' }, 'Deployments copy the directory above, so no deploy key is needed.')));

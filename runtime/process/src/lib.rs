@@ -698,6 +698,19 @@ impl ProcessSupervisor {
         self.get_managed(id).map(|m| m.log_tx.subscribe())
     }
 
+    /// Forgets a process that is not running (e.g. its app was deleted).
+    /// Returns false if it is unknown or still running.
+    pub fn forget(&self, id: &ProcessId) -> bool {
+        let mut processes = self.inner.processes.lock().unwrap();
+        let stopped = processes
+            .get(id)
+            .is_some_and(|m| m.control.lock().unwrap().is_none());
+        if stopped {
+            processes.remove(id);
+        }
+        stopped
+    }
+
     fn get_managed(&self, id: &ProcessId) -> Option<Arc<Managed>> {
         self.inner.processes.lock().unwrap().get(id).cloned()
     }

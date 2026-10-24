@@ -130,7 +130,33 @@ WARNING: --allow-unsigned: the release's signature is NOT required.
 /// the dashboard's "Upgrade now" takes (without releases).
 struct PreUpdateBackup<'a> {
     config: &'a Config,
+    config_path: &'a str,
+    /// A server install (install.sh --server): a missing database is an error.
+    server: bool,
     taken: std::sync::Mutex<Option<String>>,
+}
+
+/// Whether this looks like an `install.sh --server` installation: its
+/// configuration is /etc/aegis/aegis.toml, or its systemd unit exists.
+fn server_install(config_path: &str, unit_file: &Path) -> bool {
+    let system = Path::new(crate::SYSTEM_CONFIG);
+    let config = Path::new(config_path);
+    config == system
+        || (system.exists()
+            && std::fs::canonicalize(config).ok() == std::fs::canonicalize(system).ok())
+        || unit_file.exists()
+}
+
+const UNIT_FILE: &str = "/etc/systemd/system/aegis.service";
+
+/// The error for a server install whose database isn't where the
+/// configuration says: updating without the backup must be explicit.
+fn missing_database_error(config: &Config, config_path: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "No Aegis database at {} (configuration: {}), so no backup can be taken before updating. Point AEGIS_CONFIG at the server's configuration (e.g. sudo env AEGIS_CONFIG=/etc/aegis/aegis.toml aegis-daemon self-update), or run again with --no-backup to update without a backup",
+        config.daemon.database_path.display(),
+        config_path
+    )
 }
 
 #[async_trait::async_trait]
@@ -142,6 +168,7 @@ impl helper::BeforeSwap for PreUpdateBackup<'_> {
                 *self.taken.lock().unwrap() = Some(name);
                 Ok(())
             }
+            Ok(None) if self.server => Err(missing_database_error(self.config, self.config_path)),
             Ok(None) => {
                 println!("No database yet; nothing to back up.");
                 Ok(())
@@ -156,7 +183,11 @@ impl helper::BeforeSwap for PreUpdateBackup<'_> {
 
 /// `aegis-daemon self-update [--check] [--version TAG] [--force]
 /// [--restart-unit UNIT] [--from-request] [--allow-unsigned] [--no-backup]`.
-pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Error> {
+pub async fn command(
+    config: &Config,
+    config_path: &str,
+    flags: &[&str],
+) -> Result<(), anyhow::Error> {
     let mut check = false;
     let mut force = false;
     let mut from_request = false;
@@ -255,19 +286,32 @@ pub async fn command(config: &Config, flags: &[&str]) -> Result<(), anyhow::Erro
             )
         })?;
     let exe = exe_path();
+    let server = server_install(config_path, Path::new(UNIT_FILE));
+    let backup_wanted = !(from_request || no_backup);
+    if backup_wanted {
+        println!(
+            "Configuration: {} (database {}, data directory {})",
+            config_path,
+            config.daemon.database_path.display(),
+            config.daemon.resolved_data_dir().display()
+        );
+        // Fail before downloading anything.
+        if server && !config.daemon.database_path.exists() {
+            return Err(missing_database_error(config, config_path));
+        }
+    }
     if allow_unsigned {
         eprintln!("{}", UNSIGNED_WARNING);
     }
     // The dashboard took its backup before asking the helper (--from-request).
     let backup = PreUpdateBackup {
         config,
+        config_path,
+        server,
         taken: Default::default(),
     };
-    let before_swap: Option<&dyn helper::BeforeSwap> = if from_request || no_backup {
-        None
-    } else {
-        Some(&backup)
-    };
+    let before_swap: Option<&dyn helper::BeforeSwap> =
+        if backup_wanted { Some(&backup) } else { None };
     let result = helper::self_update(helper::SelfUpdate {
         source: &source,
         exe: &exe,
@@ -361,6 +405,28 @@ mod tests {
         for bad in ["", "aegis service", "aegis;reboot", "../x", "a\nb"] {
             assert!(!valid_unit(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn server_installs_are_recognized() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let no_unit = dir.path().join("aegis.service");
+        assert!(server_install(crate::SYSTEM_CONFIG, &no_unit));
+        assert!(
+            !server_install("aegis.toml", &no_unit) || Path::new(crate::SYSTEM_CONFIG).exists()
+        );
+        std::fs::write(&no_unit, "[Unit]\n").unwrap();
+        assert!(server_install("aegis.toml", &no_unit));
+    }
+
+    #[test]
+    fn a_missing_server_database_names_the_way_out() {
+        let mut config = Config::default();
+        config.daemon.database_path = "/var/lib/aegis/aegis.db".into();
+        let e = missing_database_error(&config, "/etc/aegis/aegis.toml").to_string();
+        assert!(e.contains("/var/lib/aegis/aegis.db"), "{e}");
+        assert!(e.contains("--no-backup"), "{e}");
+        assert!(e.contains("AEGIS_CONFIG"), "{e}");
     }
 
     #[test]

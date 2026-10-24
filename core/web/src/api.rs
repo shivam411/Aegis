@@ -132,6 +132,71 @@ pub(crate) async fn get_project(
     Ok(Json(project_view(&st, &project.id)?))
 }
 
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DeleteProjectQuery {
+    /// The app's name (or id), repeated to confirm the deletion.
+    pub confirm: Option<String>,
+    /// Keep the release directories and logs on disk (under
+    /// `<data_dir>/projects/<id>`); they are deleted by default.
+    pub keep_releases: Option<bool>,
+}
+
+#[utoipa::path(delete, path = "/api/v1/projects/{project}", tag = "projects",
+    params(("project" = String, Path, description = "Project id or name"), DeleteProjectQuery),
+    responses(
+        (status = 200, description = "Deleted: its processes are stopped, its domains, secrets, deploy key, webhook secret and schedule are gone, and its name and domains can be used again. Its events stay in the history.", body = DeletedProjectDto),
+        (status = 400, description = "`confirm` doesn't match the app's name or id", body = ErrorBody),
+        (status = 403, description = "Not an admin, or an API token (signed-in users only)", body = ErrorBody),
+        (status = 404, body = ErrorBody),
+        (status = 409, description = "A deployment of the app is queued or running", body = ErrorBody)))]
+pub(crate) async fn delete_project(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+    Query(q): Query<DeleteProjectQuery>,
+) -> ApiResult<Json<DeletedProjectDto>> {
+    let project = st.control.resolve_project(&key)?;
+    let confirm = q.confirm.unwrap_or_default();
+    let confirm = confirm.trim();
+    if confirm != project.name && confirm != project.id.to_string() {
+        return Err(ApiError::bad_request(format!(
+            "To delete '{}', repeat its name: ?confirm={}",
+            project.name, project.name
+        )));
+    }
+    let deleted = st
+        .control
+        .delete_project(project.id, q.keep_releases.unwrap_or(false))
+        .await?;
+    Ok(Json(deleted.into()))
+}
+
+#[utoipa::path(put, path = "/api/v1/projects/{project}/source", tag = "projects",
+    params(("project" = String, Path, description = "Project id or name")),
+    request_body = ChangeSourceRequest,
+    responses(
+        (status = 200, description = "Saved; the next deployment uses the new source", body = ProjectDto),
+        (status = 400, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub(crate) async fn change_source(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+    ApiJson(req): ApiJson<ChangeSourceRequest>,
+) -> ApiResult<Json<ProjectDto>> {
+    let project = st.control.resolve_project(&key)?;
+    st.control
+        .change_source(
+            project.id,
+            aegis_control::SourceChange {
+                repository_url: non_empty(req.repository_url),
+                branch: non_empty(req.branch),
+                source_dir: non_empty(req.source_dir).map(PathBuf::from),
+                source_subdir: non_empty(req.source_subdir),
+            },
+        )
+        .await?;
+    Ok(Json(project_view(&st, &project.id)?))
+}
+
 #[utoipa::path(post, path = "/api/v1/projects/{project}/deploy", tag = "deployments",
     params(("project" = String, Path, description = "Project id or name")),
     request_body = DeployRequest,

@@ -181,6 +181,13 @@ impl DaemonService {
     ) -> Result<Response<EmitEventResponse>, Status> {
         let req = request.into_inner();
         tracing::info!(event_type = %req.event_type, "Handling emit_event gRPC request");
+        // A recorded deletion drops the app from the projection; only the
+        // real command also stops its processes and removes its data.
+        if req.event_type == "ProjectDeleted" {
+            return Err(Status::invalid_argument(
+                "Delete an app with 'aegis delete <app>' (DeleteProject), not by emitting ProjectDeleted",
+            ));
+        }
         let payload: serde_json::Value = serde_json::from_str(&req.payload_json).map_err(|e| {
             Status::invalid_argument(format!("Failed to parse payload_json as valid JSON: {}", e))
         })?;
@@ -323,6 +330,57 @@ impl DaemonService {
     }
 }
 
+impl DaemonService {
+    async fn delete_project_impl(
+        &self,
+        request: Request<pb::DeleteProjectRequest>,
+    ) -> Result<Response<pb::DeleteProjectResponse>, Status> {
+        let req = request.into_inner();
+        let project_id = self.project_id(&req.project).map_err(status_from)?;
+        let deleted = self
+            .control
+            .delete_project(project_id, req.keep_releases)
+            .await
+            .map_err(status_from)?;
+        Ok(Response::new(pb::DeleteProjectResponse {
+            project_id: deleted.project_id,
+            name: deleted.name,
+            stopped_processes: deleted.stopped_processes as u32,
+            domains: deleted.domains,
+            secrets_removed: deleted.secrets_removed,
+            releases_kept: deleted.releases_kept,
+            kept_dir: deleted.kept_dir.unwrap_or_default(),
+        }))
+    }
+
+    async fn change_source_impl(
+        &self,
+        request: Request<pb::ChangeSourceRequest>,
+    ) -> Result<Response<ProjectInfo>, Status> {
+        let req = request.into_inner();
+        let project_id = self.project_id(&req.project).map_err(status_from)?;
+        self.control
+            .change_source(
+                project_id,
+                aegis_control::SourceChange {
+                    repository_url: opt_string(req.repository_url),
+                    branch: opt_string(req.branch),
+                    source_dir: opt_path(&req.source_dir),
+                    source_subdir: opt_string(req.source_subdir),
+                },
+            )
+            .await
+            .map_err(status_from)?;
+        let view = self
+            .control
+            .list_projects()
+            .into_iter()
+            .find(|v| v.project.id == project_id)
+            .ok_or_else(|| Status::not_found("Unknown project"))?;
+        Ok(Response::new(project_info(view)))
+    }
+}
+
 #[tonic::async_trait]
 impl AegisDaemon for DaemonService {
     type StreamEventsStream = ResponseStream<EventResponse>;
@@ -419,6 +477,20 @@ impl AegisDaemon for DaemonService {
         request: Request<ConfigureScheduleRequest>,
     ) -> Result<Response<ProjectInfo>, Status> {
         with_actor(CLI_ACTOR.into(), self.configure_schedule_impl(request)).await
+    }
+
+    async fn delete_project(
+        &self,
+        request: Request<pb::DeleteProjectRequest>,
+    ) -> Result<Response<pb::DeleteProjectResponse>, Status> {
+        with_actor(CLI_ACTOR.into(), self.delete_project_impl(request)).await
+    }
+
+    async fn change_source(
+        &self,
+        request: Request<pb::ChangeSourceRequest>,
+    ) -> Result<Response<ProjectInfo>, Status> {
+        with_actor(CLI_ACTOR.into(), self.change_source_impl(request)).await
     }
 
     async fn list_projects(
