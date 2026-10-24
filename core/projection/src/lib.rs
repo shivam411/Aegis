@@ -163,6 +163,63 @@ pub trait Projection: Send + Sync {
     fn apply_event(&mut self, event: &Event);
 }
 
+/// An app's place in a group.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupMember {
+    pub project_id: ProjectId,
+    /// Globs of repository paths that concern this app (e.g.
+    /// `frontend_v2/**`); empty means the whole repository.
+    #[serde(default)]
+    pub watch_paths: Vec<String>,
+}
+
+/// Apps deployed from the same repository and branch, in deploy order.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupState {
+    pub id: String,
+    pub name: String,
+    pub repository_url: String,
+    pub branch: String,
+    /// When a member fails, roll back the members already switched in that
+    /// group deployment.
+    pub rollback_on_failure: bool,
+    pub members: Vec<GroupMember>,
+    pub created_at: String,
+    /// The latest group deployment.
+    pub last_deployment: Option<String>,
+}
+
+/// One member's part in a group deployment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupMemberRun {
+    pub project_id: ProjectId,
+    /// pending, deploying, deployed, skipped, failed or rolled_back.
+    pub status: String,
+    pub deployment_id: Option<DeploymentId>,
+    /// The release that was live before this run.
+    pub previous_version: Option<String>,
+    pub version: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// A deployment of a whole group at one commit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupDeploymentState {
+    pub id: String,
+    pub group_id: String,
+    /// The commit every member is built from (known once resolved).
+    pub commit: Option<String>,
+    pub only_changed: bool,
+    pub trigger: Option<String>,
+    /// Running, Success, Failed or RolledBack.
+    pub status: String,
+    pub error: Option<String>,
+    pub members: Vec<GroupMemberRun>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+    pub seq: u64,
+}
+
 /// A project removed with `ProjectDeleted`, remembered so files left on
 /// disk by an interrupted deletion can be cleaned up on the next boot, and
 /// so late events about it don't bring parts of it back.
@@ -185,7 +242,19 @@ struct State {
     servers: HashMap<ServerId, ServerState>,
     /// Deleted projects (until a project with the same id is created again).
     deleted: HashMap<ProjectId, DeletedProject>,
+    groups: HashMap<String, GroupState>,
+    group_deployments: HashMap<String, GroupDeploymentState>,
     seq: u64,
+}
+
+fn member_run<'a>(st: &'a mut State, payload: &Value) -> Option<&'a mut GroupMemberRun> {
+    let run = str_field(payload, "group_deployment_id")?;
+    let project = id_field::<ProjectId>(payload, "project_id")?;
+    st.group_deployments
+        .get_mut(run)?
+        .members
+        .iter_mut()
+        .find(|m| m.project_id == project)
 }
 
 #[derive(Clone, Default)]
@@ -267,6 +336,172 @@ impl ProjectionEngine {
         }
 
         match event.event_type.as_str() {
+            "GroupCreated" | "GroupUpdated" => {
+                let Some(id) = string_field(&payload, "group_id") else {
+                    return;
+                };
+                let previous = st.groups.get(&id).cloned();
+                if event.event_type == "GroupUpdated" && previous.is_none() {
+                    return;
+                }
+                st.groups.insert(
+                    id.clone(),
+                    GroupState {
+                        id,
+                        name: string_field(&payload, "name")
+                            .or_else(|| previous.as_ref().map(|g| g.name.clone()))
+                            .unwrap_or_default(),
+                        repository_url: string_field(&payload, "repository_url")
+                            .or_else(|| previous.as_ref().map(|g| g.repository_url.clone()))
+                            .unwrap_or_default(),
+                        branch: string_field(&payload, "branch")
+                            .or_else(|| previous.as_ref().map(|g| g.branch.clone()))
+                            .unwrap_or_else(|| "main".into()),
+                        rollback_on_failure: payload
+                            .get("rollback_on_failure")
+                            .and_then(|v| v.as_bool())
+                            .or(previous.as_ref().map(|g| g.rollback_on_failure))
+                            .unwrap_or(true),
+                        members: previous
+                            .as_ref()
+                            .map(|g| g.members.clone())
+                            .unwrap_or_default(),
+                        created_at: previous
+                            .as_ref()
+                            .map(|g| g.created_at.clone())
+                            .unwrap_or(at),
+                        last_deployment: previous.and_then(|g| g.last_deployment),
+                    },
+                );
+            }
+            "GroupMembersChanged" => {
+                let Some(id) = str_field(&payload, "group_id") else {
+                    return;
+                };
+                let members: Vec<GroupMember> = payload
+                    .get("members")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                // An app is in one group at most.
+                let ids: Vec<ProjectId> = members.iter().map(|m| m.project_id).collect();
+                for group in st.groups.values_mut() {
+                    if group.id != id {
+                        group.members.retain(|m| !ids.contains(&m.project_id));
+                    }
+                }
+                if let Some(group) = st.groups.get_mut(id) {
+                    group.members = members;
+                }
+            }
+            "GroupDeleted" => {
+                if let Some(id) = str_field(&payload, "group_id") {
+                    st.groups.remove(id);
+                    st.group_deployments.retain(|_, d| d.group_id != id);
+                }
+            }
+            "GroupDeploymentStarted" => {
+                let (Some(id), Some(group_id)) = (
+                    string_field(&payload, "group_deployment_id"),
+                    string_field(&payload, "group_id"),
+                ) else {
+                    return;
+                };
+                let members = id_list::<ProjectId>(&payload, "members")
+                    .into_iter()
+                    .map(|project_id| GroupMemberRun {
+                        project_id,
+                        status: "pending".into(),
+                        deployment_id: None,
+                        previous_version: None,
+                        version: None,
+                        reason: None,
+                    })
+                    .collect();
+                let Some(group) = st.groups.get_mut(&group_id) else {
+                    return;
+                };
+                group.last_deployment = Some(id.clone());
+                st.group_deployments.insert(
+                    id.clone(),
+                    GroupDeploymentState {
+                        id,
+                        group_id,
+                        commit: string_field(&payload, "commit"),
+                        only_changed: payload
+                            .get("only_changed")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true),
+                        trigger: string_field(&payload, "trigger"),
+                        status: "Running".into(),
+                        error: None,
+                        members,
+                        created_at: at,
+                        completed_at: None,
+                        seq,
+                    },
+                );
+            }
+            "GroupCheckoutReady" => {
+                if let Some(run) = str_field(&payload, "group_deployment_id")
+                    .and_then(|id| st.group_deployments.get_mut(id))
+                {
+                    run.commit = string_field(&payload, "commit").or(run.commit.take());
+                }
+            }
+            "GroupMemberSkipped"
+            | "GroupMemberDeploying"
+            | "GroupMemberDeployed"
+            | "GroupMemberFailed" => {
+                let status = match event.event_type.as_str() {
+                    "GroupMemberSkipped" => "skipped",
+                    "GroupMemberDeploying" => "deploying",
+                    "GroupMemberDeployed" => "deployed",
+                    _ => "failed",
+                };
+                if let Some(member) = member_run(&mut st, &payload) {
+                    member.status = status.into();
+                    if let Some(d) = id_field(&payload, "deployment_id") {
+                        member.deployment_id = Some(d);
+                    }
+                    if let Some(v) = string_field(&payload, "previous_version") {
+                        member.previous_version = Some(v);
+                    }
+                    if let Some(v) = string_field(&payload, "version") {
+                        member.version = Some(v);
+                    }
+                    member.reason = string_field(&payload, "reason");
+                }
+            }
+            "GroupMembersRolledBack" => {
+                let ids = id_list::<ProjectId>(&payload, "project_ids");
+                let requested = str_field(&payload, "reason") == Some("requested");
+                if let Some(run) = str_field(&payload, "group_deployment_id")
+                    .and_then(|id| st.group_deployments.get_mut(id))
+                {
+                    for member in run.members.iter_mut() {
+                        if ids.contains(&member.project_id) {
+                            member.status = "rolled_back".into();
+                        }
+                    }
+                    if requested {
+                        run.status = "RolledBack".into();
+                    }
+                }
+            }
+            "GroupDeploymentFinished" | "GroupDeploymentFailed" => {
+                if let Some(run) = str_field(&payload, "group_deployment_id")
+                    .and_then(|id| st.group_deployments.get_mut(id))
+                {
+                    run.status = if event.event_type == "GroupDeploymentFinished" {
+                        "Success"
+                    } else {
+                        "Failed"
+                    }
+                    .into();
+                    run.error = string_field(&payload, "reason");
+                    run.completed_at = Some(at);
+                }
+            }
             "ProjectDeleted" => {
                 let Some(id) = id_field::<ProjectId>(&payload, "project_id") else {
                     return;
@@ -274,6 +509,9 @@ impl ProjectionEngine {
                 let Some(project) = st.projects.remove(&id) else {
                     return;
                 };
+                for group in st.groups.values_mut() {
+                    group.members.retain(|m| m.project_id != id);
+                }
                 let release_ids: Vec<ReleaseId> = st
                     .releases
                     .values()
@@ -732,6 +970,71 @@ impl ProjectionEngine {
 
     pub fn get_project(&self, id: &ProjectId) -> Option<ProjectState> {
         self.state.read().unwrap().projects.get(id).cloned()
+    }
+
+    /// Groups, by name.
+    pub fn get_groups(&self) -> Vec<GroupState> {
+        let mut groups: Vec<_> = self
+            .state
+            .read()
+            .unwrap()
+            .groups
+            .values()
+            .cloned()
+            .collect();
+        groups.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        groups
+    }
+
+    pub fn get_group(&self, id: &str) -> Option<GroupState> {
+        self.state.read().unwrap().groups.get(id).cloned()
+    }
+
+    /// The group an app belongs to.
+    pub fn group_of(&self, project_id: &ProjectId) -> Option<GroupState> {
+        self.state
+            .read()
+            .unwrap()
+            .groups
+            .values()
+            .find(|g| g.members.iter().any(|m| &m.project_id == project_id))
+            .cloned()
+    }
+
+    pub fn get_group_deployment(&self, id: &str) -> Option<GroupDeploymentState> {
+        self.state
+            .read()
+            .unwrap()
+            .group_deployments
+            .get(id)
+            .cloned()
+    }
+
+    /// A group's deployments, oldest first.
+    pub fn get_group_deployments(&self, group_id: &str) -> Vec<GroupDeploymentState> {
+        let mut runs: Vec<_> = self
+            .state
+            .read()
+            .unwrap()
+            .group_deployments
+            .values()
+            .filter(|d| d.group_id == group_id)
+            .cloned()
+            .collect();
+        runs.sort_by_key(|d| d.seq);
+        runs
+    }
+
+    /// Group deployments still marked as running (e.g. after a crash).
+    pub fn running_group_deployments(&self) -> Vec<GroupDeploymentState> {
+        self.state
+            .read()
+            .unwrap()
+            .group_deployments
+            .values()
+            .filter(|d| d.status == "Running")
+            .cloned()
+            .collect()
     }
 
     /// Projects deleted with `ProjectDeleted` (and not registered again).

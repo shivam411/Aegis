@@ -11,6 +11,8 @@ mod deploy;
 mod docker;
 mod domains;
 mod env;
+mod git;
+mod groups;
 mod lifecycle;
 pub mod ports;
 mod process;
@@ -41,6 +43,8 @@ pub use config_file::ConfigPreview;
 pub use deploy::DeployRequest;
 pub use domains::DomainView;
 pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, ImportResult};
+pub use git::{path_matches, touches};
+pub use groups::{GroupSpec, MemberRollback, MemberSpec};
 pub use lifecycle::{DeletedApp, SourceChange};
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
@@ -174,6 +178,10 @@ pub struct ProjectView {
     /// The previous release's instances, kept running after a BlueGreen
     /// switch as an instant rollback target.
     pub standby: Option<StandbyView>,
+    /// The group the app belongs to: (id, name).
+    pub group: Option<(String, String)>,
+    /// The commit the live release was built from, when known.
+    pub commit: Option<String>,
 }
 
 struct Inner {
@@ -211,6 +219,8 @@ struct Inner {
     backup_lock: tokio::sync::Mutex<()>,
     /// Container apps (`[run] runtime = "docker"`).
     docker: Arc<aegis_docker::Docker>,
+    /// One deployment or rollback per group at a time.
+    group_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +302,7 @@ impl ControlPlane {
                 secrets,
                 backup_lock: tokio::sync::Mutex::new(()),
                 docker,
+                group_locks: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -694,6 +705,16 @@ impl ControlPlane {
                     usage,
                     instances: self.instance_views(&project),
                     standby: self.standby_view(&project.id),
+                    group: self
+                        .inner
+                        .projection
+                        .group_of(&project.id)
+                        .map(|g| (g.id, g.name)),
+                    commit: project
+                        .current_release
+                        .as_ref()
+                        .and_then(|v| self.inner.projection.find_release(&project.id, v))
+                        .map(|r| r.commit_sha),
                     project,
                 }
             })

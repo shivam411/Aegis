@@ -60,6 +60,27 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | `ProjectDeleted` | The app was deleted (dashboard Settings, `DELETE /api/v1/projects/{project}` or `aegis delete`). Its processes were stopped first; after this event its secrets, deploy key, webhook secret and (unless `keep_releases`) release directories, logs and artifact metadata are removed, and that cleanup is repeated on every daemon start until done. Read models drop the project, its releases, deployments and processes, and ignore later events about it (e.g. a late `ProcessStopped`); its earlier events stay as history. Registering the same project id again (`ProjectCreated`) starts it afresh. Can't be injected with `aegis emit-event` | `project_id`, `name`, `keep_releases`, `kept_dir`, `domains` (no longer served), `repository_url`, `source_dir`, `stopped_process_ids`, `release_count`, `actor` |
 | `ProjectSourceChanged` | The app's source changed between a repository and a server folder (or to another repository, branch or subfolder); used from the next deployment | `project_id`, `kind` (`git` or `folder`), `repository_url` (empty for a folder), `branch`, `source_dir`, `source_subdir`, `previous` (the same four fields before), `actor` |
 
+### Groups
+
+Apps deployed together from one repository and branch; see [groups.md](groups.md).
+
+| Event Type | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `GroupCreated` / `GroupUpdated` | A group was created or changed | `group_id`, `name`, `repository_url`, `branch`, `rollback_on_failure`, `actor` |
+| `GroupMembersChanged` | The group's apps, in deploy order, with their watch paths (the whole list) | `group_id`, `members` (`[{project_id, watch_paths}]`), `actor` |
+| `GroupDeleted` | The group was deleted (its apps stay) | `group_id`, `name`, `actor` |
+| `GroupDeploymentStarted` | A group deployment began | `group_id`, `group_deployment_id`, `commit` (if given), `only_changed`, `trigger` (`http`, `cli`, `github-push`), `members` |
+| `GroupCheckoutReady` | The repository was cloned once and checked out at the commit every app is built from | `group_id`, `group_deployment_id`, `commit`, `checkout` |
+| `GroupMemberSkipped` | An app was not deployed: nothing it watches changed, or it is already live at the commit | `group_id`, `group_deployment_id`, `project_id`, `reason` |
+| `GroupMemberDeploying` / `GroupMemberDeployed` | An app's deployment was queued / went live | `group_id`, `group_deployment_id`, `project_id`, `deployment_id`, `previous_version`, `version`, `commit` |
+| `GroupMemberFailed` | An app's deployment failed; the apps after it are not deployed | `group_id`, `group_deployment_id`, `project_id`, `reason` |
+| `GroupMembersRolledBack` | Apps went back to their previous release: after a failure (`reason: failure`, with roll back on failure) or on request (`reason: requested`) | `group_id`, `group_deployment_id`, `project_ids`, `reason`, `failed` |
+| `GroupRollbackStarted` | **Roll back group** began | `group_id`, `group_deployment_id`, `project_ids` |
+| `GroupDeploymentFinished` | Every app was deployed or skipped | `group_id`, `group_deployment_id`, `commit`, `deployed` |
+| `GroupDeploymentFailed` | The group deployment stopped: an app failed, the clone failed, or the daemon restarted meanwhile | `group_id`, `group_deployment_id`, `reason`, `failed_project_id`, `rolled_back`, `not_deployed` |
+
+`WebhookReceived` and `WebhookSecretRotated` carry `group_id` (instead of `project_id`) for a group's webhook.
+
 ### Release Aggregate
 
 | Event Type | Description | Key Payload Fields |

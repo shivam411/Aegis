@@ -228,6 +228,39 @@ export const HELP = {
     roles: 'Admins.',
     docs: 'settings.md#secrets',
   },
+  groups: {
+    title: 'App groups',
+    summary: 'Apps deployed from the same repository and branch (say a front end, an API and an admin panel) deployed together: one commit, one clone, in order. "Deploy changed only" (and the group\'s webhook) deploys just the apps whose watch paths changed since their live commit; apps not deployed yet always go.',
+    controls: [
+      ['Deploy group', 'Deploys every app of the group at the branch\'s latest commit, one after another.'],
+      ['Deploy changed only', 'Skips apps none of whose watched files changed. The skipped ones are listed with the reason.'],
+      ['Roll back group', 'Puts every app the latest group deployment switched back on the release it had before.'],
+      ['When an app fails…', 'The apps after it are not deployed; with this ticked, the ones already switched in that run go back to their previous release.'],
+    ],
+    roles: 'Everyone sees groups; deployers deploy and roll back; admins create and change them.',
+    docs: 'groups.md',
+  },
+  'groups.members': {
+    title: 'Apps of the group',
+    summary: 'The group\'s apps in deploy order, each with its watch paths: globs of repository paths that concern it, such as frontend_v2/** and shared/**. Without watch paths any change counts.',
+    controls: [
+      ['↑ ↓', 'Change the deploy order (e.g. the API before the front end).'],
+      ['Watch paths / Save', 'Comma-separated globs: * and ? within a folder name, ** across folders; a plain folder name means everything under it.'],
+      ['Add app / Remove', 'Only apps deployed from the group\'s repository and branch can join; an app is in one group at most.'],
+    ],
+    roles: 'Admins change apps and watch paths.',
+    docs: 'groups.md#the-group-page',
+  },
+  'groups.webhook': {
+    title: 'Group webhook',
+    summary: 'One GitHub webhook for the whole group: a push to its branch starts a group deployment of the changed apps. Pushes to a member app\'s own webhook are ignored while it is in a group, so a push never deploys an app twice.',
+    controls: [
+      ['Generate secret / Rotate secret', 'Creates the webhook secret (shown once). Add the Payload URL and secret in GitHub → Settings → Webhooks.'],
+      ['Send test delivery', 'Sends a signed ping through the endpoint.'],
+    ],
+    roles: 'Admins, signed in.',
+    docs: 'groups.md#the-group-page',
+  },
   'app.delete': {
     title: 'Danger zone',
     summary: 'Deleting an app stops all its processes (they get the drain timeout to finish requests), stops serving its domains, and removes its secrets, deploy key, webhook secret, daily deploy and releases. Its events stay in the history. Its name and domains can be used again right away. Certificates already issued for its domains are kept, so mapping a domain again needs no new certificate.',

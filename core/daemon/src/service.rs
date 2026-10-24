@@ -233,6 +233,8 @@ impl DaemonService {
             usage: None,
             instances: Vec::new(),
             standby: None,
+            group: None,
+            commit: None,
         })))
     }
 
@@ -491,6 +493,121 @@ impl AegisDaemon for DaemonService {
         request: Request<pb::ChangeSourceRequest>,
     ) -> Result<Response<ProjectInfo>, Status> {
         with_actor(CLI_ACTOR.into(), self.change_source_impl(request)).await
+    }
+
+    async fn list_groups(
+        &self,
+        _request: Request<pb::ListGroupsRequest>,
+    ) -> Result<Response<pb::ListGroupsResponse>, Status> {
+        let name = |id: &ProjectId| {
+            self.control
+                .projection()
+                .get_project(id)
+                .map(|p| p.name)
+                .unwrap_or_default()
+        };
+        let groups = self
+            .control
+            .list_groups()
+            .into_iter()
+            .map(|g| {
+                let last = g
+                    .last_deployment
+                    .as_ref()
+                    .and_then(|id| self.control.get_group_deployment(id));
+                pb::GroupInfo {
+                    members: g
+                        .members
+                        .iter()
+                        .map(|m| {
+                            let run = last.as_ref().and_then(|r| {
+                                r.members.iter().find(|x| x.project_id == m.project_id)
+                            });
+                            pb::GroupMemberInfo {
+                                project_id: m.project_id.to_string(),
+                                name: name(&m.project_id),
+                                watch_paths: m.watch_paths.clone(),
+                                current_release: self
+                                    .control
+                                    .projection()
+                                    .get_project(&m.project_id)
+                                    .and_then(|p| p.current_release)
+                                    .unwrap_or_default(),
+                                last_status: run.map(|r| r.status.clone()).unwrap_or_default(),
+                                last_version: run
+                                    .and_then(|r| r.version.clone())
+                                    .unwrap_or_default(),
+                                last_reason: run.and_then(|r| r.reason.clone()).unwrap_or_default(),
+                            }
+                        })
+                        .collect(),
+                    last_deployment_id: last.as_ref().map(|r| r.id.clone()).unwrap_or_default(),
+                    last_status: last.as_ref().map(|r| r.status.clone()).unwrap_or_default(),
+                    last_commit: last
+                        .as_ref()
+                        .and_then(|r| r.commit.clone())
+                        .unwrap_or_default(),
+                    last_error: last
+                        .as_ref()
+                        .and_then(|r| r.error.clone())
+                        .unwrap_or_default(),
+                    id: g.id,
+                    name: g.name,
+                    repository_url: g.repository_url,
+                    branch: g.branch,
+                    rollback_on_failure: g.rollback_on_failure,
+                }
+            })
+            .collect();
+        Ok(Response::new(pb::ListGroupsResponse { groups }))
+    }
+
+    async fn deploy_group(
+        &self,
+        request: Request<pb::DeployGroupRequest>,
+    ) -> Result<Response<pb::DeployGroupResponse>, Status> {
+        let req = request.into_inner();
+        with_actor(CLI_ACTOR.into(), async {
+            let group = self
+                .control
+                .resolve_group(&req.group)
+                .map_err(status_from)?;
+            let id = self
+                .control
+                .deploy_group(&group.id, opt_string(req.commit), !req.all, "cli")
+                .await
+                .map_err(status_from)?;
+            Ok(Response::new(pb::DeployGroupResponse {
+                group_deployment_id: id,
+                group_id: group.id,
+            }))
+        })
+        .await
+    }
+
+    async fn rollback_group(
+        &self,
+        request: Request<pb::RollbackGroupRequest>,
+    ) -> Result<Response<pb::RollbackGroupResponse>, Status> {
+        let req = request.into_inner();
+        with_actor(CLI_ACTOR.into(), async {
+            let results = self
+                .control
+                .rollback_group(&req.group)
+                .await
+                .map_err(status_from)?;
+            Ok(Response::new(pb::RollbackGroupResponse {
+                members: results
+                    .into_iter()
+                    .map(|r| pb::MemberRollbackInfo {
+                        name: r.name,
+                        version: r.version.unwrap_or_default(),
+                        error: r.error.unwrap_or_default(),
+                    })
+                    .collect(),
+            }))
+        })
+        .await
     }
 
     async fn list_projects(

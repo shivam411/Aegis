@@ -620,6 +620,8 @@ const ROUTES = [
   [/^\/?$/, overviewPage, 'overview'],
   [/^\/apps\/new$/, wizardPage, 'overview'],
   [/^\/apps\/([^/]+)(?:\/([a-z]+))?$/, appPage, 'overview'],
+  [/^\/groups\/new$/, newGroupPage, 'overview'],
+  [/^\/groups\/([^/]+)$/, groupPage, 'overview'],
   [/^\/deployments$/, deploymentsPage, 'deployments'],
   [/^\/deployments\/([^/]+)$/, deploymentPage, 'deployments'],
   [/^\/events$/, eventsPage, 'events'],
@@ -1156,7 +1158,9 @@ async function overviewPage(main, ctx) {
   const hostEl = h('div', { class: 'grid stats', id: 'host' });
   const appsEl = h('div', { id: 'apps' });
   append(main,
-    pageHeader('Overview', 'overview', h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
+    pageHeader('Overview', 'overview',
+      can('admin') ? h('a', { class: 'btn', href: '#/groups/new', 'data-action': 'new-group' }, '+ New group') : null,
+      h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
     h('div', { class: 'section-head' }, h('h2', {}, 'Server'), helpButton('overview.host')),
     hostEl,
     h('div', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', {}, 'Apps'), helpButton('overview.apps')), appsEl));
@@ -1170,9 +1174,19 @@ async function overviewPage(main, ctx) {
     }
   };
   const loadApps = async () => {
-    const [projects, deployments] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments')]);
+    const [projects, deployments, groups] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments'), api('GET', '/groups')]);
     state.projects = projects;
     if (!ctx.alive()) return;
+    if (projects.length && groups.length) {
+      const active = new Map();
+      for (const d of deployments) if (isActiveDeployment(d)) active.set(d.project_id, d);
+      const grouped = new Set(groups.flatMap((g) => g.members.map((m) => m.project_id)));
+      const byId = new Map(projects.map((p) => [p.id, p]));
+      replace(appsEl,
+        h('div', { class: 'grid' }, groups.map((g) => groupCard(g, byId, active, loadApps))),
+        h('div', { class: 'grid apps' }, projects.filter((p) => !grouped.has(p.id)).map((p) => appCard(p, active.get(p.id), loadApps))));
+      return;
+    }
     if (projects.length === 0) {
       replace(appsEl, h('div', { class: 'card empty' },
         h('h2', {}, 'No apps yet'),
@@ -1287,6 +1301,290 @@ function appCard(project, activeDeployment, reload) {
 }
 
 // ----------------------------------------------------------------------
+// Groups
+// ----------------------------------------------------------------------
+
+const GROUP_RUN_KIND = { Running: 'info', Success: 'ok', Failed: 'bad', RolledBack: 'warn' };
+const MEMBER_RUN_KIND = { deployed: 'ok', skipped: '', failed: 'bad', rolled_back: 'warn', deploying: 'info', pending: '' };
+
+/** Deploy all, deploy the changed apps only, or roll back a group. */
+function groupButtons(group, after, { small = true } = {}) {
+  const cls = small ? 'btn small' : 'btn';
+  if (!can('deployer')) return [];
+  const deploy = (onlyChanged) => async (e) => {
+    const btn = e.currentTarget;
+    const res = await run(btn, () => api('POST', `/groups/${enc(group.id)}/deploy`, { only_changed: onlyChanged }),
+      onlyChanged ? `Deploying the changed apps of ${group.name}` : `Deploying ${group.name}`);
+    if (res && after) after();
+  };
+  const rollback = async (e) => {
+    const btn = e.currentTarget;
+    const ok = await confirmDialog({
+      title: `Roll back ${group.name}?`,
+      message: 'Every app the latest group deployment switched goes back to the release it had before.',
+      confirmLabel: 'Roll back group',
+    });
+    if (!ok) return;
+    const res = await run(btn, () => api('POST', `/groups/${enc(group.id)}/rollback`),
+      (r) => `Rolled back ${r.members.length} app${r.members.length === 1 ? '' : 's'}`);
+    if (res && after) after();
+  };
+  const busy = group.last_deployment?.status === 'Running';
+  return [
+    h('button', { class: `${cls} primary`, type: 'button', 'data-action': 'deploy-group', disabled: busy, onclick: deploy(false) }, 'Deploy group'),
+    h('button', { class: cls, type: 'button', 'data-action': 'deploy-changed', disabled: busy, onclick: deploy(true) }, 'Deploy changed only'),
+    h('button', { class: cls, type: 'button', 'data-action': 'rollback-group', disabled: busy, onclick: rollback }, 'Roll back group'),
+  ];
+}
+
+function groupRunPill(run) {
+  if (!run) return null;
+  return h('span', { 'data-group-run': run.status }, pill(run.status === 'Running' ? 'Deploying' : run.status, GROUP_RUN_KIND[run.status] ?? ''));
+}
+
+/** Overview: a group as one card with its apps inside. */
+function groupCard(group, projects, active, reload) {
+  const runOf = (id) => group.last_deployment?.members.find((m) => m.project_id === id);
+  const rows = group.members.map((m) => {
+    const p = projects.get(m.project_id);
+    const run = runOf(m.project_id);
+    return h('tr', { 'data-member': m.name },
+      h('td', {}, h('a', { href: `#/apps/${enc(m.name)}` }, m.name)),
+      h('td', {}, p ? processPill(p) : null, active.get(m.project_id) ? deploymentPill(active.get(m.project_id).status) : null),
+      h('td', { class: 'mono small truncate', title: m.current_release || '' }, m.current_release || '–'),
+      h('td', { class: 'small', 'data-member-updates': '' },
+        run && group.last_deployment.status === 'Running' ? pill(run.status, MEMBER_RUN_KIND[run.status] ?? '') : null));
+  });
+  return h('article', { class: 'card group-card', 'data-group': group.name },
+    h('div', { class: 'card-body' },
+      h('div', { class: 'title' },
+        h('a', { href: `#/groups/${enc(group.name)}` }, group.name),
+        h('span', { class: 'muted small' }, ` · ${group.members.length} app${group.members.length === 1 ? '' : 's'}`),
+        h('span', { class: 'spacer' }),
+        h('span', { 'data-group-updates': '' }),
+        groupRunPill(group.last_deployment)),
+      h('div', { class: 'source muted truncate', title: `${group.repository_url} @ ${group.branch}` }, `${group.repository_url} @ ${group.branch}`),
+      h('table', { class: 'table compact' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'App'), h('th', {}, 'Status'), h('th', {}, 'Version'), h('th', {}, ''))),
+        h('tbody', {}, rows))),
+    h('div', { class: 'actions' }, groupButtons(group, reload)));
+}
+
+/** The form fields of a group (name, repository, branch, on failure). */
+function groupFields(group = {}) {
+  const name = h('input', { id: 'group-name', value: group.name || '', autocomplete: 'off', required: true });
+  const repo = h('input', { id: 'group-repo', class: 'mono', value: group.repository_url || '', placeholder: 'git@github.com:owner/repo.git', required: true });
+  const branch = h('input', { id: 'group-branch', class: 'mono', value: group.branch || '', placeholder: 'main' });
+  const rollback = h('input', { type: 'checkbox', id: 'group-rollback', checked: group.rollback_on_failure ?? true });
+  const el = [
+    h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'group-name' }, 'Group name'), name),
+      h('div', { class: 'field' }, h('label', { for: 'group-branch' }, 'Branch'), branch)),
+    h('div', { class: 'field' }, h('label', { for: 'group-repo' }, 'Repository URL'), repo,
+      h('span', { class: 'hint' }, 'Every app in the group is deployed from this repository and branch.')),
+    h('label', { class: 'small', for: 'group-rollback' }, rollback, ' When an app fails, roll back the apps this group deployment already switched'),
+  ];
+  const read = () => ({
+    name: name.value.trim(),
+    repository_url: repo.value.trim(),
+    branch: branch.value.trim() || null,
+    rollback_on_failure: rollback.checked,
+  });
+  return { el, read, repo, branch };
+}
+
+/** Apps that could join a group from `repo` @ `branch` (not in another group). */
+function eligibleApps(projects, repo, branch, groupId) {
+  const norm = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\.git$/, '').toLowerCase();
+  return projects.filter((p) => p.repository_url && !p.source_dir
+    && norm(p.repository_url) === norm(repo) && p.branch === (branch || 'main')
+    && (!p.group || p.group.id === groupId));
+}
+
+async function newGroupPage(main, ctx) {
+  const projects = await api('GET', '/projects');
+  if (!ctx.alive()) return;
+  const fields = groupFields();
+  const picks = h('div', { 'data-group-picks': '' });
+  const drawPicks = () => {
+    const apps = eligibleApps(projects, fields.repo.value, fields.branch.value.trim(), null);
+    replace(picks, apps.length
+      ? h('fieldset', { class: 'field' }, h('legend', {}, 'Apps (deployed in this order; set watch paths on the group page)'),
+        apps.map((p) => h('label', { class: 'small' }, h('input', { type: 'checkbox', value: p.id, 'aria-label': `Add ${p.name}` }), ` ${p.name}${p.source_subdir ? ` (${p.source_subdir})` : ''}`)))
+      : h('p', { class: 'muted small' }, 'No app is deployed from this repository and branch yet (apps from a server folder or in another group are not listed).'));
+  };
+  fields.repo.addEventListener('input', drawPicks);
+  fields.branch.addEventListener('input', drawPicks);
+  drawPicks();
+  const save = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create-group' }, 'Create group');
+  const form = h('form', {
+    class: 'card',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const req = fields.read();
+      req.members = [...picks.querySelectorAll('input:checked')].map((i) => ({ project: i.value, watch_paths: [] }));
+      const res = await run(save, () => api('POST', '/groups', req), (g) => `Group ${g.name} created`);
+      if (res) go(`/groups/${enc(res.name)}`);
+    },
+  },
+  cardHeader('New group', 'groups'),
+  h('div', { class: 'card-body' },
+    h('p', { class: 'muted small' }, 'A group deploys apps from one repository together: one commit, one clone, in order, and only the apps whose files changed.'),
+    fields.el, picks,
+    h('div', { class: 'form-actions' }, save)));
+  append(main, h('a', { class: 'small', href: '#/' }, '← Overview'), pageHeader('New group', 'groups'), form);
+}
+
+async function groupPage(main, ctx, key) {
+  let [group, projects] = await Promise.all([api('GET', `/groups/${enc(key)}`), api('GET', '/projects')]);
+  if (!ctx.alive()) return;
+  const header = h('div');
+  const body = h('div', { class: 'grid' });
+  const reload = async () => {
+    try {
+      [group, projects] = await Promise.all([api('GET', `/groups/${enc(group.id)}`), api('GET', '/projects')]);
+      if (ctx.alive()) draw();
+    } catch (err) {
+      if (err.status === 404 && ctx.alive()) go('/');
+    }
+  };
+  const saveMembers = async (btn, members, message) => {
+    const res = await run(btn, () => api('PUT', `/groups/${enc(group.id)}/members`, { members }), message);
+    if (res) await reload();
+  };
+  const memberList = () => group.members.map((m) => ({ project: m.project_id, watch_paths: m.watch_paths }));
+
+  const draw = () => {
+    replace(header, h('div', { class: 'page-header' },
+      h('h1', {}, group.name), helpButton('groups'), groupRunPill(group.last_deployment),
+      h('span', { 'data-group-updates': '' }),
+      h('div', { class: 'spacer' }), groupButtons(group, reload, { small: false }),
+      h('div', { class: 'subtitle muted small' }, `${group.repository_url} @ ${group.branch} · ${group.members.length} app${group.members.length === 1 ? '' : 's'}`)));
+
+    const admin = can('admin');
+    const rows = group.members.map((m, i) => {
+      const watch = h('input', { class: 'mono', value: m.watch_paths.join(', '), placeholder: 'whole repository, e.g. frontend_v2/**, shared/**', 'aria-label': `Watch paths of ${m.name}`, disabled: !admin });
+      const saveBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'save-watch' }, 'Save');
+      saveBtn.addEventListener('click', () => {
+        const list = memberList();
+        list[i].watch_paths = watch.value.split(',').map((s) => s.trim()).filter(Boolean);
+        saveMembers(saveBtn, list, `Watch paths of ${m.name} saved`);
+      });
+      const move = (delta, label) => {
+        const btn = h('button', { class: 'btn small ghost', type: 'button', 'aria-label': `${label} ${m.name}`, disabled: i + delta < 0 || i + delta >= group.members.length }, delta < 0 ? '↑' : '↓');
+        btn.addEventListener('click', () => {
+          const list = memberList();
+          const [item] = list.splice(i, 1);
+          list.splice(i + delta, 0, item);
+          saveMembers(btn, list, 'Order saved');
+        });
+        return btn;
+      };
+      const removeBtn = h('button', { class: 'btn small danger', type: 'button', 'data-action': 'remove-member' }, 'Remove');
+      removeBtn.addEventListener('click', async () => {
+        const ok = await confirmDialog({ title: `Remove ${m.name} from ${group.name}?`, message: 'The app stays; it is deployed on its own again (its own webhook applies again).', confirmLabel: 'Remove' });
+        if (ok) saveMembers(removeBtn, memberList().filter((x) => x.project !== m.project_id), `${m.name} removed from the group`);
+      });
+      const last = group.last_deployment?.members.find((x) => x.project_id === m.project_id);
+      return h('tr', { 'data-member': m.name },
+        h('td', {}, `${i + 1}.`),
+        h('td', {}, h('a', { href: `#/apps/${enc(m.name)}` }, m.name), m.source_subdir ? h('div', { class: 'muted small mono' }, m.source_subdir) : null),
+        h('td', { class: 'mono small' }, m.current_release || '–', m.commit ? h('div', { class: 'muted' }, m.commit.slice(0, 10)) : null),
+        h('td', { 'data-member-updates': '' }),
+        h('td', {}, last ? pill(last.status, MEMBER_RUN_KIND[last.status] ?? '') : null, last?.reason ? h('div', { class: 'muted small' }, last.reason) : null),
+        h('td', {}, h('div', { class: 'row' }, watch, admin ? saveBtn : null)),
+        admin ? h('td', {}, move(-1, 'Move up'), move(1, 'Move down'), removeBtn) : null);
+    });
+    const membersCard = h('section', { class: 'card', 'data-card': 'group-members' },
+      cardHeader('Apps', 'groups.members'),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, 'Deployed in this order. An app with watch paths is only deployed by "Deploy changed only" (and the webhook) when a file matching them changed since its live commit; without watch paths, any change counts.'),
+        group.members.length
+          ? h('table', { class: 'table' },
+            h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'App'), h('th', {}, 'Live'), h('th', {}, 'Changes'), h('th', {}, 'Last group deployment'), h('th', {}, 'Watch paths'), admin ? h('th', {}, '') : null)),
+            h('tbody', {}, rows))
+          : h('p', {}, 'No apps yet.'),
+        admin ? addMemberForm() : null));
+
+    const settingsCard = admin ? groupSettingsCard() : null;
+    const history = h('section', { class: 'card', 'data-card': 'group-history' },
+      cardHeader('Group deployments', 'groups'),
+      h('div', { class: 'card-body', 'data-group-history': '' }, h('p', { class: 'muted small' }, 'Loading…')));
+    loadHistory(history.querySelector('[data-group-history]'));
+    replace(body, membersCard, history,
+      admin ? hookCard(`/groups/${enc(group.id)}/webhook`, 'groups.webhook', 'this group') : null,
+      settingsCard);
+    if (typeof drawGroupUpdates === 'function') drawGroupUpdates(ctx, group, main);
+  };
+
+  const addMemberForm = () => {
+    const apps = eligibleApps(projects, group.repository_url, group.branch, group.id)
+      .filter((p) => !group.members.some((m) => m.project_id === p.id));
+    if (!apps.length) return h('p', { class: 'muted small' }, 'Other apps deployed from this repository and branch appear here to be added.');
+    const pick = h('select', { id: 'group-add', 'aria-label': 'App to add' }, apps.map((p) => h('option', { value: p.id }, p.name)));
+    const paths = h('input', { id: 'group-add-paths', class: 'mono', placeholder: 'watch paths, e.g. backend/**' });
+    const add = h('button', { class: 'btn', type: 'button', 'data-action': 'add-member' }, 'Add app');
+    add.addEventListener('click', async () => {
+      const res = await run(add, () => api('POST', `/groups/${enc(group.id)}/members`, {
+        project: pick.value,
+        watch_paths: paths.value.split(',').map((s) => s.trim()).filter(Boolean),
+      }), 'App added');
+      if (res) reload();
+    });
+    return h('div', { class: 'row' }, pick, paths, add);
+  };
+
+  const groupSettingsCard = () => {
+    const fields = groupFields(group);
+    const save = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'save-group' }, 'Save group');
+    const del = h('button', { class: 'btn danger', type: 'button', 'data-action': 'delete-group' }, 'Delete group');
+    del.addEventListener('click', async () => {
+      const ok = await confirmDialog({ title: `Delete group ${group.name}?`, message: 'Its apps stay and are deployed on their own again. The group\'s webhook stops working.', confirmLabel: 'Delete group', danger: true });
+      if (!ok) return;
+      const res = await run(del, () => api('DELETE', `/groups/${enc(group.id)}`), 'Group deleted');
+      if (res !== undefined) go('/');
+    });
+    return h('form', {
+      class: 'card', 'data-card': 'group-settings',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const res = await run(save, () => api('PUT', `/groups/${enc(group.id)}`, fields.read()), 'Group saved');
+        if (res) {
+          if (res.name !== group.name) go(`/groups/${enc(res.name)}`);
+          else reload();
+        }
+      },
+    },
+    cardHeader('Group settings', 'groups'),
+    h('div', { class: 'card-body' }, fields.el, h('div', { class: 'form-actions' }, del, save)));
+  };
+
+  const loadHistory = async (el) => {
+    try {
+      const runs = (await api('GET', `/groups/${enc(group.id)}/deployments`)).reverse().slice(0, 10);
+      if (!ctx.alive()) return;
+      replace(el, runs.length
+        ? h('ul', { class: 'deliveries' }, runs.map((r) => h('li', { 'data-run': r.id },
+          timeEl(r.created_at, fmtAgo(r.created_at)), ' ', groupRunPill(r), ' ',
+          r.commit ? h('span', { class: 'mono small' }, r.commit.slice(0, 10)) : null, ' ',
+          h('span', { class: 'muted small' }, r.members.map((m) => `${m.name}: ${m.status}${m.version ? ` ${m.version}` : ''}`).join(' · ')),
+          r.error ? h('div', { class: 'small' }, r.error) : null)))
+        : h('p', { class: 'muted small' }, 'No group deployments yet.'));
+    } catch (err) {
+      if (ctx.alive()) replace(el, errorBox(err));
+    }
+  };
+
+  draw();
+  append(main, h('a', { class: 'small', href: '#/' }, '← Overview'), header, body);
+  const later = debounce(reload, 300);
+  onEvents(ctx, (e) => {
+    if (e.payload?.group_id === group.id || group.members.some((m) => m.project_id === e.payload?.project_id)) later();
+  });
+  ctx.cleanup(later.cancel);
+}
+
+// ----------------------------------------------------------------------
 // App detail
 // ----------------------------------------------------------------------
 
@@ -1320,6 +1618,9 @@ async function appPage(main, ctx, name, tab = 'deploy') {
       processPill(project),
       p && p.runtime === 'docker'
         ? h('span', { 'data-runtime': 'docker', title: p.image || '' }, pill('Docker', 'info'))
+        : null,
+      project.group
+        ? h('a', { class: 'pill info', href: `#/groups/${enc(project.group.name)}`, 'data-group-link': '' }, `Group ${project.group.name}`)
         : null,
       h('div', { class: 'spacer' }),
       processButtons(project, refreshProject, { small: false }),
@@ -2328,14 +2629,27 @@ function webhookCard(ctx) {
       cardHeader('GitHub webhook', 'app.webhook'),
       h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Webhooks need a git repository as the source.')));
   }
+  if (project.group) {
+    return h('section', { class: 'card', 'data-card': 'webhook' },
+      cardHeader('GitHub webhook', 'app.webhook'),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, 'This app is in group ',
+          h('a', { href: `#/groups/${enc(project.group.name)}` }, project.group.name),
+          ". Pushes deploy it through the group's webhook; pushes to this app's own webhook are ignored.")));
+  }
+  return hookCard(`/projects/${enc(project.id)}/webhook`, 'app.webhook', 'this app');
+}
+
+/** Webhook secret, payload URL, test delivery and recent deliveries. */
+function hookCard(base, help, what) {
   const status = h('div', {}, h('p', { class: 'muted small' }, 'Loading…'));
   const hookOut = h('div');
   const hookBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'webhook' }, 'Generate secret');
   const load = async () => {
-    const hook = await api('GET', `/projects/${enc(project.id)}/webhook`);
+    const hook = await api('GET', base);
     const testBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'test-webhook', disabled: !hook.configured }, 'Send test delivery');
     testBtn.addEventListener('click', async () => {
-      const res = await run(testBtn, () => api('POST', `/projects/${enc(project.id)}/webhook/test`));
+      const res = await run(testBtn, () => api('POST', `${base}/test`));
       if (res) toast(res.status === 'pong' ? 'Test delivery accepted' : `Test delivery: ${res.status}`, res.status === 'pong' ? '' : 'bad');
       load().catch(() => {});
     });
@@ -2359,11 +2673,11 @@ function webhookCard(ctx) {
   hookBtn.addEventListener('click', async () => {
     const ok = await confirmDialog({
       title: 'Generate a new webhook secret?',
-      message: 'If this app already has a secret, it stops working; update the webhook on GitHub with the new one.',
+      message: `If ${what} already has a secret, it stops working; update the webhook on GitHub with the new one.`,
       confirmLabel: 'Generate',
     });
     if (!ok) return;
-    const res = await run(hookBtn, () => api('POST', `/projects/${enc(project.id)}/webhook`));
+    const res = await run(hookBtn, () => api('POST', base));
     if (!res) return;
     replace(hookOut, h('div', { class: 'grid' },
       h('div', { class: 'alert warn' }, 'Copy the secret now; it is not shown again.'),
@@ -2371,8 +2685,8 @@ function webhookCard(ctx) {
     load().catch(() => {});
   });
   load().catch((err) => replace(status, errorBox(err)));
-  return h('section', { class: 'card' },
-    cardHeader('GitHub webhook', 'app.webhook'),
+  return h('section', { class: 'card', 'data-card': 'webhook' },
+    cardHeader('GitHub webhook', help),
     h('div', { class: 'card-body' }, status, hookOut));
 }
 

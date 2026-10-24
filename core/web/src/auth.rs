@@ -25,7 +25,7 @@ use serde_json::json;
 use std::net::{IpAddr, SocketAddr};
 
 pub const SESSION_COOKIE: &str = "aegis_session";
-const MAX_REMEMBERED_DELIVERIES: usize = 1000;
+pub(crate) const MAX_REMEMBERED_DELIVERIES: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub enum Principal {
@@ -140,6 +140,9 @@ fn user_only(path: &str) -> bool {
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
         || matches!(section, Some("webhook" | "secrets" | "deploy-key"))
+        // A group's webhook secret, like an app's.
+        || (path.starts_with("/api/v1/groups/")
+            && path.split('/').nth(5) == Some("webhook"))
         // Reading server folders and registering apps in bulk.
         || path == "/api/v1/apps"
         || path.starts_with("/api/v1/apps/")
@@ -180,6 +183,7 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Credentials and secret material, even to read.
         ["users" | "tokens" | "backups", ..] => Role::Admin,
         ["projects", _, "secrets" | "webhook" | "deploy-key", ..] => Role::Admin,
+        ["groups", _, "webhook", ..] => Role::Admin,
         // Scanning server folders, access checks and bulk import.
         ["apps", ..] => Role::Admin,
         // Pasted .env contents, and writes of Variables and Secrets.
@@ -192,6 +196,7 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Shows the aegis.toml a settings change would produce; saves nothing.
         ["projects", _, "settings", "preview"] => Role::Viewer,
         ["projects", _, "deploy" | "rollback"] => Role::Deployer,
+        ["groups", _, "deploy" | "rollback"] => Role::Deployer,
         ["processes", _, "start" | "stop" | "restart"] => Role::Deployer,
         _ => Role::Admin,
     }
@@ -611,14 +616,14 @@ pub(crate) async fn rotate_webhook_secret(
     }))
 }
 
-fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
+pub(crate) fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
 }
 
-fn webhook_result(
+pub(crate) fn webhook_result(
     status: StatusCode,
     outcome: &str,
     reason: Option<String>,
@@ -712,6 +717,18 @@ async fn github_event(
         "push" => {
             let push = aegis_webhook::parse_push(body)
                 .map_err(|e| ApiError::bad_request(e.to_string()))?;
+            // A group deploys its apps together, from its own webhook: the
+            // same push must not also deploy this app on its own.
+            if let Some(group) = st.control.group_of(&project.id) {
+                return Ok(webhook_result(
+                    StatusCode::ACCEPTED,
+                    "ignored",
+                    Some(format!(
+                        "'{}' is in group '{}': pushes deploy it through the group's webhook",
+                        project.name, group.name
+                    )),
+                ));
+            }
             if push.deleted || push.branch.as_deref() != Some(project.branch.as_str()) {
                 return Ok(webhook_result(
                     StatusCode::ACCEPTED,
@@ -871,5 +888,32 @@ mod tests {
             "/api/v1/projects/web/domains/a.example"
         ));
         assert!(!deletes_project(&Method::DELETE, "/api/v1/projects/"));
+        // Groups: everyone reads, deployers deploy and roll back, admins
+        // change them; the webhook secret is for signed-in admins.
+        assert_eq!(need(Method::GET, "/api/v1/groups"), Role::Viewer);
+        assert_eq!(need(Method::GET, "/api/v1/groups/ty"), Role::Viewer);
+        assert_eq!(need(Method::GET, "/api/v1/groups/ty/webhook"), Role::Admin);
+        assert_eq!(
+            need(Method::POST, "/api/v1/groups/ty/deploy"),
+            Role::Deployer
+        );
+        assert_eq!(
+            need(Method::POST, "/api/v1/groups/ty/rollback"),
+            Role::Deployer
+        );
+        for (m, p) in [
+            (Method::POST, "/api/v1/groups"),
+            (Method::PUT, "/api/v1/groups/ty"),
+            (Method::DELETE, "/api/v1/groups/ty"),
+            (Method::PUT, "/api/v1/groups/ty/members"),
+            (Method::POST, "/api/v1/groups/ty/members"),
+            (Method::DELETE, "/api/v1/groups/ty/members/web"),
+            (Method::POST, "/api/v1/groups/ty/webhook"),
+        ] {
+            assert_eq!(need(m.clone(), p), Role::Admin, "{m} {p}");
+        }
+        assert!(user_only("/api/v1/groups/ty/webhook"));
+        assert!(user_only("/api/v1/groups/ty/webhook/test"));
+        assert!(!user_only("/api/v1/groups/ty/deploy"));
     }
 }

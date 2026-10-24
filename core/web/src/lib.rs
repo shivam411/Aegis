@@ -12,6 +12,7 @@ mod auth;
 mod backup;
 mod domains;
 pub mod dto;
+mod groups;
 mod guard;
 mod resources;
 mod sources;
@@ -267,6 +268,11 @@ impl Modify for SecuritySchemes {
         sources::get_deploy_key, sources::create_deploy_key, sources::delete_deploy_key,
         sources::test_deploy_key, sources::check_access, sources::scan_info, sources::scan,
         sources::import,
+        groups::list_groups, groups::create_group, groups::get_group, groups::update_group,
+        groups::delete_group, groups::set_members, groups::add_member, groups::update_member,
+        groups::remove_member, groups::deploy_group, groups::rollback_group,
+        groups::list_group_deployments, groups::webhook_status, groups::rotate_webhook_secret,
+        groups::test_webhook, groups::github_group_webhook,
         backup::list_backups, backup::create_backup, backup::download_backup,
         backup::delete_backup,
         update::update_status, update::check_update, update::apply_update
@@ -293,12 +299,18 @@ impl Modify for SecuritySchemes {
         sources::AccessCheckDto, sources::CheckAccessRequest, sources::ScanInfoDto,
         sources::ScanRequest, sources::ScanWarningDto, sources::StartHintDto,
         sources::ScanCandidateDto, sources::ScanResultDto, sources::ImportAppRequest,
-        sources::ImportRequest, sources::ImportedAppDto, sources::ImportResultDto
+        sources::ImportRequest, sources::ImportedAppDto, sources::ImportResultDto,
+        ProjectGroupDto, groups::GroupDto, groups::GroupMemberDto, groups::GroupMemberRunDto,
+        groups::GroupDeploymentDto, groups::MemberRequest, groups::GroupRequest,
+        groups::MembersRequest, groups::AddMemberRequest, groups::UpdateMemberRequest,
+        groups::GroupDeployRequest, groups::GroupDeployAccepted, groups::MemberRollbackDto,
+        groups::GroupRollbackDto, groups::GroupWebhookStatusDto
     )),
     tags(
         (name = "auth"), (name = "users"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
-        (name = "domains"), (name = "secrets"), (name = "backups"), (name = "sources")
+        (name = "domains"), (name = "secrets"), (name = "backups"), (name = "sources"),
+        (name = "groups")
     )
 )]
 pub struct ApiDoc;
@@ -391,6 +403,35 @@ pub fn router(state: AppState) -> Router {
             "/projects/:project/deploy-key/test",
             post(sources::test_deploy_key),
         )
+        .route(
+            "/groups",
+            get(groups::list_groups).post(groups::create_group),
+        )
+        .route(
+            "/groups/:group",
+            get(groups::get_group)
+                .put(groups::update_group)
+                .delete(groups::delete_group),
+        )
+        .route(
+            "/groups/:group/members",
+            put(groups::set_members).post(groups::add_member),
+        )
+        .route(
+            "/groups/:group/members/:project",
+            put(groups::update_member).delete(groups::remove_member),
+        )
+        .route("/groups/:group/deploy", post(groups::deploy_group))
+        .route("/groups/:group/rollback", post(groups::rollback_group))
+        .route(
+            "/groups/:group/deployments",
+            get(groups::list_group_deployments),
+        )
+        .route(
+            "/groups/:group/webhook",
+            get(groups::webhook_status).post(groups::rotate_webhook_secret),
+        )
+        .route("/groups/:group/webhook/test", post(groups::test_webhook))
         .route("/apps/check-access", post(sources::check_access))
         .route("/apps/scan", get(sources::scan_info).post(sources::scan))
         .route("/apps/import", post(sources::import))
@@ -424,6 +465,7 @@ pub fn router(state: AppState) -> Router {
         .fallback(not_found);
     let hooks = Router::new()
         .route("/github/:project", post(auth::github_webhook))
+        .route("/github/groups/:group", post(groups::github_group_webhook))
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024));
     Router::new()
         .route("/healthz", get(healthz))

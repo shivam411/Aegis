@@ -281,6 +281,7 @@ impl ControlPlane {
         // Deleted apps: finish an interrupted cleanup. Their processes are
         // gone from the projection, so nothing below starts them.
         self.purge_deleted_projects().await;
+        self.fail_interrupted_group_deployments().await;
         self.remove_orphan_containers().await;
         for dep in self.inner.projection.get_deployments() {
             if matches!(dep.status.as_str(), "Queued" | "InProgress") {

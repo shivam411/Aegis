@@ -20,6 +20,7 @@ Commands classified as **Stable** are guaranteed backwards-compatible public int
 | **`aegis restart`** | `[STABLE]` | Restart managed process. |
 | **`aegis delete <app>`** | `[EXPERIMENTAL]` | Delete an app: stops its processes (draining), removes its domains, secrets, deploy key, webhook secret, schedule and releases; the history stays and the name and domains are free again. Asks to confirm in a terminal; `--yes` skips the question (required when not in a terminal). `--keep-releases` leaves the release directories and logs on disk. Refused while a deployment is running. |
 | **`aegis source <app>`** | `[EXPERIMENTAL]` | Change an app's source: `--repo URL [--branch B]` or `--dir PATH` (relative to the current directory), plus `--subdir S` for a monorepo folder. Validated like registration; used from the next deployment. |
+| **`aegis group list` / `show` / `deploy` / `rollback`** | `[EXPERIMENTAL]` | App groups ([groups.md](groups.md)): list groups with their apps and latest group deployment; deploy a group at one commit (`--commit`), only the changed apps unless `--all`, following progress unless `--detach`; roll back the latest group deployment. Groups are created and edited in the dashboard or the HTTP API. |
 | **`aegis events`** | `[STABLE]` | Stream operational domain events in real-time. |
 | **`aegis doctor`** | `[STABLE]` | Environment, gRPC, and SQLite diagnostic check (`--fix`). |
 | **`aegis validate`** | `[STABLE]` | Validate project configuration and pipeline parameters. |

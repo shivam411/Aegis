@@ -104,6 +104,20 @@ pub struct ProjectDto {
     /// The previous release's instances after a BlueGreen switch.
     #[serde(default)]
     pub standby: Option<StandbyDto>,
+    /// The group the app is deployed with, if any.
+    #[serde(default)]
+    pub group: Option<ProjectGroupDto>,
+    /// The commit the live release was built from ("local" for a folder
+    /// outside git).
+    #[serde(default)]
+    pub commit: Option<String>,
+}
+
+/// The group an app belongs to.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProjectGroupDto {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -302,6 +316,8 @@ impl From<ProjectView> for ProjectDto {
                 process_ids: s.process_ids.iter().map(|i| i.to_string()).collect(),
                 until: s.until,
             }),
+            group: view.group.map(|(id, name)| ProjectGroupDto { id, name }),
+            commit: view.commit,
         }
     }
 }

@@ -71,6 +71,15 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /projects/{project}/domains` | Domains the built-in proxy serves the app on, each with its TLS mode and certificate state (`cert.state`: valid, expiring, expired, pending, error, disabled or off) |
 | `POST /projects/{project}/domains` | Map a domain (**201**): `{"domain", "tls"?, "cert_path"?, "key_path"?}`. `tls` is `acme` (default; certificate requested in the background), `files` (absolute PEM paths on the server, checked now) or `off`. A domain belongs to one app (409 otherwise). **Users only**: API tokens get 403 |
 | `DELETE /projects/{project}/domains/{domain}` | Stop serving the app on the domain (**204**; users only) |
+| `GET /groups` · `GET /groups/{group}` | App groups (see [groups.md](groups.md)): name, repository, branch, `rollback_on_failure`, `members` in deploy order (with `watch_paths`, live release and commit) and `last_deployment` (per-app outcome). `{group}` is an id or name. Every role |
+| `POST /groups` | Create a group (**201**): `{"name", "repository_url", "branch"?, "rollback_on_failure"?, "members"?: [{"project", "watch_paths"?}]}`. Members must be deployed from that repository and branch, and in no other group (else **400**). Admins |
+| `PUT /groups/{group}` · `DELETE /groups/{group}` | Change name, repository, branch or `rollback_on_failure` (**409** if a member wouldn't match); delete (**204**; the apps stay). Admins |
+| `PUT /groups/{group}/members` | Replace the members: `{"members": [{"project", "watch_paths"?}]}` in deploy order. Admins |
+| `POST /groups/{group}/members` · `PUT`/`DELETE /groups/{group}/members/{project}` | Add one (`{"project", "watch_paths"?, "position"?}`), change one's `watch_paths` and/or `position` (1-based), or remove one. Admins |
+| `POST /groups/{group}/deploy` | Deploy the group (**202**, `{"group_deployment_id"}`): `{"commit"?, "only_changed"?}` (default `true`: only apps whose watch paths changed since their live commit). One commit, one clone, apps in order; a failing app stops the rest. **409** while the group or one of its apps is being deployed. Deployers |
+| `POST /groups/{group}/rollback` | Put every app the latest group deployment switched back on its previous release: `{"members": [{"name", "version", "error"}]}`. Deployers |
+| `GET /groups/{group}/deployments` | The group's deployments, oldest first |
+| `GET`/`POST /groups/{group}/webhook` · `POST /groups/{group}/webhook/test` | The group's GitHub webhook: status and recent deliveries, a new secret (shown once), a signed test ping. Admins, signed in |
 | `GET /proxy` | The built-in proxy: `enabled`, ports, ACME settings, and every route with its upstream port and certificate state |
 | `GET /deployments?project=` | Deployment history |
 | `GET /deployments/{id}` | One deployment: status, current stage, error |
@@ -106,7 +115,8 @@ Outside `/api/v1`:
 | :--- | :--- |
 | `GET /healthz` | `ok` (public; for load balancers and proxies) |
 | `GET /` · `GET /assets/{file}` | The web dashboard's static files (public; they contain no data, and every API call they make needs a session) |
-| `POST /hooks/github/{project-id}` | GitHub push webhook, authenticated by `X-Hub-Signature-256` |
+| `POST /hooks/github/{project-id}` | GitHub push webhook, authenticated by `X-Hub-Signature-256`. Pushes are ignored while the app is in a group |
+| `POST /hooks/github/groups/{group-id}` | A group's GitHub push webhook: a push to its branch deploys the group's changed apps at the pushed commit |
 
 Raw event injection (`aegis emit-event`) is deliberately not offered over HTTP.
 
