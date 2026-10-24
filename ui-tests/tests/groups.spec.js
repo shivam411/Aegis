@@ -37,7 +37,7 @@ test('a group card with new commits, deployed from the overview', async ({ page 
   });
 
   await test.step('the overview shows the group as one card', async () => {
-    await page.getByRole('link', { name: 'Overview' }).click();
+    await page.locator('nav [data-nav="overview"]').click();
     const card = page.locator('[data-group="shop-group"]');
     await expect(card).toBeVisible();
     await expect(card.locator('tr[data-member="shop"]')).toBeVisible();
