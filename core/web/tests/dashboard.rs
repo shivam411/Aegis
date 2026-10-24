@@ -195,6 +195,7 @@ async fn settings_build_log_and_deployment_events() {
         json!({
             "install_command": null, "build_command": null, "test_command": null,
             "start_command": null, "port": null, "health_check_url": null,
+            "health_check_timeout_secs": null, "drain_timeout_secs": null,
             "strategy": null, "instances": null, "env": {}, "env_file": null
         })
     );
