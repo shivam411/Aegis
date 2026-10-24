@@ -148,7 +148,7 @@ An app's source can be switched between a repository (URL, branch, optional app 
 
 ## 2. Daemon configuration
 
-The daemon (and every `aegis-daemon` command, such as `self-update` and `admin backup`) reads its configuration from, in this order: the file named by the `AEGIS_CONFIG` environment variable; else `./aegis.toml` in its working directory, if it exists; else `/etc/aegis/aegis.toml`, if it exists (where `install.sh --server` puts it, so `sudo aegis-daemon self-update` run from any directory finds the server's database); else the built-in defaults. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
+The daemon (and every `aegis-daemon` command, such as `self-update` and `admin backup`) reads its configuration from, in this order: the file named by the `AEGIS_CONFIG` environment variable; else `/etc/aegis/aegis.toml`, if it exists (where `install.sh --server` puts it, so a command run from any directory, e.g. `sudo aegis-daemon self-update` from `/root`, uses the server's configuration and database); else `./aegis.toml` in its working directory (built-in defaults when it is missing), which is what development setups without `/etc/aegis` use. When `/etc/aegis/aegis.toml` wins over a `./aegis.toml` that has a `[daemon]` section (e.g. one left over from an old install), a warning naming both files says which one is used; set `AEGIS_CONFIG` to use the other. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
 
 ```toml
 [daemon]
