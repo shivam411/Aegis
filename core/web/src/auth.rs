@@ -197,6 +197,8 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         ["projects", _, "settings", "preview"] => Role::Viewer,
         ["projects", _, "deploy" | "rollback"] => Role::Deployer,
         ["groups", _, "deploy" | "rollback"] => Role::Deployer,
+        // "Check now" for new commits: reads the git server, changes nothing.
+        ["projects" | "groups", _, "updates", "check"] => Role::Deployer,
         ["processes", _, "start" | "stop" | "restart"] => Role::Deployer,
         _ => Role::Admin,
     }
@@ -670,6 +672,10 @@ pub(crate) async fn github_webhook(
     let event = header_str(&headers, "x-github-event").to_string();
     let delivery = header_str(&headers, "x-github-delivery").to_string();
     let result = github_event(&st, &project, &headers, &body).await;
+    // A push means new commits: refresh the "new commits" badge.
+    if event == "push" {
+        st.control.check_updates_soon(project.id);
+    }
     // Signed deliveries are recorded so the dashboard can show them.
     let (status, reason, deployment_id) = match &result {
         Ok((_, Json(r))) => (r.status.clone(), r.reason.clone(), r.deployment_id.clone()),
@@ -915,5 +921,17 @@ mod tests {
         assert!(user_only("/api/v1/groups/ty/webhook"));
         assert!(user_only("/api/v1/groups/ty/webhook/test"));
         assert!(!user_only("/api/v1/groups/ty/deploy"));
+        assert_eq!(
+            need(Method::GET, "/api/v1/projects/web/updates"),
+            Role::Viewer
+        );
+        assert_eq!(
+            need(Method::POST, "/api/v1/projects/web/updates/check"),
+            Role::Deployer
+        );
+        assert_eq!(
+            need(Method::POST, "/api/v1/groups/ty/updates/check"),
+            Role::Deployer
+        );
     }
 }

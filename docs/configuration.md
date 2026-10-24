@@ -386,7 +386,10 @@ The result is shown to every signed-in user (`GET /api/v1/system/update`, the da
 [apps]
 env_file_dirs = ["/opt/apps", "/etc/aegis/env"]   # where apps' env files may be; default [] = env files off
 import_dirs = ["/opt/github"]                     # where "Scan a folder on the server" may look; default []
+update_check_minutes = 5                          # how often apps are checked for new commits; 0 = only on demand
 ```
+
+`update_check_minutes` sets how often every app is checked for **new changes**: for an app deployed from a repository, its branch is fetched (with the app's deploy key, or anonymously) into a blob-less cache under `<data_dir>/cache/repos/` and compared with the live release's commit; for an app deployed from a folder, the folder's git HEAD is read from `.git` and uncommitted files are counted. The dashboard shows the result as *N new commits* badges and on each app's Deploy tab ([New changes](dashboard/deploy.md#new-changes)); `GET /api/v1/projects/{p}/updates` and `GET /api/v1/groups/{g}/updates` return it. Checks also run after each webhook delivery and on **Check now**. A repository is fetched at most every 3 seconds (apps and groups of one repository share it); every git command has a timeout, and a failure is shown, never blocking anything. `0` turns the periodic check off.
 
 `import_dirs` lists the folders the new app wizard's **Scan a folder on the server** (`POST /api/v1/apps/scan`) may look in for apps to import. The folders in `env_file_dirs` may be scanned too, so a server that already lists `/opt/github` there needs nothing more. With both empty (the default) scanning is off. The same rules apply as for `env_file_dirs`: absolute paths without `..`, `/` refused, symbolic links resolved before the check (a link inside an allowed folder that leads outside it is not followed), and only what the daemon's user can read is seen. A scan goes at most two levels below the folder it is given and looks at no more than 5000 directory entries; it skips `node_modules`, `.git`, `target`, `dist`, `build`, `.next`, `.nuxt`, virtualenvs and hidden folders, and doesn't search inside an app it found (except `apps/*`, `packages/*` and `services/*` of a monorepo). What it reads is listed in [`security.md`](security.md#scanning-folders-on-the-server). Scanning and importing are for signed-in admins only.
 
@@ -428,6 +431,8 @@ Deploy keys are used over SSH with `StrictHostKeyChecking=yes`: a server whose h
 │       ├── <process-id>.log     # app stdout/stderr, rotated at 10 MiB
 │       └── deploy-<id>.log      # output of each deployment's build commands
 ├── artifacts/releases/<release-id>/metadata.json   # content checksums
+├── cache/repos/<hash>.git/      # blob-less bare clones for "new commits" checks (safe to delete)
+├── tmp/group-<id>/              # a group deployment's single clone, while it runs
 └── certs/                       # [proxy] ACME account(s) and certificates (0700)
     └── <domain>/cert.pem, key.pem   # key.pem is 0600
 ```

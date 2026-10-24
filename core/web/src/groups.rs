@@ -706,6 +706,9 @@ pub(crate) async fn github_group_webhook(
     let event = header_str(&headers, "x-github-event").to_string();
     let delivery = header_str(&headers, "x-github-delivery").to_string();
     let result = group_event(&st, &group, &headers, &body).await;
+    if event == "push" {
+        st.control.check_group_updates_soon(&group.id);
+    }
     let (status, reason, run) = match &result {
         Ok((_, Json(r))) => (r.status.clone(), r.reason.clone(), r.deployment_id.clone()),
         Err(e) => ("error".to_string(), Some(e.message().to_string()), None),

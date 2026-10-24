@@ -109,6 +109,17 @@ reaches both webhooks deploys it once. Remove the app's own webhook from
 GitHub, or leave it: it does nothing until the app leaves the group.
 Scheduled daily deploys of a member app still deploy just that app.
 
+## New commits
+
+The group card and page show how far the group's branch is ahead of each
+app's live release (*3 new commits · 1 app changed*), with a **Changed since
+live** mark on the apps whose watch paths match a changed file. The branch is
+fetched once for the whole group every few minutes, after each delivery of
+the group webhook, and on **Check now**; `GET /api/v1/groups/{group}/updates`
+returns the same (per app: the commits, and the changed files filtered by
+its watch paths). **Deploy changed only** then deploys exactly the apps
+marked changed. See [New changes](dashboard/deploy.md#new-changes).
+
 ## Rolling back
 
 **Roll back group** (or `POST /api/v1/groups/{group}/rollback`, `aegis group

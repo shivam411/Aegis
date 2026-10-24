@@ -939,6 +939,7 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
         }
     }
     settings.import_dirs = config.apps.import_dirs.clone();
+    settings.update_check_interval = config.apps.update_check_interval();
     if let Some(file) = &config.git.known_hosts_file {
         if let Err(e) = std::fs::metadata(file) {
             tracing::warn!(file = %file.display(), error = %e, "git.known_hosts_file can't be read; clones with a deploy key will fail until it can");

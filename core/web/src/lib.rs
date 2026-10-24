@@ -19,6 +19,7 @@ mod sources;
 pub mod tls;
 mod ui;
 pub mod update;
+mod updates;
 mod users;
 
 use aegis_auth::{AuthStore, LoginThrottle};
@@ -273,6 +274,8 @@ impl Modify for SecuritySchemes {
         groups::remove_member, groups::deploy_group, groups::rollback_group,
         groups::list_group_deployments, groups::webhook_status, groups::rotate_webhook_secret,
         groups::test_webhook, groups::github_group_webhook,
+        updates::project_updates, updates::check_project_updates, updates::group_updates,
+        updates::check_group_updates,
         backup::list_backups, backup::create_backup, backup::download_backup,
         backup::delete_backup,
         update::update_status, update::check_update, update::apply_update
@@ -304,7 +307,9 @@ impl Modify for SecuritySchemes {
         groups::GroupDeploymentDto, groups::MemberRequest, groups::GroupRequest,
         groups::MembersRequest, groups::AddMemberRequest, groups::UpdateMemberRequest,
         groups::GroupDeployRequest, groups::GroupDeployAccepted, groups::MemberRollbackDto,
-        groups::GroupRollbackDto, groups::GroupWebhookStatusDto
+        groups::GroupRollbackDto, groups::GroupWebhookStatusDto,
+        updates::CommitDto, updates::UpdatesDto, updates::UpdateSummaryDto,
+        updates::GroupUpdatesDto
     )),
     tags(
         (name = "auth"), (name = "users"), (name = "system"), (name = "projects"), (name = "deployments"),
@@ -420,6 +425,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/groups/:group/members/:project",
             put(groups::update_member).delete(groups::remove_member),
+        )
+        .route("/groups/:group/updates", get(updates::group_updates))
+        .route(
+            "/groups/:group/updates/check",
+            post(updates::check_group_updates),
+        )
+        .route("/projects/:project/updates", get(updates::project_updates))
+        .route(
+            "/projects/:project/updates/check",
+            post(updates::check_project_updates),
         )
         .route("/groups/:group/deploy", post(groups::deploy_group))
         .route("/groups/:group/rollback", post(groups::rollback_group))

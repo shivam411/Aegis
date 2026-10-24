@@ -111,6 +111,10 @@ pub struct ProjectDto {
     /// outside git).
     #[serde(default)]
     pub commit: Option<String>,
+    /// The latest "new commits" check (`GET /projects/{p}/updates` has the
+    /// commit list), once one has run.
+    #[serde(default)]
+    pub updates: Option<crate::updates::UpdateSummaryDto>,
 }
 
 /// The group an app belongs to.
@@ -131,6 +135,9 @@ pub struct ReleaseDto {
     pub commit_message: String,
     pub checksum: Option<String>,
     pub created_at: String,
+    /// Built from a server folder that had uncommitted changes.
+    #[serde(default)]
+    pub source_dirty: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -318,6 +325,7 @@ impl From<ProjectView> for ProjectDto {
             }),
             group: view.group.map(|(id, name)| ProjectGroupDto { id, name }),
             commit: view.commit,
+            updates: view.updates.map(Into::into),
         }
     }
 }
@@ -333,6 +341,7 @@ impl From<ReleaseState> for ReleaseDto {
             commit_message: r.commit_message,
             checksum: r.checksum,
             created_at: r.created_at,
+            source_dirty: r.source_dirty,
         }
     }
 }

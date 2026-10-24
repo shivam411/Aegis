@@ -749,6 +749,740 @@
         }
       }
     },
+    "/api/v1/groups": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "list_groups",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "create_group",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "get_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "update_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A member doesn't match the new repository or branch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "delete_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted; its apps stay, now outside any group"
+          },
+          "409": {
+            "description": "The group is being deployed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/deploy": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "deploy_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupDeployRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Started; follow it via GET /groups/{group}/deployments or the event stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDeployAccepted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already running, no members, or a member is being deployed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/deployments": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "list_group_deployments",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupDeploymentDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/members": {
+      "put": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "set_members",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MembersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "add_member",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/members/{project}": {
+      "put": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "update_member",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Member project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Member project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/rollback": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "rollback_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Every member the latest group deployment switched is back on its previous release",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupRollbackDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing to roll back, or the group is busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/updates": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "group_updates",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every app of the group compared with the group's branch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupUpdatesDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/updates/check": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "operationId": "check_group_updates",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Checked now (one fetch for the whole group)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupUpdatesDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/webhook": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhook_status",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook setup and recent deliveries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupWebhookStatusDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "rotate_webhook_secret",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "New secret, shown only in this response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSecretDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{group}/webhook/test": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "test_webhook",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A signed ping went through the group's webhook endpoint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No webhook secret yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/host": {
       "get": {
         "tags": [
@@ -2366,6 +3100,89 @@
         }
       }
     },
+    "/api/v1/projects/{project}/updates": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "project_updates",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest check (one is run if there is none yet)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdatesDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/updates/check": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "check_project_updates",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Checked now (a repository is fetched at most every 3 s; apps of one repository share the fetch)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdatesDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/webhook": {
       "get": {
         "tags": [
@@ -2936,6 +3753,81 @@
         }
       }
     },
+    "/hooks/github/groups/{group}": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "github_group_webhook",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "GitHub webhook payload, signed with X-Hub-Signature-256",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ping, or a redelivery that was already handled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Push to the group's branch: group deployment of the changed apps started (or event ignored)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown group or no webhook configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
     "/hooks/github/{project}": {
       "post": {
         "tags": [
@@ -3063,6 +3955,33 @@
             "type": "boolean"
           }
         }
+      },
+      "AddMemberRequest": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "1-based place in the deploy order; default: last.",
+            "default": null,
+            "minimum": 0
+          },
+          "project": {
+            "type": "string",
+            "description": "Project id or name.",
+            "default": ""
+          },
+          "watch_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        },
+        "additionalProperties": false
       },
       "ApplyUpdateRequest": {
         "type": "object",
@@ -3243,6 +4162,30 @@
           }
         },
         "additionalProperties": false
+      },
+      "CommitDto": {
+        "type": "object",
+        "required": [
+          "sha",
+          "author",
+          "date",
+          "message"
+        ],
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string",
+            "description": "ISO 8601."
+          },
+          "message": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        }
       },
       "ConfigPreviewDto": {
         "type": "object",
@@ -4078,6 +5021,392 @@
           }
         }
       },
+      "GroupDeployAccepted": {
+        "type": "object",
+        "required": [
+          "group_deployment_id",
+          "group_id"
+        ],
+        "properties": {
+          "group_deployment_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          }
+        }
+      },
+      "GroupDeployRequest": {
+        "type": "object",
+        "properties": {
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Commit to deploy every member at (default: the branch's latest).",
+            "default": null
+          },
+          "only_changed": {
+            "type": "boolean",
+            "description": "Deploy only members whose watch paths match files changed since\ntheir live commit (members not deployed yet always deploy). Default true.",
+            "default": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "GroupDeploymentDto": {
+        "type": "object",
+        "description": "A deployment of a whole group at one commit.",
+        "required": [
+          "id",
+          "group_id",
+          "only_changed",
+          "status",
+          "members",
+          "created_at"
+        ],
+        "properties": {
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupMemberRunDto"
+            }
+          },
+          "only_changed": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "description": "Running, Success, Failed or RolledBack."
+          },
+          "trigger": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GroupDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "repository_url",
+          "branch",
+          "rollback_on_failure",
+          "members",
+          "created_at",
+          "webhook_configured"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_deployment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GroupDeploymentDto"
+              }
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupMemberDto"
+            },
+            "description": "In deploy order."
+          },
+          "name": {
+            "type": "string"
+          },
+          "repository_url": {
+            "type": "string"
+          },
+          "rollback_on_failure": {
+            "type": "boolean",
+            "description": "When a member fails, the members already switched in that group\ndeployment go back to their previous release."
+          },
+          "webhook_configured": {
+            "type": "boolean",
+            "description": "A webhook secret exists for the group."
+          }
+        }
+      },
+      "GroupMemberDto": {
+        "type": "object",
+        "description": "A member app of a group.",
+        "required": [
+          "project_id",
+          "name",
+          "watch_paths",
+          "position"
+        ],
+        "properties": {
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit its live release was built from."
+          },
+          "current_release": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "description": "1-based place in the deploy order.",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "source_subdir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its process status (Running, Stopped, ...), when it has one."
+          },
+          "watch_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Repository paths (globs) that concern this app; empty: all of them."
+          }
+        }
+      },
+      "GroupMemberRunDto": {
+        "type": "object",
+        "description": "One member's part in a group deployment.",
+        "required": [
+          "project_id",
+          "name",
+          "status"
+        ],
+        "properties": {
+          "deployment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "previous_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "pending, deploying, deployed, skipped, failed or rolled_back."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GroupRequest": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default: main.",
+            "default": null
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberRequest"
+            },
+            "description": "Members in deploy order (create only; use the members endpoints later).",
+            "default": []
+          },
+          "name": {
+            "type": "string",
+            "default": ""
+          },
+          "repository_url": {
+            "type": "string",
+            "default": ""
+          },
+          "rollback_on_failure": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Default: true.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "GroupRollbackDto": {
+        "type": "object",
+        "required": [
+          "members"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberRollbackDto"
+            }
+          }
+        }
+      },
+      "GroupUpdatesDto": {
+        "type": "object",
+        "required": [
+          "group_id",
+          "checked_at",
+          "changed_apps",
+          "members"
+        ],
+        "properties": {
+          "changed_apps": {
+            "type": "integer",
+            "description": "Apps with changes that concern them (or never deployed).",
+            "minimum": 0
+          },
+          "checked_at": {
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpdatesDto"
+            },
+            "description": "In deploy order."
+          }
+        }
+      },
+      "GroupWebhookStatusDto": {
+        "type": "object",
+        "required": [
+          "configured",
+          "path",
+          "content_type",
+          "events",
+          "branch",
+          "repository_url",
+          "recent"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "path": {
+            "type": "string",
+            "description": "Payload URL path; prefix it with the API's public base URL."
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookDeliveryDto"
+            },
+            "description": "Most recent signed deliveries, newest first."
+          },
+          "repository_url": {
+            "type": "string"
+          }
+        }
+      },
       "HostDto": {
         "type": "object",
         "required": [
@@ -4466,6 +5795,67 @@
           }
         }
       },
+      "MemberRequest": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project id or name.",
+            "default": ""
+          },
+          "watch_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Globs such as `frontend_v2/**`; empty or omitted: the whole repository.",
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "MemberRollbackDto": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "name"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The release now live; `null` when the app was stopped (it had no\nrelease before) or the rollback failed."
+          }
+        }
+      },
+      "MembersRequest": {
+        "type": "object",
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberRequest"
+            },
+            "description": "The full member list, in deploy order.",
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
       "MetricsDto": {
         "type": "object",
         "required": [
@@ -4679,6 +6069,13 @@
           "branch": {
             "type": "string"
           },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the live release was built from (\"local\" for a folder\noutside git)."
+          },
           "created_at": {
             "type": "string"
           },
@@ -4688,6 +6085,17 @@
               "null"
             ],
             "description": "Version of the live release."
+          },
+          "group": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectGroupDto",
+                "description": "The group the app is deployed with, if any."
+              }
+            ]
           },
           "id": {
             "type": "string"
@@ -4764,6 +6172,17 @@
               }
             ]
           },
+          "updates": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UpdateSummaryDto",
+                "description": "The latest \"new commits\" check (`GET /projects/{p}/updates` has the\ncommit list), once one has run."
+              }
+            ]
+          },
           "usage": {
             "oneOf": [
               {
@@ -4774,6 +6193,22 @@
                 "description": "The latest measurement, while the app runs (all instances together)."
               }
             ]
+          }
+        }
+      },
+      "ProjectGroupDto": {
+        "type": "object",
+        "description": "The group an app belongs to.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -5055,6 +6490,13 @@
           },
           "project_id": {
             "type": "string"
+          },
+          "source_dirty": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Built from a server folder that had uncommitted changes."
           },
           "status": {
             "type": "string",
@@ -5793,6 +7235,32 @@
           }
         }
       },
+      "UpdateMemberRequest": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "New 1-based place in the deploy order (omitted: unchanged).",
+            "default": null,
+            "minimum": 0
+          },
+          "watch_paths": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "New watch paths (omitted: unchanged).",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateStatusDto": {
         "type": "object",
         "description": "Update status.",
@@ -5897,6 +7365,54 @@
           }
         }
       },
+      "UpdateSummaryDto": {
+        "type": "object",
+        "description": "A short form for lists (the Overview).",
+        "required": [
+          "checked_at",
+          "relevant",
+          "up_to_date"
+        ],
+        "properties": {
+          "behind": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "checked_at": {
+            "type": "string"
+          },
+          "dirty": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relevant": {
+            "type": "boolean"
+          },
+          "up_to_date": {
+            "type": "boolean"
+          }
+        }
+      },
       "UpdateUserRequest": {
         "type": "object",
         "properties": {
@@ -5918,6 +7434,106 @@
           }
         },
         "additionalProperties": false
+      },
+      "UpdatesDto": {
+        "type": "object",
+        "description": "How an app's live release compares with its source.",
+        "required": [
+          "project_id",
+          "name",
+          "checked_at",
+          "kind",
+          "deployed",
+          "commits",
+          "changed_files",
+          "relevant",
+          "up_to_date"
+        ],
+        "properties": {
+          "behind": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Commits after the live one (`null`: unknown).",
+            "minimum": 0
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changed_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Files changed since the live commit (only those matching the app's\nwatch paths when it is in a group and has some; at most 500)."
+          },
+          "checked_at": {
+            "type": "string"
+          },
+          "commits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommitDto"
+            },
+            "description": "Newest first, at most 50."
+          },
+          "deployed": {
+            "type": "boolean",
+            "description": "The app has a live release."
+          },
+          "dirty": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Folder apps: files with uncommitted changes.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the check couldn't be completed (it never blocks anything)."
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch head, or the folder's HEAD."
+          },
+          "kind": {
+            "type": "string",
+            "description": "\"git\" (a repository branch) or \"folder\" (a server folder's git HEAD)."
+          },
+          "live_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit of the live release."
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "relevant": {
+            "type": "boolean",
+            "description": "Some change concerns this app, or it was never deployed."
+          },
+          "up_to_date": {
+            "type": "boolean"
+          }
+        }
       },
       "UserDto": {
         "type": "object",
@@ -6143,6 +7759,9 @@
     },
     {
       "name": "sources"
+    },
+    {
+      "name": "groups"
     }
   ]
 }

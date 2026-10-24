@@ -21,6 +21,7 @@ mod rollout;
 pub mod scan;
 mod secrets;
 mod sources;
+mod updates;
 
 use aegis_artifact_store::ArtifactStore;
 use aegis_event_store::EventStore;
@@ -51,6 +52,7 @@ pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 pub use rollout::{InstanceView, StandbyView};
 pub use scan::{ImportApp, ImportedApp, ScanCandidate, ScanResult};
 pub use sources::{AccessCheck, DeployKeyInfo};
+pub use updates::{read_folder_head, CommitSummary, GroupUpdates, UpdateStatus};
 
 tokio::task_local! {
     static ACTOR: String;
@@ -132,6 +134,9 @@ pub struct ControlSettings {
     pub import_dirs: Vec<PathBuf>,
     /// Host keys for git servers other than GitHub (`[git] known_hosts_file`).
     pub known_hosts_file: Option<PathBuf>,
+    /// How often apps are checked for new commits (`[apps]
+    /// update_check_minutes`); zero turns the periodic check off.
+    pub update_check_interval: Duration,
 }
 
 impl ControlSettings {
@@ -148,6 +153,7 @@ impl ControlSettings {
             env_file_dirs: Vec::new(),
             import_dirs: Vec::new(),
             known_hosts_file: None,
+            update_check_interval: Duration::from_secs(300),
         }
     }
 }
@@ -182,6 +188,8 @@ pub struct ProjectView {
     pub group: Option<(String, String)>,
     /// The commit the live release was built from, when known.
     pub commit: Option<String>,
+    /// The latest "new commits" check, if one has run.
+    pub updates: Option<UpdateStatus>,
 }
 
 struct Inner {
@@ -221,6 +229,10 @@ struct Inner {
     docker: Arc<aegis_docker::Docker>,
     /// One deployment or rollback per group at a time.
     group_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The latest "new commits" check of each app.
+    updates: Mutex<HashMap<ProjectId, updates::UpdateStatus>>,
+    /// Fetch state of each cached repository.
+    repo_caches: Mutex<HashMap<PathBuf, updates::RepoCache>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +315,8 @@ impl ControlPlane {
                 backup_lock: tokio::sync::Mutex::new(()),
                 docker,
                 group_locks: Mutex::new(HashMap::new()),
+                updates: Mutex::new(HashMap::new()),
+                repo_caches: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -342,6 +356,7 @@ impl ControlPlane {
         self.spawn_process_event_recorder();
         self.spawn_sampler();
         self.spawn_docker_janitor();
+        self.spawn_update_checker();
     }
 
     pub fn store(&self) -> &EventStore {
@@ -715,6 +730,7 @@ impl ControlPlane {
                         .as_ref()
                         .and_then(|v| self.inner.projection.find_release(&project.id, v))
                         .map(|r| r.commit_sha),
+                    updates: self.cached_updates(&project.id),
                     project,
                 }
             })

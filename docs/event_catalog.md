@@ -85,7 +85,7 @@ Apps deployed together from one repository and branch; see [groups.md](groups.md
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `ReleaseCreated` | A build finished and the release is ready to start | `release_id`, `project_id`, `deployment_id`, `version`, `commit_sha`, `commit_message`, `checksum`, `path` |
+| `ReleaseCreated` | A build finished and the release is ready to start | `release_id`, `project_id`, `deployment_id`, `version`, `commit_sha` (the exact commit; for a folder in git, its HEAD; `local` outside git), `commit_message`, `checksum`, `path`, `source_dirty` (a copied folder had uncommitted changes; `null` for clones) |
 | `ReleasePromoted` | The release passed its health check and is now live | `release_id`, `project_id`, `version`, `previous_version`, `process_id` (the process now serving; the first instance), `port` (where the proxy sends its traffic), and for multi-instance cutovers `process_ids` and `ports` (every instance, in instance order) |
 | `ReleaseArchived` | The release directory was removed by retention | `project_id`, `version` |
 

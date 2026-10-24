@@ -70,9 +70,18 @@ pub struct AppsConfig {
     /// for apps to import (`env_file_dirs` are allowed too). Empty (the
     /// default, with no `env_file_dirs`) turns scanning off.
     pub import_dirs: Vec<PathBuf>,
+    /// How often (minutes) apps are checked for new commits on their branch
+    /// or in their folder, for the dashboard's "new commits" badges.
+    /// Default 5; 0 turns the periodic check off ("Check now" still works).
+    pub update_check_minutes: Option<u64>,
 }
 
 impl AppsConfig {
+    /// [`AppsConfig::update_check_minutes`] with its default.
+    pub fn update_check_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.update_check_minutes.unwrap_or(5) * 60)
+    }
+
     pub fn validate(&self) -> Result<(), anyhow::Error> {
         for (key, dirs) in [
             ("env_file_dirs", &self.env_file_dirs),

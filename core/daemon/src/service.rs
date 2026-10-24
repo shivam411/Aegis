@@ -235,6 +235,7 @@ impl DaemonService {
             standby: None,
             group: None,
             commit: None,
+            updates: None,
         })))
     }
 

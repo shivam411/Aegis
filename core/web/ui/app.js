@@ -1278,6 +1278,19 @@ async function quickDeploy(project, btn) {
   if (res) go(`/apps/${enc(project.name)}/deploy`);
 }
 
+/** "3 new commits", "Uncommitted changes" or a failed check; nothing when up to date. */
+function updatesBadge(u, { relevantOnly = false } = {}) {
+  if (!u) return null;
+  if (u.error && u.behind == null) return h('span', { 'data-updates': 'error', title: u.error }, pill('Check failed', 'warn'));
+  const bits = [];
+  if (u.behind > 0 && (!relevantOnly || u.relevant)) {
+    bits.push(h('span', { 'data-updates': String(u.behind), title: `Checked ${fmtAgo(u.checked_at)}` },
+      pill(`${u.behind} new commit${u.behind === 1 ? '' : 's'}`, 'info')));
+  }
+  if (u.dirty > 0) bits.push(h('span', { 'data-updates': 'dirty' }, pill('Uncommitted changes', 'warn')));
+  return bits.length ? bits : null;
+}
+
 function appCard(project, activeDeployment, reload) {
   const p = project.process;
   return h('article', { class: 'card app-card', 'data-app': project.name },
@@ -1285,6 +1298,7 @@ function appCard(project, activeDeployment, reload) {
       h('div', { class: 'title' },
         h('a', { href: `#/apps/${enc(project.name)}` }, project.name),
         h('span', { class: 'spacer' }),
+        updatesBadge(project.updates),
         activeDeployment ? deploymentPill(activeDeployment.status) : null,
         processPill(project)),
       h('div', { class: 'source muted truncate', title: sourceText(project) }, sourceText(project)),
@@ -1353,15 +1367,25 @@ function groupCard(group, projects, active, reload) {
       h('td', {}, p ? processPill(p) : null, active.get(m.project_id) ? deploymentPill(active.get(m.project_id).status) : null),
       h('td', { class: 'mono small truncate', title: m.current_release || '' }, m.current_release || '–'),
       h('td', { class: 'small', 'data-member-updates': '' },
-        run && group.last_deployment.status === 'Running' ? pill(run.status, MEMBER_RUN_KIND[run.status] ?? '') : null));
+        run && group.last_deployment.status === 'Running'
+          ? pill(run.status, MEMBER_RUN_KIND[run.status] ?? '')
+          : (p?.updates?.relevant && !p.updates.up_to_date && p.updates.behind > 0
+            ? h('span', { 'data-changed': '' }, pill('Changed since live', 'info'))
+            : null)));
   });
+  const changed = group.members.filter((m) => {
+    const u = projects.get(m.project_id)?.updates;
+    return u && u.relevant && !u.up_to_date && u.behind > 0;
+  }).length;
+  const behind = Math.max(0, ...group.members.map((m) => projects.get(m.project_id)?.updates?.behind ?? 0));
   return h('article', { class: 'card group-card', 'data-group': group.name },
     h('div', { class: 'card-body' },
       h('div', { class: 'title' },
         h('a', { href: `#/groups/${enc(group.name)}` }, group.name),
         h('span', { class: 'muted small' }, ` · ${group.members.length} app${group.members.length === 1 ? '' : 's'}`),
         h('span', { class: 'spacer' }),
-        h('span', { 'data-group-updates': '' }),
+        h('span', { 'data-group-updates': String(changed) },
+          behind > 0 ? pill(`${behind} new commit${behind === 1 ? '' : 's'} · ${changed} app${changed === 1 ? '' : 's'} changed`, 'info') : null),
         groupRunPill(group.last_deployment)),
       h('div', { class: 'source muted truncate', title: `${group.repository_url} @ ${group.branch}` }, `${group.repository_url} @ ${group.branch}`),
       h('table', { class: 'table compact' },
@@ -1511,10 +1535,13 @@ async function groupPage(main, ctx, key) {
       cardHeader('Group deployments', 'groups'),
       h('div', { class: 'card-body', 'data-group-history': '' }, h('p', { class: 'muted small' }, 'Loading…')));
     loadHistory(history.querySelector('[data-group-history]'));
-    replace(body, membersCard, history,
+    const commitsCard = h('section', { class: 'card', 'data-card': 'group-commits' },
+      cardHeader(`New commits on ${group.branch}`, 'app.updates'),
+      h('div', { class: 'card-body', 'data-group-commits': '' }, h('p', { class: 'muted small' }, 'Checking…')));
+    replace(body, membersCard, commitsCard, history,
       admin ? hookCard(`/groups/${enc(group.id)}/webhook`, 'groups.webhook', 'this group') : null,
       settingsCard);
-    if (typeof drawGroupUpdates === 'function') drawGroupUpdates(ctx, group, main);
+    drawGroupUpdates(ctx, group, main);
   };
 
   const addMemberForm = () => {
@@ -1704,7 +1731,7 @@ async function deployTab(body, ctx) {
     gitSource ? null : h('p', { class: 'muted small' }, `Copies the code in ${project.source_dir || 'the source directory'}.`),
     h('div', { class: 'form-actions' }, submit)));
 
-  append(body, h('div', { class: 'grid' }, form, instancesCard(ctx), pipelineEl));
+  append(body, h('div', { class: 'grid' }, form, updatesCard(ctx), instancesCard(ctx), pipelineEl));
 
   let current = null;
   const showDeployment = (id) => {
@@ -1727,6 +1754,102 @@ async function deployTab(body, ctx) {
   onEvents(ctx, (e) => {
     if (e.event_type === 'DeploymentQueued' && e.payload?.project_id === project.id) showDeployment(e.payload.deployment_id);
   });
+}
+
+/** The commits (and files) a deployment would bring, from the latest check. */
+function commitList(u) {
+  return [
+    u.commits.length
+      ? h('ul', { class: 'commit-list', 'data-commits': '' }, u.commits.map((c) => h('li', {},
+        h('code', { class: 'mono' }, c.sha.slice(0, 8)),
+        h('span', {}, c.message),
+        h('span', { class: 'muted small' }, `${c.author} · `, timeEl(c.date, fmtAgo(c.date))))))
+      : null,
+    u.changed_files.length
+      ? h('details', { class: 'small' }, h('summary', {}, `${u.changed_files.length} changed file${u.changed_files.length === 1 ? '' : 's'}`),
+        h('ul', { class: 'mono small', 'data-files': '' }, u.changed_files.map((f) => h('li', {}, f))))
+      : null,
+  ];
+}
+
+/** Deploy tab: what's new on the branch (or in the folder) since the live release. */
+function updatesCard(ctx) {
+  const project = ctx.project();
+  const out = h('div', { 'data-updates-card': '' }, h('p', { class: 'muted small' }, 'Checking…'));
+  const checkBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'check-updates' }, 'Check now');
+  const draw = (u) => {
+    if (!ctx.alive()) return;
+    const folder = u.kind === 'folder';
+    let summary;
+    if (u.error && u.behind == null) summary = h('div', { class: 'alert warn' }, u.error);
+    else if (!u.deployed) summary = h('p', { class: 'small' }, 'Not deployed yet', u.head ? [' · latest ', h('code', {}, u.head.slice(0, 8))] : null);
+    else if (u.up_to_date) summary = h('p', { class: 'small', 'data-up-to-date': '' }, pill('Up to date', 'ok'), ` with ${folder ? 'the folder' : u.branch} at `, h('code', {}, (u.head || '').slice(0, 8)));
+    else {
+      summary = h('p', { class: 'small' },
+        u.behind > 0 ? pill(`${u.behind} new commit${u.behind === 1 ? '' : 's'}`, 'info') : null, ' ',
+        folder ? 'in the folder' : `on ${u.branch}`, ' since the live release (', h('code', {}, (u.live_commit || '').slice(0, 8)), ')',
+        u.dirty > 0 ? [' · ', pill(`${u.dirty} uncommitted file${u.dirty === 1 ? '' : 's'}`, 'warn')] : null);
+    }
+    const deployLatest = can('deployer') && u.deployed && !u.up_to_date && !project.group
+      ? h('button', { class: 'btn small primary', type: 'button', 'data-action': 'deploy-latest' }, folder ? 'Deploy the folder' : 'Deploy latest')
+      : null;
+    if (deployLatest) {
+      deployLatest.addEventListener('click', async () => {
+        const req = folder || !u.head ? {} : { commit: u.head };
+        const res = await run(deployLatest, () => api('POST', `/projects/${enc(project.id)}/deploy`, req), 'Deployment queued');
+        if (res) go(`/apps/${enc(project.name)}/deploy`);
+      });
+    }
+    replace(out, summary, commitList(u),
+      project.group && !u.up_to_date && u.deployed
+        ? h('p', { class: 'muted small' }, 'This app is in group ', h('a', { href: `#/groups/${enc(project.group.name)}` }, project.group.name), ': deploy it with the group.')
+        : null,
+      h('div', { class: 'form-actions' }, h('span', { class: 'muted small' }, `Checked ${fmtAgo(u.checked_at)}`), deployLatest));
+  };
+  checkBtn.addEventListener('click', async () => {
+    const u = await run(checkBtn, () => api('POST', `/projects/${enc(project.id)}/updates/check`));
+    if (u) draw(u);
+  });
+  api('GET', `/projects/${enc(project.id)}/updates`).then(draw).catch((err) => ctx.alive() && replace(out, errorBox(err)));
+  return h('section', { class: 'card', 'data-card': 'updates' },
+    cardHeader('New changes', 'app.updates', h('span', { class: 'spacer' }), can('deployer') ? checkBtn : null),
+    h('div', { class: 'card-body' }, out));
+}
+
+/** Group page: per-app changes since live, "Check now" and "Deploy changed apps". */
+function drawGroupUpdates(ctx, group, main) {
+  const apply = (u) => {
+    if (!ctx.alive()) return;
+    for (const m of u.members) {
+      const cell = main.querySelector(`tr[data-member="${CSS.escape(m.name)}"] [data-member-updates]`);
+      if (!cell) continue;
+      replace(cell,
+        m.error && m.behind == null ? h('span', { title: m.error }, pill('Check failed', 'warn')) : null,
+        !m.deployed ? pill('Not deployed', '') : null,
+        m.deployed && m.relevant && !m.up_to_date
+          ? h('span', { 'data-changed': '' }, pill(`Changed since live (${m.changed_files.length} file${m.changed_files.length === 1 ? '' : 's'})`, 'info'))
+          : null,
+        m.deployed && !m.relevant && m.behind > 0 ? h('span', { class: 'muted small' }, 'No watched changes') : null,
+        m.deployed && m.up_to_date ? pill('Up to date', 'ok') : null);
+    }
+    const head = main.querySelector('[data-group-updates]');
+    if (head) {
+      const behind = Math.max(0, ...u.members.map((m) => m.behind ?? 0));
+      head.dataset.groupUpdates = String(u.changed_apps);
+      replace(head,
+        behind > 0 ? pill(`${behind} new commit${behind === 1 ? '' : 's'} · ${u.changed_apps} app${u.changed_apps === 1 ? '' : 's'} changed`, 'info') : null,
+        can('deployer') ? checkBtn : null);
+    }
+    const first = u.members.find((m) => m.commits.length);
+    const list = main.querySelector('[data-group-commits]');
+    if (list) replace(list, first ? commitList({ ...first, changed_files: [] }) : h('p', { class: 'muted small' }, u.error || 'No new commits.'));
+  };
+  const checkBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'check-group-updates' }, 'Check now');
+  checkBtn.addEventListener('click', async () => {
+    const u = await run(checkBtn, () => api('POST', `/groups/${enc(group.id)}/updates/check`));
+    if (u) apply(u);
+  });
+  api('GET', `/groups/${enc(group.id)}/updates`).then(apply).catch(() => {});
 }
 
 const STRATEGIES = [

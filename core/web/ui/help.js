@@ -240,6 +240,17 @@ export const HELP = {
     roles: 'Everyone sees groups; deployers deploy and roll back; admins create and change them.',
     docs: 'groups.md',
   },
+  'app.updates': {
+    title: 'New changes',
+    summary: 'Whether the live release is behind its source. For an app deployed from a repository, Aegis fetches the branch (with the app\'s deploy key) every few minutes, after each webhook delivery and when you click Check now, and lists the commits and changed files since the live release\'s commit. For an app deployed from a server folder, it reads the folder\'s git HEAD and counts uncommitted files. A failed check is shown here and never blocks a deployment.',
+    controls: [
+      ['Check now', 'Fetches the branch (or reads the folder) right away.'],
+      ['Deploy latest', 'Deploys the newest commit shown (an app in a group is deployed with its group instead).'],
+      ['N changed files', 'The files changed since the live commit; for an app in a group, only those matching its watch paths.'],
+    ],
+    roles: 'Everyone sees changes; deployers check and deploy.',
+    docs: 'deploy.md#new-changes',
+  },
   'groups.members': {
     title: 'Apps of the group',
     summary: 'The group\'s apps in deploy order, each with its watch paths: globs of repository paths that concern it, such as frontend_v2/** and shared/**. Without watch paths any change counts.',

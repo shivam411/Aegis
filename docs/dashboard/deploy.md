@@ -26,6 +26,16 @@ For an app that comes from a directory on the server, the form says which direct
 
 The hint under the menu repeats this for the selected strategy.
 
+## New changes
+
+The **New changes** card says whether the live release is behind its source:
+
+- **Repository apps**: *N new commits on `<branch>`* since the live release's commit, the commits (short SHA, message, author, when) and the changed files (for an app in a [group](groups.md), only the files matching its watch paths). **Deploy latest** deploys the newest commit; an app in a group is deployed with its group instead.
+- **Folder apps**: whether the folder's git HEAD is newer than the live release (*N new commits in the folder*), and how many files have **uncommitted changes**. **Deploy the folder** copies it as it is.
+- *Up to date* when nothing changed; *Not deployed yet* before the first deployment; a warning when the check failed (say the deploy key isn't on the repository). A failed check never blocks a deployment.
+
+Aegis checks every few minutes (`[apps] update_check_minutes`, default 5), after each webhook delivery, and when a deployer clicks **Check now**. The Overview shows the same as a badge on each app (*3 new commits*) and group.
+
 ## Deployment progress
 
 Below the form is the latest deployment of this app. It updates live, including deployments started elsewhere (the CLI, a webhook, the daily schedule): a new one takes over the card as soon as it is queued.

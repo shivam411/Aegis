@@ -95,6 +95,10 @@ pub struct ReleaseState {
     /// by "most recently live", which differs from build order after a rollback.
     #[serde(default)]
     pub promoted_seq: Option<u64>,
+    /// Built from a server folder with uncommitted changes (`None`:
+    /// unknown, or cloned).
+    #[serde(default)]
+    pub source_dirty: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -772,6 +776,7 @@ impl ProjectionEngine {
                         created_at: at,
                         seq,
                         promoted_seq: None,
+                        source_dirty: payload.get("source_dirty").and_then(|v| v.as_bool()),
                     },
                 );
             }
