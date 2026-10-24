@@ -181,6 +181,13 @@ impl DaemonService {
     ) -> Result<Response<EmitEventResponse>, Status> {
         let req = request.into_inner();
         tracing::info!(event_type = %req.event_type, "Handling emit_event gRPC request");
+        // A recorded deletion drops the app from the projection; only the
+        // real command also stops its processes and removes its data.
+        if req.event_type == "ProjectDeleted" {
+            return Err(Status::invalid_argument(
+                "Delete an app with 'aegis delete <app>' (DeleteProject), not by emitting ProjectDeleted",
+            ));
+        }
         let payload: serde_json::Value = serde_json::from_str(&req.payload_json).map_err(|e| {
             Status::invalid_argument(format!("Failed to parse payload_json as valid JSON: {}", e))
         })?;
@@ -226,6 +233,9 @@ impl DaemonService {
             usage: None,
             instances: Vec::new(),
             standby: None,
+            group: None,
+            commit: None,
+            updates: None,
         })))
     }
 
@@ -311,6 +321,57 @@ impl DaemonService {
         let project_id = self.project_id(&req.project).map_err(status_from)?;
         self.control
             .configure_schedule(project_id, req.hour, req.minute, opt_string(req.branch))
+            .await
+            .map_err(status_from)?;
+        let view = self
+            .control
+            .list_projects()
+            .into_iter()
+            .find(|v| v.project.id == project_id)
+            .ok_or_else(|| Status::not_found("Unknown project"))?;
+        Ok(Response::new(project_info(view)))
+    }
+}
+
+impl DaemonService {
+    async fn delete_project_impl(
+        &self,
+        request: Request<pb::DeleteProjectRequest>,
+    ) -> Result<Response<pb::DeleteProjectResponse>, Status> {
+        let req = request.into_inner();
+        let project_id = self.project_id(&req.project).map_err(status_from)?;
+        let deleted = self
+            .control
+            .delete_project(project_id, req.keep_releases)
+            .await
+            .map_err(status_from)?;
+        Ok(Response::new(pb::DeleteProjectResponse {
+            project_id: deleted.project_id,
+            name: deleted.name,
+            stopped_processes: deleted.stopped_processes as u32,
+            domains: deleted.domains,
+            secrets_removed: deleted.secrets_removed,
+            releases_kept: deleted.releases_kept,
+            kept_dir: deleted.kept_dir.unwrap_or_default(),
+        }))
+    }
+
+    async fn change_source_impl(
+        &self,
+        request: Request<pb::ChangeSourceRequest>,
+    ) -> Result<Response<ProjectInfo>, Status> {
+        let req = request.into_inner();
+        let project_id = self.project_id(&req.project).map_err(status_from)?;
+        self.control
+            .change_source(
+                project_id,
+                aegis_control::SourceChange {
+                    repository_url: opt_string(req.repository_url),
+                    branch: opt_string(req.branch),
+                    source_dir: opt_path(&req.source_dir),
+                    source_subdir: opt_string(req.source_subdir),
+                },
+            )
             .await
             .map_err(status_from)?;
         let view = self
@@ -419,6 +480,135 @@ impl AegisDaemon for DaemonService {
         request: Request<ConfigureScheduleRequest>,
     ) -> Result<Response<ProjectInfo>, Status> {
         with_actor(CLI_ACTOR.into(), self.configure_schedule_impl(request)).await
+    }
+
+    async fn delete_project(
+        &self,
+        request: Request<pb::DeleteProjectRequest>,
+    ) -> Result<Response<pb::DeleteProjectResponse>, Status> {
+        with_actor(CLI_ACTOR.into(), self.delete_project_impl(request)).await
+    }
+
+    async fn change_source(
+        &self,
+        request: Request<pb::ChangeSourceRequest>,
+    ) -> Result<Response<ProjectInfo>, Status> {
+        with_actor(CLI_ACTOR.into(), self.change_source_impl(request)).await
+    }
+
+    async fn list_groups(
+        &self,
+        _request: Request<pb::ListGroupsRequest>,
+    ) -> Result<Response<pb::ListGroupsResponse>, Status> {
+        let name = |id: &ProjectId| {
+            self.control
+                .projection()
+                .get_project(id)
+                .map(|p| p.name)
+                .unwrap_or_default()
+        };
+        let groups = self
+            .control
+            .list_groups()
+            .into_iter()
+            .map(|g| {
+                let last = g
+                    .last_deployment
+                    .as_ref()
+                    .and_then(|id| self.control.get_group_deployment(id));
+                pb::GroupInfo {
+                    members: g
+                        .members
+                        .iter()
+                        .map(|m| {
+                            let run = last.as_ref().and_then(|r| {
+                                r.members.iter().find(|x| x.project_id == m.project_id)
+                            });
+                            pb::GroupMemberInfo {
+                                project_id: m.project_id.to_string(),
+                                name: name(&m.project_id),
+                                watch_paths: m.watch_paths.clone(),
+                                current_release: self
+                                    .control
+                                    .projection()
+                                    .get_project(&m.project_id)
+                                    .and_then(|p| p.current_release)
+                                    .unwrap_or_default(),
+                                last_status: run.map(|r| r.status.clone()).unwrap_or_default(),
+                                last_version: run
+                                    .and_then(|r| r.version.clone())
+                                    .unwrap_or_default(),
+                                last_reason: run.and_then(|r| r.reason.clone()).unwrap_or_default(),
+                            }
+                        })
+                        .collect(),
+                    last_deployment_id: last.as_ref().map(|r| r.id.clone()).unwrap_or_default(),
+                    last_status: last.as_ref().map(|r| r.status.clone()).unwrap_or_default(),
+                    last_commit: last
+                        .as_ref()
+                        .and_then(|r| r.commit.clone())
+                        .unwrap_or_default(),
+                    last_error: last
+                        .as_ref()
+                        .and_then(|r| r.error.clone())
+                        .unwrap_or_default(),
+                    id: g.id,
+                    name: g.name,
+                    repository_url: g.repository_url,
+                    branch: g.branch,
+                    rollback_on_failure: g.rollback_on_failure,
+                }
+            })
+            .collect();
+        Ok(Response::new(pb::ListGroupsResponse { groups }))
+    }
+
+    async fn deploy_group(
+        &self,
+        request: Request<pb::DeployGroupRequest>,
+    ) -> Result<Response<pb::DeployGroupResponse>, Status> {
+        let req = request.into_inner();
+        with_actor(CLI_ACTOR.into(), async {
+            let group = self
+                .control
+                .resolve_group(&req.group)
+                .map_err(status_from)?;
+            let id = self
+                .control
+                .deploy_group(&group.id, opt_string(req.commit), !req.all, "cli")
+                .await
+                .map_err(status_from)?;
+            Ok(Response::new(pb::DeployGroupResponse {
+                group_deployment_id: id,
+                group_id: group.id,
+            }))
+        })
+        .await
+    }
+
+    async fn rollback_group(
+        &self,
+        request: Request<pb::RollbackGroupRequest>,
+    ) -> Result<Response<pb::RollbackGroupResponse>, Status> {
+        let req = request.into_inner();
+        with_actor(CLI_ACTOR.into(), async {
+            let results = self
+                .control
+                .rollback_group(&req.group)
+                .await
+                .map_err(status_from)?;
+            Ok(Response::new(pb::RollbackGroupResponse {
+                members: results
+                    .into_iter()
+                    .map(|r| pb::MemberRollbackInfo {
+                        name: r.name,
+                        version: r.version.unwrap_or_default(),
+                        error: r.error.unwrap_or_default(),
+                    })
+                    .collect(),
+            }))
+        })
+        .await
     }
 
     async fn list_projects(

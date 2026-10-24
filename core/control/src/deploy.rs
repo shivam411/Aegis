@@ -413,6 +413,7 @@ impl ControlPlane {
                     "artifacts": release.artifacts.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                     "path": release_dir.to_string_lossy(),
                     "build_duration_ms": release.build_metadata.build_duration_ms,
+                    "source_dirty": output.source_dirty,
                 }),
             )
             .await;

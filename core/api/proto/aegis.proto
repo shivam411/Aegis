@@ -15,6 +15,17 @@ service AegisDaemon {
   rpc ControlProcess(ControlProcessRequest) returns (ProcessInfo);
   // Sets a project's daily auto-deployment time (UTC).
   rpc ConfigureSchedule(ConfigureScheduleRequest) returns (ProjectInfo);
+  // Deletes an app: stops its processes, removes its domains, secrets,
+  // deploy key, webhook secret, schedule and (unless kept) its releases.
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+  // Changes where an app's code comes from (git or a server folder).
+  rpc ChangeSource(ChangeSourceRequest) returns (ProjectInfo);
+  // Groups: apps deployed together from one repository and branch.
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
+  // Starts a group deployment; follow it with ListGroups.
+  rpc DeployGroup(DeployGroupRequest) returns (DeployGroupResponse);
+  // Puts every member of the latest group deployment back on its previous release.
+  rpc RollbackGroup(RollbackGroupRequest) returns (RollbackGroupResponse);
 
   // Queries
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
@@ -173,6 +184,98 @@ message ConfigureScheduleRequest {
   uint32 minute = 3;
   // Defaults to the project's branch.
   string branch = 4;
+}
+
+message DeleteProjectRequest {
+  // Project id or name.
+  string project = 1;
+  // Keep the release directories and logs on disk.
+  bool keep_releases = 2;
+}
+
+message DeleteProjectResponse {
+  string project_id = 1;
+  string name = 2;
+  uint32 stopped_processes = 3;
+  repeated string domains = 4;
+  uint64 secrets_removed = 5;
+  bool releases_kept = 6;
+  // Where the kept releases are (keep_releases).
+  string kept_dir = 7;
+}
+
+message ChangeSourceRequest {
+  // Project id or name.
+  string project = 1;
+  // A git repository, or...
+  string repository_url = 2;
+  string branch = 3;
+  // ...a folder on the server.
+  string source_dir = 4;
+  // Build and run only this folder of the source.
+  string source_subdir = 5;
+}
+
+message ListGroupsRequest {}
+
+message GroupMemberInfo {
+  string project_id = 1;
+  string name = 2;
+  repeated string watch_paths = 3;
+  string current_release = 4;
+  // In the latest group deployment: pending, deploying, deployed, skipped,
+  // failed or rolled_back (empty when not part of it).
+  string last_status = 5;
+  string last_version = 6;
+  string last_reason = 7;
+}
+
+message GroupInfo {
+  string id = 1;
+  string name = 2;
+  string repository_url = 3;
+  string branch = 4;
+  bool rollback_on_failure = 5;
+  repeated GroupMemberInfo members = 6;
+  // The latest group deployment (empty when there is none).
+  string last_deployment_id = 7;
+  // Running, Success, Failed or RolledBack.
+  string last_status = 8;
+  string last_commit = 9;
+  string last_error = 10;
+}
+
+message ListGroupsResponse {
+  repeated GroupInfo groups = 1;
+}
+
+message DeployGroupRequest {
+  // Group id or name.
+  string group = 1;
+  // Default: the branch's latest commit.
+  string commit = 2;
+  // Deploy every member, not only those with changes.
+  bool all = 3;
+}
+
+message DeployGroupResponse {
+  string group_deployment_id = 1;
+  string group_id = 2;
+}
+
+message RollbackGroupRequest {
+  string group = 1;
+}
+
+message MemberRollbackInfo {
+  string name = 1;
+  // The release now live; empty when the app was stopped or the rollback failed.
+  string version = 2;
+  string error = 3;
+}
+
+message RollbackGroupResponse {
+  repeated MemberRollbackInfo members = 1;
 }
 
 message ListProjectsRequest {}

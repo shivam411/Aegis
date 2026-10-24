@@ -665,6 +665,15 @@ impl AuthStore {
         )
     }
 
+    /// Deletes a webhook secret (e.g. of a deleted group).
+    pub async fn delete_webhook_secret(&self, key: &str) -> Result<(), anyhow::Error> {
+        sqlx::query("DELETE FROM webhook_secrets WHERE project_id = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Creates or replaces a project's webhook secret and returns it.
     pub async fn rotate_webhook_secret(&self, project_id: &str) -> Result<String, anyhow::Error> {
         let secret = random_string(32);

@@ -261,6 +261,18 @@ main {
   display: flex; flex-wrap: wrap; gap: 6px;
   padding: 10px 16px; border-top: 1px solid var(--border);
 }
+.group-card .card-body { display: flex; flex-direction: column; gap: 10px; }
+.group-card .title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.group-card .title a { font-weight: 650; font-size: 15px; color: var(--text); }
+.group-card .title .spacer { flex: 1; }
+.group-card .source { font-size: 12.5px; }
+.group-card table.compact td, .group-card table.compact th { padding: 6px 8px; }
+.group-card .actions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 10px 16px; border-top: 1px solid var(--border);
+}
+.commit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.commit-list li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
 
 /* ------------------------------------------------------------------ */
 /* Buttons and forms                                                   */

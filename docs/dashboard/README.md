@@ -17,6 +17,7 @@ Sign in as `admin`. The first password is in `<data_dir>/initial-admin-password`
 | Page | What it is for |
 | :--- | :--- |
 | [Overview](overview.md) | Server health and every app at a glance. |
+| [Groups](groups.md) | Apps from one repository deployed together: one commit, in order, only what changed. |
 | [New app](new-app.md) | The wizard that adds an app from a git repository or a server directory. |
 | [App page](app.md) | One app: its header, process controls and six tabs. |
 | ↳ [Deploy tab](deploy.md) | Start a deployment and watch its pipeline live. |

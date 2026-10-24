@@ -620,6 +620,8 @@ const ROUTES = [
   [/^\/?$/, overviewPage, 'overview'],
   [/^\/apps\/new$/, wizardPage, 'overview'],
   [/^\/apps\/([^/]+)(?:\/([a-z]+))?$/, appPage, 'overview'],
+  [/^\/groups\/new$/, newGroupPage, 'overview'],
+  [/^\/groups\/([^/]+)$/, groupPage, 'overview'],
   [/^\/deployments$/, deploymentsPage, 'deployments'],
   [/^\/deployments\/([^/]+)$/, deploymentPage, 'deployments'],
   [/^\/events$/, eventsPage, 'events'],
@@ -1156,7 +1158,9 @@ async function overviewPage(main, ctx) {
   const hostEl = h('div', { class: 'grid stats', id: 'host' });
   const appsEl = h('div', { id: 'apps' });
   append(main,
-    pageHeader('Overview', 'overview', h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
+    pageHeader('Overview', 'overview',
+      can('admin') ? h('a', { class: 'btn', href: '#/groups/new', 'data-action': 'new-group' }, '+ New group') : null,
+      h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
     h('div', { class: 'section-head' }, h('h2', {}, 'Server'), helpButton('overview.host')),
     hostEl,
     h('div', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', {}, 'Apps'), helpButton('overview.apps')), appsEl));
@@ -1170,9 +1174,19 @@ async function overviewPage(main, ctx) {
     }
   };
   const loadApps = async () => {
-    const [projects, deployments] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments')]);
+    const [projects, deployments, groups] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments'), api('GET', '/groups')]);
     state.projects = projects;
     if (!ctx.alive()) return;
+    if (projects.length && groups.length) {
+      const active = new Map();
+      for (const d of deployments) if (isActiveDeployment(d)) active.set(d.project_id, d);
+      const grouped = new Set(groups.flatMap((g) => g.members.map((m) => m.project_id)));
+      const byId = new Map(projects.map((p) => [p.id, p]));
+      replace(appsEl,
+        h('div', { class: 'grid' }, groups.map((g) => groupCard(g, byId, active, loadApps))),
+        h('div', { class: 'grid apps' }, projects.filter((p) => !grouped.has(p.id)).map((p) => appCard(p, active.get(p.id), loadApps))));
+      return;
+    }
     if (projects.length === 0) {
       replace(appsEl, h('div', { class: 'card empty' },
         h('h2', {}, 'No apps yet'),
@@ -1264,6 +1278,19 @@ async function quickDeploy(project, btn) {
   if (res) go(`/apps/${enc(project.name)}/deploy`);
 }
 
+/** "3 new commits", "Uncommitted changes" or a failed check; nothing when up to date. */
+function updatesBadge(u, { relevantOnly = false } = {}) {
+  if (!u) return null;
+  if (u.error && u.behind == null) return h('span', { 'data-updates': 'error', title: u.error }, pill('Check failed', 'warn'));
+  const bits = [];
+  if (u.behind > 0 && (!relevantOnly || u.relevant)) {
+    bits.push(h('span', { 'data-updates': String(u.behind), title: `Checked ${fmtAgo(u.checked_at)}` },
+      pill(`${u.behind} new commit${u.behind === 1 ? '' : 's'}`, 'info')));
+  }
+  if (u.dirty > 0) bits.push(h('span', { 'data-updates': 'dirty' }, pill('Uncommitted changes', 'warn')));
+  return bits.length ? bits : null;
+}
+
 function appCard(project, activeDeployment, reload) {
   const p = project.process;
   return h('article', { class: 'card app-card', 'data-app': project.name },
@@ -1271,6 +1298,7 @@ function appCard(project, activeDeployment, reload) {
       h('div', { class: 'title' },
         h('a', { href: `#/apps/${enc(project.name)}` }, project.name),
         h('span', { class: 'spacer' }),
+        updatesBadge(project.updates),
         activeDeployment ? deploymentPill(activeDeployment.status) : null,
         processPill(project)),
       h('div', { class: 'source muted truncate', title: sourceText(project) }, sourceText(project)),
@@ -1284,6 +1312,303 @@ function appCard(project, activeDeployment, reload) {
       h('button', { class: 'btn small primary', type: 'button', 'data-action': 'deploy', onclick: (e) => quickDeploy(project, e.currentTarget) }, 'Deploy'),
       processButtons(project, reload),
       h('a', { class: 'btn small ghost', href: `#/apps/${enc(project.name)}/logs` }, 'Logs')));
+}
+
+// ----------------------------------------------------------------------
+// Groups
+// ----------------------------------------------------------------------
+
+const GROUP_RUN_KIND = { Running: 'info', Success: 'ok', Failed: 'bad', RolledBack: 'warn' };
+const MEMBER_RUN_KIND = { deployed: 'ok', skipped: '', failed: 'bad', rolled_back: 'warn', deploying: 'info', pending: '' };
+
+/** Deploy all, deploy the changed apps only, or roll back a group. */
+function groupButtons(group, after, { small = true } = {}) {
+  const cls = small ? 'btn small' : 'btn';
+  if (!can('deployer')) return [];
+  const deploy = (onlyChanged) => async (e) => {
+    const btn = e.currentTarget;
+    const res = await run(btn, () => api('POST', `/groups/${enc(group.id)}/deploy`, { only_changed: onlyChanged }),
+      onlyChanged ? `Deploying the changed apps of ${group.name}` : `Deploying ${group.name}`);
+    if (res && after) after();
+  };
+  const rollback = async (e) => {
+    const btn = e.currentTarget;
+    const ok = await confirmDialog({
+      title: `Roll back ${group.name}?`,
+      message: 'Every app the latest group deployment switched goes back to the release it had before.',
+      confirmLabel: 'Roll back group',
+    });
+    if (!ok) return;
+    const res = await run(btn, () => api('POST', `/groups/${enc(group.id)}/rollback`),
+      (r) => `Rolled back ${r.members.length} app${r.members.length === 1 ? '' : 's'}`);
+    if (res && after) after();
+  };
+  const busy = group.last_deployment?.status === 'Running';
+  return [
+    h('button', { class: `${cls} primary`, type: 'button', 'data-action': 'deploy-group', disabled: busy, onclick: deploy(false) }, 'Deploy group'),
+    h('button', { class: cls, type: 'button', 'data-action': 'deploy-changed', disabled: busy, onclick: deploy(true) }, 'Deploy changed only'),
+    h('button', { class: cls, type: 'button', 'data-action': 'rollback-group', disabled: busy, onclick: rollback }, 'Roll back group'),
+  ];
+}
+
+function groupRunPill(run) {
+  if (!run) return null;
+  return h('span', { 'data-group-run': run.status }, pill(run.status === 'Running' ? 'Deploying' : run.status, GROUP_RUN_KIND[run.status] ?? ''));
+}
+
+/** Overview: a group as one card with its apps inside. */
+function groupCard(group, projects, active, reload) {
+  const runOf = (id) => group.last_deployment?.members.find((m) => m.project_id === id);
+  const rows = group.members.map((m) => {
+    const p = projects.get(m.project_id);
+    const run = runOf(m.project_id);
+    return h('tr', { 'data-member': m.name },
+      h('td', {}, h('a', { href: `#/apps/${enc(m.name)}` }, m.name)),
+      h('td', {}, p ? processPill(p) : null, active.get(m.project_id) ? deploymentPill(active.get(m.project_id).status) : null),
+      h('td', { class: 'mono small truncate', title: m.current_release || '' }, m.current_release || '–'),
+      h('td', { class: 'small', 'data-member-updates': '' },
+        run && group.last_deployment.status === 'Running'
+          ? pill(run.status, MEMBER_RUN_KIND[run.status] ?? '')
+          : (p?.updates?.relevant && !p.updates.up_to_date && p.updates.behind > 0
+            ? h('span', { 'data-changed': '' }, pill('Changed since live', 'info'))
+            : null)));
+  });
+  const changed = group.members.filter((m) => {
+    const u = projects.get(m.project_id)?.updates;
+    return u && u.relevant && !u.up_to_date && u.behind > 0;
+  }).length;
+  const behind = Math.max(0, ...group.members.map((m) => projects.get(m.project_id)?.updates?.behind ?? 0));
+  return h('article', { class: 'card group-card', 'data-group': group.name },
+    h('div', { class: 'card-body' },
+      h('div', { class: 'title' },
+        h('a', { href: `#/groups/${enc(group.name)}` }, group.name),
+        h('span', { class: 'muted small' }, ` · ${group.members.length} app${group.members.length === 1 ? '' : 's'}`),
+        h('span', { class: 'spacer' }),
+        h('span', { 'data-group-updates': String(changed) },
+          behind > 0 ? pill(`${behind} new commit${behind === 1 ? '' : 's'} · ${changed} app${changed === 1 ? '' : 's'} changed`, 'info') : null),
+        groupRunPill(group.last_deployment)),
+      h('div', { class: 'source muted truncate', title: `${group.repository_url} @ ${group.branch}` }, `${group.repository_url} @ ${group.branch}`),
+      h('table', { class: 'table compact' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'App'), h('th', {}, 'Status'), h('th', {}, 'Version'), h('th', {}, ''))),
+        h('tbody', {}, rows))),
+    h('div', { class: 'actions' }, groupButtons(group, reload)));
+}
+
+/** The form fields of a group (name, repository, branch, on failure). */
+function groupFields(group = {}) {
+  const name = h('input', { id: 'group-name', value: group.name || '', autocomplete: 'off', required: true });
+  const repo = h('input', { id: 'group-repo', class: 'mono', value: group.repository_url || '', placeholder: 'git@github.com:owner/repo.git', required: true });
+  const branch = h('input', { id: 'group-branch', class: 'mono', value: group.branch || '', placeholder: 'main' });
+  const rollback = h('input', { type: 'checkbox', id: 'group-rollback', checked: group.rollback_on_failure ?? true });
+  const el = [
+    h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'group-name' }, 'Group name'), name),
+      h('div', { class: 'field' }, h('label', { for: 'group-branch' }, 'Branch'), branch)),
+    h('div', { class: 'field' }, h('label', { for: 'group-repo' }, 'Repository URL'), repo,
+      h('span', { class: 'hint' }, 'Every app in the group is deployed from this repository and branch.')),
+    h('label', { class: 'small', for: 'group-rollback' }, rollback, ' When an app fails, roll back the apps this group deployment already switched'),
+  ];
+  const read = () => ({
+    name: name.value.trim(),
+    repository_url: repo.value.trim(),
+    branch: branch.value.trim() || null,
+    rollback_on_failure: rollback.checked,
+  });
+  return { el, read, repo, branch };
+}
+
+/** Apps that could join a group from `repo` @ `branch` (not in another group). */
+function eligibleApps(projects, repo, branch, groupId) {
+  const norm = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\.git$/, '').toLowerCase();
+  return projects.filter((p) => p.repository_url && !p.source_dir
+    && norm(p.repository_url) === norm(repo) && p.branch === (branch || 'main')
+    && (!p.group || p.group.id === groupId));
+}
+
+async function newGroupPage(main, ctx) {
+  const projects = await api('GET', '/projects');
+  if (!ctx.alive()) return;
+  const fields = groupFields();
+  const picks = h('div', { 'data-group-picks': '' });
+  const drawPicks = () => {
+    const apps = eligibleApps(projects, fields.repo.value, fields.branch.value.trim(), null);
+    replace(picks, apps.length
+      ? h('fieldset', { class: 'field' }, h('legend', {}, 'Apps (deployed in this order; set watch paths on the group page)'),
+        apps.map((p) => h('label', { class: 'small' }, h('input', { type: 'checkbox', value: p.id, 'aria-label': `Add ${p.name}` }), ` ${p.name}${p.source_subdir ? ` (${p.source_subdir})` : ''}`)))
+      : h('p', { class: 'muted small' }, 'No app is deployed from this repository and branch yet (apps from a server folder or in another group are not listed).'));
+  };
+  fields.repo.addEventListener('input', drawPicks);
+  fields.branch.addEventListener('input', drawPicks);
+  drawPicks();
+  const save = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create-group' }, 'Create group');
+  const form = h('form', {
+    class: 'card',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const req = fields.read();
+      req.members = [...picks.querySelectorAll('input:checked')].map((i) => ({ project: i.value, watch_paths: [] }));
+      const res = await run(save, () => api('POST', '/groups', req), (g) => `Group ${g.name} created`);
+      if (res) go(`/groups/${enc(res.name)}`);
+    },
+  },
+  cardHeader('New group', 'groups'),
+  h('div', { class: 'card-body' },
+    h('p', { class: 'muted small' }, 'A group deploys apps from one repository together: one commit, one clone, in order, and only the apps whose files changed.'),
+    fields.el, picks,
+    h('div', { class: 'form-actions' }, save)));
+  append(main, h('a', { class: 'small', href: '#/' }, '← Overview'), pageHeader('New group', 'groups'), form);
+}
+
+async function groupPage(main, ctx, key) {
+  let [group, projects] = await Promise.all([api('GET', `/groups/${enc(key)}`), api('GET', '/projects')]);
+  if (!ctx.alive()) return;
+  const header = h('div');
+  const body = h('div', { class: 'grid' });
+  const reload = async () => {
+    try {
+      [group, projects] = await Promise.all([api('GET', `/groups/${enc(group.id)}`), api('GET', '/projects')]);
+      if (ctx.alive()) draw();
+    } catch (err) {
+      if (err.status === 404 && ctx.alive()) go('/');
+    }
+  };
+  const saveMembers = async (btn, members, message) => {
+    const res = await run(btn, () => api('PUT', `/groups/${enc(group.id)}/members`, { members }), message);
+    if (res) await reload();
+  };
+  const memberList = () => group.members.map((m) => ({ project: m.project_id, watch_paths: m.watch_paths }));
+
+  const draw = () => {
+    replace(header, h('div', { class: 'page-header' },
+      h('h1', {}, group.name), helpButton('groups'), groupRunPill(group.last_deployment),
+      h('span', { 'data-group-updates': '' }),
+      h('div', { class: 'spacer' }), groupButtons(group, reload, { small: false }),
+      h('div', { class: 'subtitle muted small' }, `${group.repository_url} @ ${group.branch} · ${group.members.length} app${group.members.length === 1 ? '' : 's'}`)));
+
+    const admin = can('admin');
+    const rows = group.members.map((m, i) => {
+      const watch = h('input', { class: 'mono', value: m.watch_paths.join(', '), placeholder: 'whole repository, e.g. frontend_v2/**, shared/**', 'aria-label': `Watch paths of ${m.name}`, disabled: !admin });
+      const saveBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'save-watch' }, 'Save');
+      saveBtn.addEventListener('click', () => {
+        const list = memberList();
+        list[i].watch_paths = watch.value.split(',').map((s) => s.trim()).filter(Boolean);
+        saveMembers(saveBtn, list, `Watch paths of ${m.name} saved`);
+      });
+      const move = (delta, label) => {
+        const btn = h('button', { class: 'btn small ghost', type: 'button', 'aria-label': `${label} ${m.name}`, disabled: i + delta < 0 || i + delta >= group.members.length }, delta < 0 ? '↑' : '↓');
+        btn.addEventListener('click', () => {
+          const list = memberList();
+          const [item] = list.splice(i, 1);
+          list.splice(i + delta, 0, item);
+          saveMembers(btn, list, 'Order saved');
+        });
+        return btn;
+      };
+      const removeBtn = h('button', { class: 'btn small danger', type: 'button', 'data-action': 'remove-member' }, 'Remove');
+      removeBtn.addEventListener('click', async () => {
+        const ok = await confirmDialog({ title: `Remove ${m.name} from ${group.name}?`, message: 'The app stays; it is deployed on its own again (its own webhook applies again).', confirmLabel: 'Remove' });
+        if (ok) saveMembers(removeBtn, memberList().filter((x) => x.project !== m.project_id), `${m.name} removed from the group`);
+      });
+      const last = group.last_deployment?.members.find((x) => x.project_id === m.project_id);
+      return h('tr', { 'data-member': m.name },
+        h('td', {}, `${i + 1}.`),
+        h('td', {}, h('a', { href: `#/apps/${enc(m.name)}` }, m.name), m.source_subdir ? h('div', { class: 'muted small mono' }, m.source_subdir) : null),
+        h('td', { class: 'mono small' }, m.current_release || '–', m.commit ? h('div', { class: 'muted' }, m.commit.slice(0, 10)) : null),
+        h('td', { 'data-member-updates': '' }),
+        h('td', {}, last ? pill(last.status, MEMBER_RUN_KIND[last.status] ?? '') : null, last?.reason ? h('div', { class: 'muted small' }, last.reason) : null),
+        h('td', {}, h('div', { class: 'row' }, watch, admin ? saveBtn : null)),
+        admin ? h('td', {}, move(-1, 'Move up'), move(1, 'Move down'), removeBtn) : null);
+    });
+    const membersCard = h('section', { class: 'card', 'data-card': 'group-members' },
+      cardHeader('Apps', 'groups.members'),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, 'Deployed in this order. An app with watch paths is only deployed by "Deploy changed only" (and the webhook) when a file matching them changed since its live commit; without watch paths, any change counts.'),
+        group.members.length
+          ? h('table', { class: 'table' },
+            h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'App'), h('th', {}, 'Live'), h('th', {}, 'Changes'), h('th', {}, 'Last group deployment'), h('th', {}, 'Watch paths'), admin ? h('th', {}, '') : null)),
+            h('tbody', {}, rows))
+          : h('p', {}, 'No apps yet.'),
+        admin ? addMemberForm() : null));
+
+    const settingsCard = admin ? groupSettingsCard() : null;
+    const history = h('section', { class: 'card', 'data-card': 'group-history' },
+      cardHeader('Group deployments', 'groups'),
+      h('div', { class: 'card-body', 'data-group-history': '' }, h('p', { class: 'muted small' }, 'Loading…')));
+    loadHistory(history.querySelector('[data-group-history]'));
+    const commitsCard = h('section', { class: 'card', 'data-card': 'group-commits' },
+      cardHeader(`New commits on ${group.branch}`, 'app.updates'),
+      h('div', { class: 'card-body', 'data-group-commits': '' }, h('p', { class: 'muted small' }, 'Checking…')));
+    replace(body, membersCard, commitsCard, history,
+      admin ? hookCard(`/groups/${enc(group.id)}/webhook`, 'groups.webhook', 'this group') : null,
+      settingsCard);
+    drawGroupUpdates(ctx, group, main);
+  };
+
+  const addMemberForm = () => {
+    const apps = eligibleApps(projects, group.repository_url, group.branch, group.id)
+      .filter((p) => !group.members.some((m) => m.project_id === p.id));
+    if (!apps.length) return h('p', { class: 'muted small' }, 'Other apps deployed from this repository and branch appear here to be added.');
+    const pick = h('select', { id: 'group-add', 'aria-label': 'App to add' }, apps.map((p) => h('option', { value: p.id }, p.name)));
+    const paths = h('input', { id: 'group-add-paths', class: 'mono', placeholder: 'watch paths, e.g. backend/**' });
+    const add = h('button', { class: 'btn', type: 'button', 'data-action': 'add-member' }, 'Add app');
+    add.addEventListener('click', async () => {
+      const res = await run(add, () => api('POST', `/groups/${enc(group.id)}/members`, {
+        project: pick.value,
+        watch_paths: paths.value.split(',').map((s) => s.trim()).filter(Boolean),
+      }), 'App added');
+      if (res) reload();
+    });
+    return h('div', { class: 'row' }, pick, paths, add);
+  };
+
+  const groupSettingsCard = () => {
+    const fields = groupFields(group);
+    const save = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'save-group' }, 'Save group');
+    const del = h('button', { class: 'btn danger', type: 'button', 'data-action': 'delete-group' }, 'Delete group');
+    del.addEventListener('click', async () => {
+      const ok = await confirmDialog({ title: `Delete group ${group.name}?`, message: 'Its apps stay and are deployed on their own again. The group\'s webhook stops working.', confirmLabel: 'Delete group', danger: true });
+      if (!ok) return;
+      const res = await run(del, () => api('DELETE', `/groups/${enc(group.id)}`), 'Group deleted');
+      if (res !== undefined) go('/');
+    });
+    return h('form', {
+      class: 'card', 'data-card': 'group-settings',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const res = await run(save, () => api('PUT', `/groups/${enc(group.id)}`, fields.read()), 'Group saved');
+        if (res) {
+          if (res.name !== group.name) go(`/groups/${enc(res.name)}`);
+          else reload();
+        }
+      },
+    },
+    cardHeader('Group settings', 'groups'),
+    h('div', { class: 'card-body' }, fields.el, h('div', { class: 'form-actions' }, del, save)));
+  };
+
+  const loadHistory = async (el) => {
+    try {
+      const runs = (await api('GET', `/groups/${enc(group.id)}/deployments`)).reverse().slice(0, 10);
+      if (!ctx.alive()) return;
+      replace(el, runs.length
+        ? h('ul', { class: 'deliveries' }, runs.map((r) => h('li', { 'data-run': r.id },
+          timeEl(r.created_at, fmtAgo(r.created_at)), ' ', groupRunPill(r), ' ',
+          r.commit ? h('span', { class: 'mono small' }, r.commit.slice(0, 10)) : null, ' ',
+          h('span', { class: 'muted small' }, r.members.map((m) => `${m.name}: ${m.status}${m.version ? ` ${m.version}` : ''}`).join(' · ')),
+          r.error ? h('div', { class: 'small' }, r.error) : null)))
+        : h('p', { class: 'muted small' }, 'No group deployments yet.'));
+    } catch (err) {
+      if (ctx.alive()) replace(el, errorBox(err));
+    }
+  };
+
+  draw();
+  append(main, h('a', { class: 'small', href: '#/' }, '← Overview'), header, body);
+  const later = debounce(reload, 300);
+  onEvents(ctx, (e) => {
+    if (e.payload?.group_id === group.id || group.members.some((m) => m.project_id === e.payload?.project_id)) later();
+  });
+  ctx.cleanup(later.cancel);
 }
 
 // ----------------------------------------------------------------------
@@ -1320,6 +1645,9 @@ async function appPage(main, ctx, name, tab = 'deploy') {
       processPill(project),
       p && p.runtime === 'docker'
         ? h('span', { 'data-runtime': 'docker', title: p.image || '' }, pill('Docker', 'info'))
+        : null,
+      project.group
+        ? h('a', { class: 'pill info', href: `#/groups/${enc(project.group.name)}`, 'data-group-link': '' }, `Group ${project.group.name}`)
         : null,
       h('div', { class: 'spacer' }),
       processButtons(project, refreshProject, { small: false }),
@@ -1403,7 +1731,7 @@ async function deployTab(body, ctx) {
     gitSource ? null : h('p', { class: 'muted small' }, `Copies the code in ${project.source_dir || 'the source directory'}.`),
     h('div', { class: 'form-actions' }, submit)));
 
-  append(body, h('div', { class: 'grid' }, form, instancesCard(ctx), pipelineEl));
+  append(body, h('div', { class: 'grid' }, form, updatesCard(ctx), instancesCard(ctx), pipelineEl));
 
   let current = null;
   const showDeployment = (id) => {
@@ -1426,6 +1754,102 @@ async function deployTab(body, ctx) {
   onEvents(ctx, (e) => {
     if (e.event_type === 'DeploymentQueued' && e.payload?.project_id === project.id) showDeployment(e.payload.deployment_id);
   });
+}
+
+/** The commits (and files) a deployment would bring, from the latest check. */
+function commitList(u) {
+  return [
+    u.commits.length
+      ? h('ul', { class: 'commit-list', 'data-commits': '' }, u.commits.map((c) => h('li', {},
+        h('code', { class: 'mono' }, c.sha.slice(0, 8)),
+        h('span', {}, c.message),
+        h('span', { class: 'muted small' }, `${c.author} · `, timeEl(c.date, fmtAgo(c.date))))))
+      : null,
+    u.changed_files.length
+      ? h('details', { class: 'small' }, h('summary', {}, `${u.changed_files.length} changed file${u.changed_files.length === 1 ? '' : 's'}`),
+        h('ul', { class: 'mono small', 'data-files': '' }, u.changed_files.map((f) => h('li', {}, f))))
+      : null,
+  ];
+}
+
+/** Deploy tab: what's new on the branch (or in the folder) since the live release. */
+function updatesCard(ctx) {
+  const project = ctx.project();
+  const out = h('div', { 'data-updates-card': '' }, h('p', { class: 'muted small' }, 'Checking…'));
+  const checkBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'check-updates' }, 'Check now');
+  const draw = (u) => {
+    if (!ctx.alive()) return;
+    const folder = u.kind === 'folder';
+    let summary;
+    if (u.error && u.behind == null) summary = h('div', { class: 'alert warn' }, u.error);
+    else if (!u.deployed) summary = h('p', { class: 'small' }, 'Not deployed yet', u.head ? [' · latest ', h('code', {}, u.head.slice(0, 8))] : null);
+    else if (u.up_to_date) summary = h('p', { class: 'small', 'data-up-to-date': '' }, pill('Up to date', 'ok'), ` with ${folder ? 'the folder' : u.branch} at `, h('code', {}, (u.head || '').slice(0, 8)));
+    else {
+      summary = h('p', { class: 'small' },
+        u.behind > 0 ? pill(`${u.behind} new commit${u.behind === 1 ? '' : 's'}`, 'info') : null, ' ',
+        folder ? 'in the folder' : `on ${u.branch}`, ' since the live release (', h('code', {}, (u.live_commit || '').slice(0, 8)), ')',
+        u.dirty > 0 ? [' · ', pill(`${u.dirty} uncommitted file${u.dirty === 1 ? '' : 's'}`, 'warn')] : null);
+    }
+    const deployLatest = can('deployer') && u.deployed && !u.up_to_date && !project.group
+      ? h('button', { class: 'btn small primary', type: 'button', 'data-action': 'deploy-latest' }, folder ? 'Deploy the folder' : 'Deploy latest')
+      : null;
+    if (deployLatest) {
+      deployLatest.addEventListener('click', async () => {
+        const req = folder || !u.head ? {} : { commit: u.head };
+        const res = await run(deployLatest, () => api('POST', `/projects/${enc(project.id)}/deploy`, req), 'Deployment queued');
+        if (res) go(`/apps/${enc(project.name)}/deploy`);
+      });
+    }
+    replace(out, summary, commitList(u),
+      project.group && !u.up_to_date && u.deployed
+        ? h('p', { class: 'muted small' }, 'This app is in group ', h('a', { href: `#/groups/${enc(project.group.name)}` }, project.group.name), ': deploy it with the group.')
+        : null,
+      h('div', { class: 'form-actions' }, h('span', { class: 'muted small' }, `Checked ${fmtAgo(u.checked_at)}`), deployLatest));
+  };
+  checkBtn.addEventListener('click', async () => {
+    const u = await run(checkBtn, () => api('POST', `/projects/${enc(project.id)}/updates/check`));
+    if (u) draw(u);
+  });
+  api('GET', `/projects/${enc(project.id)}/updates`).then(draw).catch((err) => ctx.alive() && replace(out, errorBox(err)));
+  return h('section', { class: 'card', 'data-card': 'updates' },
+    cardHeader('New changes', 'app.updates', h('span', { class: 'spacer' }), can('deployer') ? checkBtn : null),
+    h('div', { class: 'card-body' }, out));
+}
+
+/** Group page: per-app changes since live, "Check now" and "Deploy changed apps". */
+function drawGroupUpdates(ctx, group, main) {
+  const apply = (u) => {
+    if (!ctx.alive()) return;
+    for (const m of u.members) {
+      const cell = main.querySelector(`tr[data-member="${CSS.escape(m.name)}"] [data-member-updates]`);
+      if (!cell) continue;
+      replace(cell,
+        m.error && m.behind == null ? h('span', { title: m.error }, pill('Check failed', 'warn')) : null,
+        !m.deployed ? pill('Not deployed', '') : null,
+        m.deployed && m.relevant && !m.up_to_date
+          ? h('span', { 'data-changed': '' }, pill(`Changed since live (${m.changed_files.length} file${m.changed_files.length === 1 ? '' : 's'})`, 'info'))
+          : null,
+        m.deployed && !m.relevant && m.behind > 0 ? h('span', { class: 'muted small' }, 'No watched changes') : null,
+        m.deployed && m.up_to_date ? pill('Up to date', 'ok') : null);
+    }
+    const head = main.querySelector('[data-group-updates]');
+    if (head) {
+      const behind = Math.max(0, ...u.members.map((m) => m.behind ?? 0));
+      head.dataset.groupUpdates = String(u.changed_apps);
+      replace(head,
+        behind > 0 ? pill(`${behind} new commit${behind === 1 ? '' : 's'} · ${u.changed_apps} app${u.changed_apps === 1 ? '' : 's'} changed`, 'info') : null,
+        can('deployer') ? checkBtn : null);
+    }
+    const first = u.members.find((m) => m.commits.length);
+    const list = main.querySelector('[data-group-commits]');
+    if (list) replace(list, first ? commitList({ ...first, changed_files: [] }) : h('p', { class: 'muted small' }, u.error || 'No new commits.'));
+  };
+  const checkBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'check-group-updates' }, 'Check now');
+  checkBtn.addEventListener('click', async () => {
+    const u = await run(checkBtn, () => api('POST', `/groups/${enc(group.id)}/updates/check`));
+    if (u) apply(u);
+  });
+  api('GET', `/groups/${enc(group.id)}/updates`).then(apply).catch(() => {});
 }
 
 const STRATEGIES = [
@@ -2328,14 +2752,27 @@ function webhookCard(ctx) {
       cardHeader('GitHub webhook', 'app.webhook'),
       h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Webhooks need a git repository as the source.')));
   }
+  if (project.group) {
+    return h('section', { class: 'card', 'data-card': 'webhook' },
+      cardHeader('GitHub webhook', 'app.webhook'),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, 'This app is in group ',
+          h('a', { href: `#/groups/${enc(project.group.name)}` }, project.group.name),
+          ". Pushes deploy it through the group's webhook; pushes to this app's own webhook are ignored.")));
+  }
+  return hookCard(`/projects/${enc(project.id)}/webhook`, 'app.webhook', 'this app');
+}
+
+/** Webhook secret, payload URL, test delivery and recent deliveries. */
+function hookCard(base, help, what) {
   const status = h('div', {}, h('p', { class: 'muted small' }, 'Loading…'));
   const hookOut = h('div');
   const hookBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'webhook' }, 'Generate secret');
   const load = async () => {
-    const hook = await api('GET', `/projects/${enc(project.id)}/webhook`);
+    const hook = await api('GET', base);
     const testBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'test-webhook', disabled: !hook.configured }, 'Send test delivery');
     testBtn.addEventListener('click', async () => {
-      const res = await run(testBtn, () => api('POST', `/projects/${enc(project.id)}/webhook/test`));
+      const res = await run(testBtn, () => api('POST', `${base}/test`));
       if (res) toast(res.status === 'pong' ? 'Test delivery accepted' : `Test delivery: ${res.status}`, res.status === 'pong' ? '' : 'bad');
       load().catch(() => {});
     });
@@ -2359,11 +2796,11 @@ function webhookCard(ctx) {
   hookBtn.addEventListener('click', async () => {
     const ok = await confirmDialog({
       title: 'Generate a new webhook secret?',
-      message: 'If this app already has a secret, it stops working; update the webhook on GitHub with the new one.',
+      message: `If ${what} already has a secret, it stops working; update the webhook on GitHub with the new one.`,
       confirmLabel: 'Generate',
     });
     if (!ok) return;
-    const res = await run(hookBtn, () => api('POST', `/projects/${enc(project.id)}/webhook`));
+    const res = await run(hookBtn, () => api('POST', base));
     if (!res) return;
     replace(hookOut, h('div', { class: 'grid' },
       h('div', { class: 'alert warn' }, 'Copy the secret now; it is not shown again.'),
@@ -2371,8 +2808,8 @@ function webhookCard(ctx) {
     load().catch(() => {});
   });
   load().catch((err) => replace(status, errorBox(err)));
-  return h('section', { class: 'card' },
-    cardHeader('GitHub webhook', 'app.webhook'),
+  return h('section', { class: 'card', 'data-card': 'webhook' },
+    cardHeader('GitHub webhook', help),
     h('div', { class: 'card-body' }, status, hookOut));
 }
 
@@ -2403,6 +2840,8 @@ async function settingsTab(body, ctx) {
     STRATEGIES.map(([value, label]) => h('option', { value }, label)));
   strategyIn.value = s.strategy || '';
   const instancesIn = h('input', { id: 'set-instances', name: 'instances', type: 'number', min: 1, max: 16, value: s.instances ?? '', placeholder: '1' });
+  const healthTimeoutIn = h('input', { id: 'set-health-timeout', name: 'health_check_timeout_secs', type: 'number', min: 1, max: 3600, step: 1, value: s.health_check_timeout_secs ?? '', placeholder: '30' });
+  const drainTimeoutIn = h('input', { id: 'set-drain-timeout', name: 'drain_timeout_secs', type: 'number', min: 0, max: 3600, step: 1, value: s.drain_timeout_secs ?? '', placeholder: '10' });
   const env = envEditor(s.env, 'env');
   const processOnly = h('input', { type: 'checkbox', id: 'set-process-only', checked: s.health_check_url === '' });
   const syncHealth = () => {
@@ -2437,6 +2876,21 @@ async function settingsTab(body, ctx) {
       if (inputs.port.value) req.port = Number(inputs.port.value);
       if (strategyIn.value) req.strategy = strategyIn.value;
       if (instancesIn.value) req.instances = Number(instancesIn.value);
+      // Every field is sent: a settings save clears what it leaves out.
+      for (const [input, key, min, label] of [
+        [healthTimeoutIn, 'health_check_timeout_secs', 1, 'Health check timeout'],
+        [drainTimeoutIn, 'drain_timeout_secs', 0, 'Drain timeout'],
+      ]) {
+        const raw = input.value.trim();
+        if (!raw) continue;
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < min || n > 3600) {
+          toast(`${label} must be a whole number of seconds from ${min} to 3600`, 'bad');
+          input.focus();
+          return;
+        }
+        req[key] = n;
+      }
       if (processOnly.checked) req.health_check_url = '';
       else if (inputs.health_check_url.value.trim()) req.health_check_url = inputs.health_check_url.value.trim();
       try {
@@ -2469,6 +2923,11 @@ async function settingsTab(body, ctx) {
         h('span', { class: 'hint' }, 'Used when a deployment does not pick one. Rolling and Blue-green need a domain on the built-in proxy.')),
       h('div', { class: 'field' }, h('label', { for: 'set-instances' }, 'Instances'), instancesIn,
         h('span', { class: 'hint' }, 'Copies of the app behind the built-in proxy (1-16; more than 1 needs a domain). Resource limits apply to each instance.'))),
+    h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'set-health-timeout' }, 'Health check timeout (seconds)'), healthTimeoutIn,
+        h('span', { class: 'hint' }, 'How long a new release may take to become healthy before the deployment fails (1-3600; default 30). Raise it for apps that start slowly.')),
+      h('div', { class: 'field' }, h('label', { for: 'set-drain-timeout' }, 'Drain timeout (seconds)'), drainTimeoutIn,
+        h('span', { class: 'hint' }, 'How long a stopping release gets to finish requests and exit before it is killed (0-3600; default 10).'))),
     h('fieldset', { class: 'field env' },
       h('legend', {}, 'Environment variables'),
       h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and over the env file, and written into each release. Use Secrets for passwords and keys.'),
@@ -2516,7 +2975,53 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, dangerCard(ctx)));
+}
+
+/** Settings → Danger zone: delete the app (typing its name to confirm). */
+function dangerCard(ctx) {
+  const project = ctx.project();
+  const deleteBtn = h('button', { class: 'btn danger', type: 'button', 'data-action': 'delete-app' }, 'Delete app');
+  deleteBtn.addEventListener('click', async () => {
+    let keepReleases = false;
+    const result = await modal(() => {
+      const nameIn = h('input', { id: 'delete-confirm', class: 'mono', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'App name' });
+      const keep = h('input', { type: 'checkbox', id: 'delete-keep-releases', name: 'keep_releases' });
+      const ok = h('button', { class: 'btn danger solid', value: 'ok', type: 'submit', disabled: true, 'data-confirm': '' }, 'Delete this app');
+      nameIn.addEventListener('input', () => {
+        ok.disabled = nameIn.value.trim() !== project.name;
+      });
+      const form = h('form', {
+        method: 'dialog',
+        onsubmit: () => {
+          keepReleases = keep.checked;
+        },
+      },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, `Delete ${project.name}?`),
+        h('p', { class: 'muted' }, 'Its processes are stopped (requests in flight get the drain timeout to finish), and its domains, secrets, deploy key, webhook secret, schedule, releases and logs are removed. Its history stays in Events. This can\'t be undone.'),
+        (project.domains || []).length
+          ? h('p', { class: 'small' }, 'Domains that stop being served: ', project.domains.map((d, i) => [i ? ', ' : '', h('code', {}, d.domain)]))
+          : null,
+        h('label', { class: 'small', for: 'delete-keep-releases' }, keep, ' Keep the release directories and logs on the server'),
+        h('div', { class: 'field' }, h('label', { for: 'delete-confirm' }, 'Type ', h('code', {}, project.name), ' to confirm'), nameIn)),
+      h('div', { class: 'form-actions' },
+        h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+        ok));
+      setTimeout(() => nameIn.focus(), 0);
+      return form;
+    });
+    if (result !== 'ok') return;
+    const query = `confirm=${enc(project.name)}${keepReleases ? '&keep_releases=true' : ''}`;
+    const res = await run(deleteBtn, () => api('DELETE', `/projects/${enc(project.id)}?${query}`),
+      (r) => `Deleted ${r.name}${r.domains.length ? `; ${r.domains.join(', ')} can be used again` : ''}`);
+    if (res) go('/');
+  });
+  return h('section', { class: 'card danger-zone', 'data-card': 'danger-zone' },
+    cardHeader('Danger zone', 'app.delete'),
+    h('div', { class: 'card-body' },
+      h('p', { class: 'muted small' }, 'Deleting the app stops it and removes its domains, secrets, deploy key, webhook secret, schedule and releases. Its name and domains can be used again right away. Not possible while a deployment is running.'),
+      h('div', { class: 'form-actions' }, deleteBtn)));
 }
 
 // --- Repository and deploy key (Settings tab, wizard) ------------------
@@ -2618,15 +3123,71 @@ function deployKeyPanel(project, ctx) {
 }
 
 /** Settings → Repository: the app's source and its deploy key. */
-function repositoryCard(ctx) {
+function repositoryCard(ctx, rerender) {
   const project = ctx.project();
   const facts = h('dl', { class: 'facts' },
-    h('div', {}, h('dt', {}, 'Source'), h('dd', { class: 'mono small truncate', title: sourceText(project) }, sourceText(project))),
+    h('div', {}, h('dt', {}, 'Source'), h('dd', { class: 'mono small truncate', title: sourceText(project), 'data-source': '' }, sourceText(project))),
     project.source_subdir ? h('div', {}, h('dt', {}, 'App folder'), h('dd', { class: 'mono small' }, project.source_subdir)) : null);
+  const changeBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'change-source' }, 'Change source');
+  const changePanel = h('div', { 'data-change-source': '' });
+  changeBtn.addEventListener('click', () => {
+    if (changePanel.firstChild) {
+      changePanel.replaceChildren();
+      return;
+    }
+    const git = !project.source_dir;
+    const kindGit = h('input', { type: 'radio', name: 'source-kind', id: 'source-kind-git', value: 'git', checked: git });
+    const kindDir = h('input', { type: 'radio', name: 'source-kind', id: 'source-kind-dir', value: 'dir', checked: !git });
+    const repoIn = h('input', { id: 'source-repo', class: 'mono', value: project.repository_url || '', placeholder: 'git@github.com:owner/repo.git', autocomplete: 'off', spellcheck: 'false' });
+    const branchIn = h('input', { id: 'source-branch', class: 'mono', value: project.repository_url ? project.branch : '', placeholder: project.branch || 'main' });
+    const dirIn = h('input', { id: 'source-dir', class: 'mono', value: project.source_dir || '', placeholder: '/opt/apps/my-app', autocomplete: 'off', spellcheck: 'false' });
+    const subIn = h('input', { id: 'source-subdir', class: 'mono', value: project.source_subdir || '', placeholder: '(the whole source)' });
+    const gitFields = h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'source-repo' }, 'Repository URL'), repoIn),
+      h('div', { class: 'field' }, h('label', { for: 'source-branch' }, 'Branch'), branchIn));
+    const dirFields = h('div', { class: 'field' }, h('label', { for: 'source-dir' }, 'Server folder path'), dirIn,
+      h('span', { class: 'hint' }, 'An absolute path the Aegis daemon can read. Each deployment copies it.'));
+    const sync = () => {
+      gitFields.hidden = !kindGit.checked;
+      dirFields.hidden = kindGit.checked;
+    };
+    kindGit.addEventListener('change', sync);
+    kindDir.addEventListener('change', sync);
+    sync();
+    const saveBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'save-source' }, 'Save source');
+    const form = h('form', {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const req = kindGit.checked
+          ? { repository_url: repoIn.value.trim(), branch: branchIn.value.trim() || null }
+          : { source_dir: dirIn.value.trim() };
+        req.source_subdir = subIn.value.trim() || null;
+        const ok = await confirmDialog({
+          title: 'Change the source?',
+          message: 'The next deployment builds from the new source. The running release keeps serving until then.'
+            + (kindGit.checked ? '' : ' The deploy key (if any) is kept but not used for a folder.'),
+          confirmLabel: 'Change source',
+        });
+        if (!ok) return;
+        const res = await run(saveBtn, () => api('PUT', `/projects/${enc(project.id)}/source`, req), 'Source changed; it applies to the next deployment');
+        if (res && rerender) rerender();
+      },
+    },
+    h('div', { class: 'row' },
+      h('label', { class: 'small', for: 'source-kind-git' }, kindGit, ' Git repository'),
+      h('label', { class: 'small', for: 'source-kind-dir' }, kindDir, ' Folder on this server')),
+    gitFields, dirFields,
+    h('div', { class: 'field' }, h('label', { for: 'source-subdir' }, 'App folder (optional)'), subIn,
+      h('span', { class: 'hint' }, 'Build and run only this folder of the source, e.g. apps/web in a monorepo.')),
+    h('div', { class: 'form-actions' }, saveBtn));
+    changePanel.replaceChildren(form);
+    (git ? repoIn : dirIn).focus();
+  });
   return h('section', { class: 'card', id: 'repository', 'data-card': 'repository' },
-    cardHeader('Repository', 'app.repository'),
+    cardHeader('Repository', 'app.repository', h('span', { class: 'spacer' }), changeBtn),
     h('div', { class: 'card-body' },
       facts,
+      changePanel,
       project.repository_url
         ? h('div', {}, h('h3', {}, 'Deploy key'), deployKeyPanel(project, ctx))
         : h('p', { class: 'muted small' }, 'Deployments copy the directory above, so no deploy key is needed.')));

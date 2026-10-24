@@ -48,7 +48,7 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | `AppsImported` | Apps registered in bulk from a folder scan (each also has its own `ProjectCreated`; none is deployed) | `count`, `apps` (`[{project_id, name}]`), `actor` |
 | `DeployKeyCreated` | An SSH deploy key was generated for the project. Only the fingerprint is recorded, never key material; the private key is sealed in the database | `project_id`, `fingerprint` (`SHA256:…`), `replaced` (the previous key's fingerprint, or `null`), `actor` |
 | `DeployKeyDeleted` | The project's deploy key was deleted | `project_id`, `fingerprint`, `actor` |
-| `ProjectSettingsUpdated` | Build/run settings edited in the dashboard or API (override aegis.toml from the next deployment), including Variables and the env file path (`settings.env_file`; the file's contents are never recorded). A `.env` import that adds Variables records one | `project_id`, `settings`, `actor` |
+| `ProjectSettingsUpdated` | Build/run settings edited in the dashboard or API (override aegis.toml from the next deployment), including Variables, the health-check and drain timeouts (`settings.health_check_timeout_secs`, `settings.drain_timeout_secs`) and the env file path (`settings.env_file`; the file's contents are never recorded). A `.env` import that adds Variables records one | `project_id`, `settings`, `actor` |
 | `ResourceLimitsChanged` | CPU/memory/process limits changed (applied live) | `project_id`, `limits`, `previous`, `applied_to_processes`, `forced`, `actor` |
 | `ResourcePressureDetected` | An alert: `kind` is `oom_kill`, `cpu_throttled` (≥50% of periods for 30 s), `memory_pressure` (≥90% of the limit for 30 s) or `disk_low` (<10% free) | `kind`, `message`, `project_id` (not for `disk_low`), and figures such as `oom_kills`, `memory_limit_bytes` |
 | `ScheduleConfigured` | Daily auto-deployment time set (UTC) | `project_id`, `hour`, `minute`, `branch` |
@@ -57,13 +57,35 @@ Every event published to `EventBus` or stored in SQLite must contain standard me
 | `SecretUpdated` | A secret environment variable was created or replaced. The value is never recorded; it is stored encrypted outside the event log | `project_id`, `name`, `created`, `actor` |
 | `SecretDeleted` | A secret environment variable was removed | `project_id`, `name`, `actor` |
 | `ProjectUpdated` | Config or environment updated | `project_id`, `updated_fields` |
-| `ProjectDeleted` | Project removed from workspace | `project_id`, `deleted_at` |
+| `ProjectDeleted` | The app was deleted (dashboard Settings, `DELETE /api/v1/projects/{project}` or `aegis delete`). Its processes were stopped first; after this event its secrets, deploy key, webhook secret and (unless `keep_releases`) release directories, logs and artifact metadata are removed, and that cleanup is repeated on every daemon start until done. Read models drop the project, its releases, deployments and processes, and ignore later events about it (e.g. a late `ProcessStopped`); its earlier events stay as history. Registering the same project id again (`ProjectCreated`) starts it afresh. Can't be injected with `aegis emit-event` | `project_id`, `name`, `keep_releases`, `kept_dir`, `domains` (no longer served), `repository_url`, `source_dir`, `stopped_process_ids`, `release_count`, `actor` |
+| `ProjectSourceChanged` | The app's source changed between a repository and a server folder (or to another repository, branch or subfolder); used from the next deployment | `project_id`, `kind` (`git` or `folder`), `repository_url` (empty for a folder), `branch`, `source_dir`, `source_subdir`, `previous` (the same four fields before), `actor` |
+
+### Groups
+
+Apps deployed together from one repository and branch; see [groups.md](groups.md).
+
+| Event Type | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `GroupCreated` / `GroupUpdated` | A group was created or changed | `group_id`, `name`, `repository_url`, `branch`, `rollback_on_failure`, `actor` |
+| `GroupMembersChanged` | The group's apps, in deploy order, with their watch paths (the whole list) | `group_id`, `members` (`[{project_id, watch_paths}]`), `actor` |
+| `GroupDeleted` | The group was deleted (its apps stay) | `group_id`, `name`, `actor` |
+| `GroupDeploymentStarted` | A group deployment began | `group_id`, `group_deployment_id`, `commit` (if given), `only_changed`, `trigger` (`http`, `cli`, `github-push`), `members` |
+| `GroupCheckoutReady` | The repository was cloned once and checked out at the commit every app is built from | `group_id`, `group_deployment_id`, `commit`, `checkout` |
+| `GroupMemberSkipped` | An app was not deployed: nothing it watches changed, or it is already live at the commit | `group_id`, `group_deployment_id`, `project_id`, `reason` |
+| `GroupMemberDeploying` / `GroupMemberDeployed` | An app's deployment was queued / went live | `group_id`, `group_deployment_id`, `project_id`, `deployment_id`, `previous_version`, `version`, `commit` |
+| `GroupMemberFailed` | An app's deployment failed; the apps after it are not deployed | `group_id`, `group_deployment_id`, `project_id`, `reason` |
+| `GroupMembersRolledBack` | Apps went back to their previous release: after a failure (`reason: failure`, with roll back on failure) or on request (`reason: requested`) | `group_id`, `group_deployment_id`, `project_ids`, `reason`, `failed` |
+| `GroupRollbackStarted` | **Roll back group** began | `group_id`, `group_deployment_id`, `project_ids` |
+| `GroupDeploymentFinished` | Every app was deployed or skipped | `group_id`, `group_deployment_id`, `commit`, `deployed` |
+| `GroupDeploymentFailed` | The group deployment stopped: an app failed, the clone failed, or the daemon restarted meanwhile | `group_id`, `group_deployment_id`, `reason`, `failed_project_id`, `rolled_back`, `not_deployed` |
+
+`WebhookReceived` and `WebhookSecretRotated` carry `group_id` (instead of `project_id`) for a group's webhook.
 
 ### Release Aggregate
 
 | Event Type | Description | Key Payload Fields |
 | :--- | :--- | :--- |
-| `ReleaseCreated` | A build finished and the release is ready to start | `release_id`, `project_id`, `deployment_id`, `version`, `commit_sha`, `commit_message`, `checksum`, `path` |
+| `ReleaseCreated` | A build finished and the release is ready to start | `release_id`, `project_id`, `deployment_id`, `version`, `commit_sha` (the exact commit; for a folder in git, its HEAD; `local` outside git), `commit_message`, `checksum`, `path`, `source_dirty` (a copied folder had uncommitted changes; `null` for clones) |
 | `ReleasePromoted` | The release passed its health check and is now live | `release_id`, `project_id`, `version`, `previous_version`, `process_id` (the process now serving; the first instance), `port` (where the proxy sends its traffic), and for multi-instance cutovers `process_ids` and `ports` (every instance, in instance order) |
 | `ReleaseArchived` | The release directory was removed by retention | `project_id`, `version` |
 

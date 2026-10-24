@@ -142,6 +142,8 @@ pub struct BuildOutput {
     pub release: Release,
     pub config: ResolvedProjectConfig,
     pub duration: Duration,
+    /// A copied folder had uncommitted changes (`None`: unknown, or a clone).
+    pub source_dirty: Option<bool>,
 }
 
 /// A failed stage, with the last lines of output for diagnosis.
@@ -234,6 +236,7 @@ impl<'a> BuildPipeline<'a> {
             Ok(c) => c,
             Err(e) => return Err(self.fail(PipelineStage::Clone, e, &log).await),
         };
+        let source_dirty = commit.dirty;
         if req.overrides.changes_file() {
             if let Err(e) = write_overrides(&req.release_dir, &req.overrides) {
                 return Err(self.fail(PipelineStage::Clone, e, &log).await);
@@ -382,6 +385,7 @@ impl<'a> BuildPipeline<'a> {
             release,
             config,
             duration,
+            source_dirty,
         })
     }
 
@@ -505,6 +509,9 @@ struct CommitInfo {
     sha: String,
     message: String,
     author: String,
+    /// A copied folder had uncommitted changes (`None`: not a git work
+    /// tree, or a clone).
+    dirty: Option<bool>,
 }
 
 async fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
@@ -542,6 +549,7 @@ async fn commit_info(dir: &Path, fallback_sha: &str) -> CommitInfo {
         sha,
         message,
         author,
+        dirty: None,
     }
 }
 
@@ -903,8 +911,18 @@ async fn fetch_whole_source(
                 anyhow::bail!("Source directory {} does not exist", src.display());
             }
             log.line(&format!("==> Copy: {}", src.display()));
-            let info = commit_info(src, "local").await;
+            let mut info = commit_info(src, "local").await;
             let files = git_file_list(src).await;
+            if files.is_some() {
+                info.dirty = git_output(src, &["status", "--porcelain", "--", "."])
+                    .await
+                    .map(|out| out.lines().any(|l| !l.trim().is_empty()));
+                if info.dirty == Some(true) {
+                    log.line(
+                        "Note: the folder has uncommitted changes; they are part of this release",
+                    );
+                }
+            }
             let (src, dest_owned) = (src.clone(), dest.to_path_buf());
             let copied = tokio::task::spawn_blocking(move || match files {
                 Some(files) => copy_listed(&src, &dest_owned, &files),

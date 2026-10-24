@@ -25,7 +25,7 @@ use serde_json::json;
 use std::net::{IpAddr, SocketAddr};
 
 pub const SESSION_COOKIE: &str = "aegis_session";
-const MAX_REMEMBERED_DELIVERIES: usize = 1000;
+pub(crate) const MAX_REMEMBERED_DELIVERIES: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub enum Principal {
@@ -140,11 +140,23 @@ fn user_only(path: &str) -> bool {
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
         || matches!(section, Some("webhook" | "secrets" | "deploy-key"))
+        // A group's webhook secret, like an app's.
+        || (path.starts_with("/api/v1/groups/")
+            && path.split('/').nth(5) == Some("webhook"))
         // Reading server folders and registering apps in bulk.
         || path == "/api/v1/apps"
         || path.starts_with("/api/v1/apps/")
         // Imports write secrets.
         || (section == Some("env") && path.contains("/env/import"))
+}
+
+/// `DELETE /api/v1/projects/<project>`: deleting an app (its releases,
+/// secrets and domains) is for a signed-in admin, never an API token.
+fn deletes_project(method: &Method, path: &str) -> bool {
+    *method == Method::DELETE
+        && path
+            .strip_prefix("/api/v1/projects/")
+            .is_some_and(|rest| !rest.is_empty() && !rest.trim_end_matches('/').contains('/'))
 }
 
 /// Mapping a domain decides where public traffic (and certificates) go, so
@@ -171,6 +183,7 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Credentials and secret material, even to read.
         ["users" | "tokens" | "backups", ..] => Role::Admin,
         ["projects", _, "secrets" | "webhook" | "deploy-key", ..] => Role::Admin,
+        ["groups", _, "webhook", ..] => Role::Admin,
         // Scanning server folders, access checks and bulk import.
         ["apps", ..] => Role::Admin,
         // Pasted .env contents, and writes of Variables and Secrets.
@@ -183,6 +196,9 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Shows the aegis.toml a settings change would produce; saves nothing.
         ["projects", _, "settings", "preview"] => Role::Viewer,
         ["projects", _, "deploy" | "rollback"] => Role::Deployer,
+        ["groups", _, "deploy" | "rollback"] => Role::Deployer,
+        // "Check now" for new commits: reads the git server, changes nothing.
+        ["projects" | "groups", _, "updates", "check"] => Role::Deployer,
         ["processes", _, "start" | "stop" | "restart"] => Role::Deployer,
         _ => Role::Admin,
     }
@@ -213,7 +229,7 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
     let mutating = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     match &principal {
         Principal::Token { scope, .. } => {
-            if user_only(&path) {
+            if user_only(&path) || deletes_project(req.method(), &path) {
                 return ApiError::forbidden(
                     "This endpoint requires a signed-in user, not an API token",
                 )
@@ -602,14 +618,14 @@ pub(crate) async fn rotate_webhook_secret(
     }))
 }
 
-fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
+pub(crate) fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
 }
 
-fn webhook_result(
+pub(crate) fn webhook_result(
     status: StatusCode,
     outcome: &str,
     reason: Option<String>,
@@ -656,6 +672,10 @@ pub(crate) async fn github_webhook(
     let event = header_str(&headers, "x-github-event").to_string();
     let delivery = header_str(&headers, "x-github-delivery").to_string();
     let result = github_event(&st, &project, &headers, &body).await;
+    // A push means new commits: refresh the "new commits" badge.
+    if event == "push" {
+        st.control.check_updates_soon(project.id);
+    }
     // Signed deliveries are recorded so the dashboard can show them.
     let (status, reason, deployment_id) = match &result {
         Ok((_, Json(r))) => (r.status.clone(), r.reason.clone(), r.deployment_id.clone()),
@@ -703,6 +723,18 @@ async fn github_event(
         "push" => {
             let push = aegis_webhook::parse_push(body)
                 .map_err(|e| ApiError::bad_request(e.to_string()))?;
+            // A group deploys its apps together, from its own webhook: the
+            // same push must not also deploy this app on its own.
+            if let Some(group) = st.control.group_of(&project.id) {
+                return Ok(webhook_result(
+                    StatusCode::ACCEPTED,
+                    "ignored",
+                    Some(format!(
+                        "'{}' is in group '{}': pushes deploy it through the group's webhook",
+                        project.name, group.name
+                    )),
+                ));
+            }
             if push.deleted || push.branch.as_deref() != Some(project.branch.as_str()) {
                 return Ok(webhook_result(
                     StatusCode::ACCEPTED,
@@ -848,5 +880,58 @@ mod tests {
             assert!(user_only(p), "{p}");
         }
         assert!(user_only("/api/v1/projects/web/deploy-key"));
+        // Deleting an app: admins, signed in. Changing its source: admins.
+        assert_eq!(need(Method::DELETE, "/api/v1/projects/web"), Role::Admin);
+        assert_eq!(
+            need(Method::PUT, "/api/v1/projects/web/source"),
+            Role::Admin
+        );
+        assert!(deletes_project(&Method::DELETE, "/api/v1/projects/web"));
+        assert!(deletes_project(&Method::DELETE, "/api/v1/projects/web/"));
+        assert!(!deletes_project(&Method::GET, "/api/v1/projects/web"));
+        assert!(!deletes_project(
+            &Method::DELETE,
+            "/api/v1/projects/web/domains/a.example"
+        ));
+        assert!(!deletes_project(&Method::DELETE, "/api/v1/projects/"));
+        // Groups: everyone reads, deployers deploy and roll back, admins
+        // change them; the webhook secret is for signed-in admins.
+        assert_eq!(need(Method::GET, "/api/v1/groups"), Role::Viewer);
+        assert_eq!(need(Method::GET, "/api/v1/groups/ty"), Role::Viewer);
+        assert_eq!(need(Method::GET, "/api/v1/groups/ty/webhook"), Role::Admin);
+        assert_eq!(
+            need(Method::POST, "/api/v1/groups/ty/deploy"),
+            Role::Deployer
+        );
+        assert_eq!(
+            need(Method::POST, "/api/v1/groups/ty/rollback"),
+            Role::Deployer
+        );
+        for (m, p) in [
+            (Method::POST, "/api/v1/groups"),
+            (Method::PUT, "/api/v1/groups/ty"),
+            (Method::DELETE, "/api/v1/groups/ty"),
+            (Method::PUT, "/api/v1/groups/ty/members"),
+            (Method::POST, "/api/v1/groups/ty/members"),
+            (Method::DELETE, "/api/v1/groups/ty/members/web"),
+            (Method::POST, "/api/v1/groups/ty/webhook"),
+        ] {
+            assert_eq!(need(m.clone(), p), Role::Admin, "{m} {p}");
+        }
+        assert!(user_only("/api/v1/groups/ty/webhook"));
+        assert!(user_only("/api/v1/groups/ty/webhook/test"));
+        assert!(!user_only("/api/v1/groups/ty/deploy"));
+        assert_eq!(
+            need(Method::GET, "/api/v1/projects/web/updates"),
+            Role::Viewer
+        );
+        assert_eq!(
+            need(Method::POST, "/api/v1/projects/web/updates/check"),
+            Role::Deployer
+        );
+        assert_eq!(
+            need(Method::POST, "/api/v1/groups/ty/updates/check"),
+            Role::Deployer
+        );
     }
 }

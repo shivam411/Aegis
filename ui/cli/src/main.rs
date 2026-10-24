@@ -115,6 +115,41 @@ enum Commands {
         #[arg(short, long)]
         branch: Option<String>,
     },
+    /// Delete an app: stop its processes and remove its domains, secrets,
+    /// deploy key, webhook secret, schedule and releases. Its events stay
+    /// in the history; its name and domains can be used again
+    Delete {
+        /// Project id or name
+        project: String,
+        /// Don't ask; required when not running in a terminal
+        #[arg(short, long)]
+        yes: bool,
+        /// Keep the release directories and logs on disk
+        #[arg(long)]
+        keep_releases: bool,
+    },
+    /// Change where an app's code comes from (takes effect at the next deployment)
+    Source {
+        /// Project id or name
+        project: String,
+        /// Deploy from this git repository...
+        #[arg(long, conflicts_with = "dir")]
+        repo: Option<String>,
+        /// ...at this branch (default: the app's current branch)
+        #[arg(short, long, requires = "repo")]
+        branch: Option<String>,
+        /// ...or from this folder on the server
+        #[arg(long)]
+        dir: Option<String>,
+        /// Build and run only this folder of the source (monorepos)
+        #[arg(long)]
+        subdir: Option<String>,
+    },
+    /// App groups: apps deployed together from one repository and branch
+    Group {
+        #[command(subcommand)]
+        command: GroupSubcommand,
+    },
     /// Restart an app's process
     Restart {
         /// Process id, or project id/name (defaults to ./aegis.toml)
@@ -218,6 +253,36 @@ enum Commands {
         /// release key (only SHA-256 is checked). Not recommended
         #[arg(long)]
         allow_unsigned: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupSubcommand {
+    /// List groups with their apps and latest group deployment
+    List,
+    /// Show one group: its apps in deploy order and the latest group deployment
+    Show {
+        /// Group id or name
+        group: String,
+    },
+    /// Deploy the group's apps at one commit, in order, following progress
+    Deploy {
+        /// Group id or name
+        group: String,
+        /// Commit to deploy (default: the branch's latest)
+        #[arg(long)]
+        commit: Option<String>,
+        /// Deploy every app, not only those whose watch paths changed
+        #[arg(long)]
+        all: bool,
+        /// Start the group deployment and return without waiting
+        #[arg(short, long)]
+        detach: bool,
+    },
+    /// Put every app of the latest group deployment back on its previous release
+    Rollback {
+        /// Group id or name
+        group: String,
     },
 }
 
@@ -413,6 +478,146 @@ fn match_deployments<'a>(
         Some(d) => vec![*d],
         None => by_version.last().map(|d| vec![*d]).unwrap_or_default(),
     }
+}
+
+fn print_group(g: &aegis_api::aegis::GroupInfo) {
+    println!(
+        "{} ({}): {} @ {}",
+        g.name,
+        short(&g.id),
+        g.repository_url,
+        g.branch
+    );
+    for (i, m) in g.members.iter().enumerate() {
+        let release = if m.current_release.is_empty() {
+            "not deployed"
+        } else {
+            m.current_release.as_str()
+        };
+        let watch = if m.watch_paths.is_empty() {
+            "whole repository".to_string()
+        } else {
+            m.watch_paths.join(", ")
+        };
+        println!(
+            "  {}. {:<24} {:<20} watches {}",
+            i + 1,
+            m.name,
+            release,
+            watch
+        );
+    }
+    if !g.last_deployment_id.is_empty() {
+        println!(
+            "  Last group deployment {}: {}{}{}",
+            short(&g.last_deployment_id),
+            g.last_status,
+            if g.last_commit.is_empty() {
+                String::new()
+            } else {
+                format!(" at {}", g.last_commit.get(..12).unwrap_or(&g.last_commit))
+            },
+            if g.last_error.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", g.last_error)
+            }
+        );
+        for m in g.members.iter().filter(|m| !m.last_status.is_empty()) {
+            let detail = match (m.last_version.as_str(), m.last_reason.as_str()) {
+                ("", "") => String::new(),
+                (v, "") => format!(" {}", v),
+                (_, r) => format!(" ({})", r),
+            };
+            println!("    {:<24} {}{}", m.name, m.last_status, detail);
+        }
+    }
+}
+
+async fn find_group(daemon: &mut Daemon, key: &str) -> anyhow::Result<aegis_api::aegis::GroupInfo> {
+    let groups = rpc(daemon
+        .client()
+        .await?
+        .list_groups(aegis_api::aegis::ListGroupsRequest {})
+        .await)?
+    .groups;
+    groups
+        .into_iter()
+        .find(|g| g.id == key || g.name == key)
+        .ok_or_else(|| anyhow::anyhow!("Unknown group '{}'", key))
+}
+
+async fn group_command(daemon: &mut Daemon, command: GroupSubcommand) -> anyhow::Result<()> {
+    match command {
+        GroupSubcommand::List => {
+            let groups = rpc(daemon
+                .client()
+                .await?
+                .list_groups(aegis_api::aegis::ListGroupsRequest {})
+                .await)?
+            .groups;
+            if groups.is_empty() {
+                println!(
+                    "No groups. Create one in the dashboard (Groups) or with POST /api/v1/groups."
+                );
+            }
+            for g in &groups {
+                print_group(g);
+            }
+        }
+        GroupSubcommand::Show { group } => print_group(&find_group(daemon, &group).await?),
+        GroupSubcommand::Deploy {
+            group,
+            commit,
+            all,
+            detach,
+        } => {
+            let started = rpc(daemon
+                .client()
+                .await?
+                .deploy_group(aegis_api::aegis::DeployGroupRequest {
+                    group: group.clone(),
+                    commit: commit.unwrap_or_default(),
+                    all,
+                })
+                .await)?;
+            println!(
+                "Group deployment {} started{}.",
+                short(&started.group_deployment_id),
+                if all { "" } else { " (apps with changes only)" }
+            );
+            if detach {
+                return Ok(());
+            }
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let g = find_group(daemon, &started.group_id).await?;
+                if g.last_deployment_id == started.group_deployment_id && g.last_status != "Running"
+                {
+                    print_group(&g);
+                    if g.last_status != "Success" {
+                        anyhow::bail!("The group deployment ended as {}", g.last_status);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        GroupSubcommand::Rollback { group } => {
+            let result = rpc(daemon
+                .client()
+                .await?
+                .rollback_group(aegis_api::aegis::RollbackGroupRequest { group })
+                .await)?;
+            for m in result.members {
+                match (m.error.is_empty(), m.version.is_empty()) {
+                    (false, _) => println!("  {}: rollback failed: {}", m.name, m.error),
+                    (true, true) => println!("  {}: stopped (it had no earlier release)", m.name),
+                    (true, false) => println!("  {}: release {} is live", m.name, m.version),
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Asks a yes/no question on the terminal; anything but "y"/"yes" is no.
@@ -877,6 +1082,90 @@ async fn run() -> Result<(), anyhow::Error> {
         Commands::Restart { target } => {
             let process = control_process(&mut daemon, target, ProcessAction::Restart).await?;
             println!("Restarted: {}", describe_process(&process));
+        }
+        Commands::Delete {
+            project,
+            yes,
+            keep_releases,
+        } => {
+            if !yes {
+                use std::io::IsTerminal;
+                if !std::io::stdin().is_terminal() {
+                    anyhow::bail!(
+                        "Deleting an app can't be undone; pass --yes to confirm (not running in a terminal)"
+                    );
+                }
+                let what = if keep_releases {
+                    "its processes are stopped and its domains, secrets, deploy key, webhook secret and schedule are removed (releases and logs are kept on disk)"
+                } else {
+                    "its processes are stopped and its domains, secrets, deploy key, webhook secret, schedule, releases and logs are removed"
+                };
+                println!("Deleting '{}': {}. This can't be undone.", project, what);
+                if !confirm("Delete it?") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+            let deleted = rpc(daemon
+                .client()
+                .await?
+                .delete_project(aegis_api::aegis::DeleteProjectRequest {
+                    project,
+                    keep_releases,
+                })
+                .await)?;
+            println!(
+                "Deleted {} ({}): stopped {} process(es), removed {} secret(s){}.",
+                deleted.name,
+                short(&deleted.project_id),
+                deleted.stopped_processes,
+                deleted.secrets_removed,
+                if deleted.domains.is_empty() {
+                    String::new()
+                } else {
+                    format!(", freed {}", deleted.domains.join(", "))
+                }
+            );
+            if deleted.releases_kept {
+                println!("Releases and logs kept in {}.", deleted.kept_dir);
+            }
+        }
+        Commands::Group { command } => group_command(&mut daemon, command).await?,
+        Commands::Source {
+            project,
+            repo,
+            branch,
+            dir,
+            subdir,
+        } => {
+            if repo.is_none() == dir.is_none() {
+                anyhow::bail!("Give --repo URL [--branch B] or --dir PATH");
+            }
+            let dir = match dir {
+                // Relative paths are relative to where the CLI runs.
+                Some(d) => std::path::absolute(&d)?.to_string_lossy().to_string(),
+                None => String::new(),
+            };
+            let updated = rpc(daemon
+                .client()
+                .await?
+                .change_source(aegis_api::aegis::ChangeSourceRequest {
+                    project,
+                    repository_url: repo.unwrap_or_default(),
+                    branch: branch.unwrap_or_default(),
+                    source_dir: dir,
+                    source_subdir: subdir.unwrap_or_default(),
+                })
+                .await)?;
+            let source = if updated.repository_url.is_empty() {
+                updated.source_dir.clone()
+            } else {
+                format!("{} @ {}", updated.repository_url, updated.branch)
+            };
+            println!(
+                "{} now deploys from {}; it takes effect at the next deployment.",
+                updated.name, source
+            );
         }
         Commands::Schedule {
             project_id,

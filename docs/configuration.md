@@ -55,8 +55,8 @@ NODE_ENV = "production"
 | `run.instances` | `1` | Copies of the app to run, 1-16, each with its own `PORT`, log file, restart policy and resource limits. More than 1 needs a domain on the built-in proxy, which spreads requests over them. |
 | `deploy.port` | Detected | Exported as `PORT` unless `[env]` sets `PORT`. Behind the built-in proxy each release gets its own `PORT` instead. |
 | `deploy.health_check_url` | `http://127.0.0.1:<port>/health` | Any HTTP response below 500 counts as healthy. Use `tcp://host:port` for a TCP-only check. With an empty string, the release counts as healthy if its process stays up for 3 seconds. |
-| `deploy.health_check_timeout_secs` | `30` | How long a new release may take to become healthy before it is rolled back. |
-| `deploy.drain_timeout_secs` | `10` | Grace period between SIGTERM and SIGKILL when stopping the app. |
+| `deploy.health_check_timeout_secs` | `30` | How long a new release may take to become healthy before it is rolled back. Also settable in the dashboard (Settings → Build & run, 1-3600), which overrides this file. |
+| `deploy.drain_timeout_secs` | `10` | Grace period between SIGTERM and SIGKILL when stopping the app (and, behind the proxy, for in-flight requests to finish). Also settable in the dashboard (0-3600), which overrides this file. |
 | `deploy.max_retained_versions` | `2` | Release directories kept on disk for rollback, including the live one. |
 | `deploy.restart_policy` | `always` | What the supervisor does when the app exits. A crash loop (more than 5 restarts within 2 minutes) stops restarting and marks the process `Failed`. |
 | `[env]` | none | Environment variables for build commands and the app. |
@@ -128,6 +128,14 @@ An app can read a `.env` file that already exists on the server, for example the
 
 Builds also get `AEGIS_RELEASE_VERSION`. A name that is both a Secret and in the env file has the env file's value during the build and the secret's value when the app runs: anything the build needs must come from 1-3. Secrets are never given to builds, because build output (`<data_dir>/projects/<id>/logs/deploy-<id>.log`) is shown in the dashboard and a build command can print its environment; that applies to env file values too, so don't put values in an env file that a build script echoes and that deployers shouldn't read.
 
+### Dashboard settings and aegis.toml
+
+Build & run settings saved in the dashboard (or `PUT /api/v1/projects/{p}/settings`) override the matching `aegis.toml` keys from the next deployment: commands, `deploy.port`, `deploy.health_check_url`, `deploy.health_check_timeout_secs`, `deploy.drain_timeout_secs`, `deploy.strategy`, `run.instances` and `[env]`. They are written into each new release's `aegis.toml`, so releases stay self-contained and a rollback uses the values it was built with. This is how an app deployed from a server folder or a repository you don't control gets, say, a 90-second health check timeout. A settings request replaces all overrides: a field it leaves out falls back to `aegis.toml`.
+
+### Changing an app's source
+
+An app's source can be switched between a repository (URL, branch, optional app folder) and a folder on the server (Settings → Repository → *Change source*, `PUT /api/v1/projects/{p}/source`, or `aegis source <app> --repo URL [--branch B] | --dir PATH [--subdir S]`). It is checked like a new app's source (the folder must exist on the server; the URL, branch and app folder must be safe), takes effect at the next deployment (the running release keeps serving), and is recorded as `ProjectSourceChanged`. The deploy key is kept (and unused for a folder).
+
 ### What a deployment copies
 
 - With `aegis deploy` in a project directory, Aegis copies that directory. In a git work tree it copies tracked files plus untracked files that aren't ignored, and always includes `aegis.toml`. Outside git, it skips `.git`, `node_modules`, `target`, virtualenvs, `__pycache__` and `*.db` files.
@@ -140,7 +148,7 @@ Builds also get `AEGIS_RELEASE_VERSION`. A name that is both a Secret and in the
 
 ## 2. Daemon configuration
 
-The daemon reads `aegis.toml` from its working directory, or the file named by the `AEGIS_CONFIG` environment variable. `install.sh --server` puts it in `/etc/aegis/aegis.toml`. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
+The daemon (and every `aegis-daemon` command, such as `self-update` and `admin backup`) reads its configuration from, in this order: the file named by the `AEGIS_CONFIG` environment variable; else `/etc/aegis/aegis.toml`, if it exists (where `install.sh --server` puts it, so a command run from any directory, e.g. `sudo aegis-daemon self-update` from `/root`, uses the server's configuration and database); else `./aegis.toml` in its working directory (built-in defaults when it is missing), which is what development setups without `/etc/aegis` use. When `/etc/aegis/aegis.toml` wins over a `./aegis.toml` that has a `[daemon]` section (e.g. one left over from an old install), a warning naming both files says which one is used; set `AEGIS_CONFIG` to use the other. The CLI reads `./aegis.toml`, or the file given with `aegis -c <file>`, to find the daemon.
 
 ```toml
 [daemon]
@@ -378,7 +386,10 @@ The result is shown to every signed-in user (`GET /api/v1/system/update`, the da
 [apps]
 env_file_dirs = ["/opt/apps", "/etc/aegis/env"]   # where apps' env files may be; default [] = env files off
 import_dirs = ["/opt/github"]                     # where "Scan a folder on the server" may look; default []
+update_check_minutes = 5                          # how often apps are checked for new commits; 0 = only on demand
 ```
+
+`update_check_minutes` sets how often every app is checked for **new changes**: for an app deployed from a repository, its branch is fetched (with the app's deploy key, or anonymously) into a blob-less cache under `<data_dir>/cache/repos/` and compared with the live release's commit; for an app deployed from a folder, the folder's git HEAD is read from `.git` and uncommitted files are counted. The dashboard shows the result as *N new commits* badges and on each app's Deploy tab ([New changes](dashboard/deploy.md#new-changes)); `GET /api/v1/projects/{p}/updates` and `GET /api/v1/groups/{g}/updates` return it. Checks also run after each webhook delivery and on **Check now**. A repository is fetched at most every 3 seconds (apps and groups of one repository share it); every git command has a timeout, and a failure is shown, never blocking anything. `0` turns the periodic check off.
 
 `import_dirs` lists the folders the new app wizard's **Scan a folder on the server** (`POST /api/v1/apps/scan`) may look in for apps to import. The folders in `env_file_dirs` may be scanned too, so a server that already lists `/opt/github` there needs nothing more. With both empty (the default) scanning is off. The same rules apply as for `env_file_dirs`: absolute paths without `..`, `/` refused, symbolic links resolved before the check (a link inside an allowed folder that leads outside it is not followed), and only what the daemon's user can read is seen. A scan goes at most two levels below the folder it is given and looks at no more than 5000 directory entries; it skips `node_modules`, `.git`, `target`, `dist`, `build`, `.next`, `.nuxt`, virtualenvs and hidden folders, and doesn't search inside an app it found (except `apps/*`, `packages/*` and `services/*` of a monorepo). What it reads is listed in [`security.md`](security.md#scanning-folders-on-the-server). Scanning and importing are for signed-in admins only.
 
@@ -420,6 +431,8 @@ Deploy keys are used over SSH with `StrictHostKeyChecking=yes`: a server whose h
 │       ├── <process-id>.log     # app stdout/stderr, rotated at 10 MiB
 │       └── deploy-<id>.log      # output of each deployment's build commands
 ├── artifacts/releases/<release-id>/metadata.json   # content checksums
+├── cache/repos/<hash>.git/      # blob-less bare clones for "new commits" checks (safe to delete)
+├── tmp/group-<id>/              # a group deployment's single clone, while it runs
 └── certs/                       # [proxy] ACME account(s) and certificates (0700)
     └── <domain>/cert.pem, key.pem   # key.pem is 0600
 ```

@@ -11,6 +11,9 @@ mod deploy;
 mod docker;
 mod domains;
 mod env;
+mod git;
+mod groups;
+mod lifecycle;
 pub mod ports;
 mod process;
 mod resources;
@@ -18,6 +21,7 @@ mod rollout;
 pub mod scan;
 mod secrets;
 mod sources;
+mod updates;
 
 use aegis_artifact_store::ArtifactStore;
 use aegis_event_store::EventStore;
@@ -40,11 +44,15 @@ pub use config_file::ConfigPreview;
 pub use deploy::DeployRequest;
 pub use domains::DomainView;
 pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, ImportResult};
+pub use git::{path_matches, touches};
+pub use groups::{GroupSpec, MemberRollback, MemberSpec};
+pub use lifecycle::{DeletedApp, SourceChange};
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 pub use rollout::{InstanceView, StandbyView};
 pub use scan::{ImportApp, ImportedApp, ScanCandidate, ScanResult};
 pub use sources::{AccessCheck, DeployKeyInfo};
+pub use updates::{read_folder_head, CommitSummary, GroupUpdates, UpdateStatus};
 
 tokio::task_local! {
     static ACTOR: String;
@@ -126,6 +134,9 @@ pub struct ControlSettings {
     pub import_dirs: Vec<PathBuf>,
     /// Host keys for git servers other than GitHub (`[git] known_hosts_file`).
     pub known_hosts_file: Option<PathBuf>,
+    /// How often apps are checked for new commits (`[apps]
+    /// update_check_minutes`); zero turns the periodic check off.
+    pub update_check_interval: Duration,
 }
 
 impl ControlSettings {
@@ -142,6 +153,7 @@ impl ControlSettings {
             env_file_dirs: Vec::new(),
             import_dirs: Vec::new(),
             known_hosts_file: None,
+            update_check_interval: Duration::from_secs(300),
         }
     }
 }
@@ -172,6 +184,12 @@ pub struct ProjectView {
     /// The previous release's instances, kept running after a BlueGreen
     /// switch as an instant rollback target.
     pub standby: Option<StandbyView>,
+    /// The group the app belongs to: (id, name).
+    pub group: Option<(String, String)>,
+    /// The commit the live release was built from, when known.
+    pub commit: Option<String>,
+    /// The latest "new commits" check, if one has run.
+    pub updates: Option<UpdateStatus>,
 }
 
 struct Inner {
@@ -209,6 +227,12 @@ struct Inner {
     backup_lock: tokio::sync::Mutex<()>,
     /// Container apps (`[run] runtime = "docker"`).
     docker: Arc<aegis_docker::Docker>,
+    /// One deployment or rollback per group at a time.
+    group_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The latest "new commits" check of each app.
+    updates: Mutex<HashMap<ProjectId, updates::UpdateStatus>>,
+    /// Fetch state of each cached repository.
+    repo_caches: Mutex<HashMap<PathBuf, updates::RepoCache>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +314,9 @@ impl ControlPlane {
                 secrets,
                 backup_lock: tokio::sync::Mutex::new(()),
                 docker,
+                group_locks: Mutex::new(HashMap::new()),
+                updates: Mutex::new(HashMap::new()),
+                repo_caches: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -329,6 +356,7 @@ impl ControlPlane {
         self.spawn_process_event_recorder();
         self.spawn_sampler();
         self.spawn_docker_janitor();
+        self.spawn_update_checker();
     }
 
     pub fn store(&self) -> &EventStore {
@@ -400,37 +428,13 @@ impl ControlPlane {
             ));
         }
         let id = req.project_id.unwrap_or_default();
-        let source_dir = match req.source_dir {
-            Some(dir) => Some(
-                dir.canonicalize()
-                    .map_err(|e| {
-                        ControlError::InvalidArgument(format!(
-                            "Source directory {}: {}",
-                            dir.display(),
-                            e
-                        ))
-                    })?
-                    .to_string_lossy()
-                    .to_string(),
-            ),
-            None => None,
-        };
-        if !req.repository_url.is_empty() {
-            aegis_builder::validate_repository_url(&req.repository_url)
-                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-        }
-        if !req.branch.is_empty() {
-            aegis_builder::validate_git_ref(&req.branch)
-                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-        }
-        let source_subdir = match req.source_subdir.as_deref().map(str::trim) {
-            Some(sub) if !sub.is_empty() => {
-                aegis_builder::validate_subdir(sub)
-                    .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-                Some(sub.trim_matches('/').to_string())
-            }
-            _ => None,
-        };
+        let source = validate_source(
+            req.source_dir,
+            &req.repository_url,
+            &req.branch,
+            req.source_subdir.as_deref(),
+        )?;
+        let (source_dir, source_subdir) = (source.source_dir, source.source_subdir);
         let branch = if req.branch.is_empty() {
             "main".to_string()
         } else {
@@ -716,6 +720,17 @@ impl ControlPlane {
                     usage,
                     instances: self.instance_views(&project),
                     standby: self.standby_view(&project.id),
+                    group: self
+                        .inner
+                        .projection
+                        .group_of(&project.id)
+                        .map(|g| (g.id, g.name)),
+                    commit: project
+                        .current_release
+                        .as_ref()
+                        .and_then(|v| self.inner.projection.find_release(&project.id, v))
+                        .map(|r| r.commit_sha),
+                    updates: self.cached_updates(&project.id),
                     project,
                 }
             })
@@ -792,6 +807,60 @@ impl ControlPlane {
     }
 }
 
+/// A project source checked the way registration checks it.
+pub(crate) struct ValidSource {
+    /// Canonical path of the server folder, if the source is one.
+    pub source_dir: Option<String>,
+    /// Trimmed subdirectory without leading/trailing slashes.
+    pub source_subdir: Option<String>,
+}
+
+/// Validates a project's source as registration does: the folder must
+/// exist (symbolic links are resolved), the repository URL, branch and
+/// subdirectory must be well-formed.
+pub(crate) fn validate_source(
+    source_dir: Option<PathBuf>,
+    repository_url: &str,
+    branch: &str,
+    source_subdir: Option<&str>,
+) -> ControlResult<ValidSource> {
+    let source_dir = match source_dir {
+        Some(dir) => {
+            let canonical = dir.canonicalize().map_err(|e| {
+                ControlError::InvalidArgument(format!("Source directory {}: {}", dir.display(), e))
+            })?;
+            if !canonical.is_dir() {
+                return Err(ControlError::InvalidArgument(format!(
+                    "Source directory {} is not a directory",
+                    dir.display()
+                )));
+            }
+            Some(canonical.to_string_lossy().to_string())
+        }
+        None => None,
+    };
+    if !repository_url.is_empty() {
+        aegis_builder::validate_repository_url(repository_url)
+            .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+    }
+    if !branch.is_empty() {
+        aegis_builder::validate_git_ref(branch)
+            .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+    }
+    let source_subdir = match source_subdir.map(str::trim) {
+        Some(sub) if !sub.is_empty() => {
+            aegis_builder::validate_subdir(sub)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+            Some(sub.trim_matches('/').to_string())
+        }
+        _ => None,
+    };
+    Ok(ValidSource {
+        source_dir,
+        source_subdir,
+    })
+}
+
 /// Trims and validates dashboard settings.
 pub(crate) fn validate_settings(
     settings: aegis_config::ProjectOverrides,
@@ -806,6 +875,8 @@ pub(crate) fn validate_settings(
         health_check_url: clean(settings.health_check_url),
         strategy: clean(settings.strategy).filter(|s| !s.is_empty()),
         instances: settings.instances,
+        health_check_timeout_secs: settings.health_check_timeout_secs,
+        drain_timeout_secs: settings.drain_timeout_secs,
         env: settings
             .env
             .into_iter()
@@ -826,6 +897,12 @@ pub(crate) fn validate_settings(
     }
     if let Some(instances) = settings.instances {
         aegis_config::validate_instances(instances).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(secs) = settings.health_check_timeout_secs {
+        aegis_config::validate_health_check_timeout(secs).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(secs) = settings.drain_timeout_secs {
+        aegis_config::validate_drain_timeout(secs).map_err(ControlError::InvalidArgument)?;
     }
     if let Some(url) = settings
         .health_check_url

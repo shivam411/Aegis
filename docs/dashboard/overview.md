@@ -32,6 +32,9 @@ Each card shows:
 - **Version.** The live release.
 - **Uptime** and **Restarts** of the current process.
 - **CPU** and **Memory.** Current use, shown against the app's [limits](resources.md#limits) when it has any (for example `0.02 / 0.5 cores`).
+- **New changes.** A **3 new commits** badge when the app's branch (or its server folder) has commits the live release doesn't, and **Uncommitted changes** for a folder with edited files; see [New changes](deploy.md#new-changes).
+
+Apps in a [group](groups.md) are shown inside their group's card instead, with **Deploy group**, **Deploy changed only** and **Roll back group**, and a **Changed since live** mark on each app with changes it watches. **+ New group** (admins) creates one.
 
 The buttons at the bottom of the card:
 

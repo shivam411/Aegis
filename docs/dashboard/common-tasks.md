@@ -57,6 +57,24 @@ Details: [Resources](resources.md#limits).
 3. Check the `aegis.toml` diff and confirm with **Save settings**.
 4. Deploy, because settings apply to the next deployment.
 
+## Give a slow app more time to start (admin)
+
+1. Open the app, **Settings** tab, **Build & run** card.
+2. Set **Health check timeout (seconds)**, e.g. `90` for an app that needs 75 s to answer (default 30). **Drain timeout** is how long a stopping release gets to finish requests.
+3. **Save settings**, confirm the `aegis.toml` diff, and deploy. The dashboard value wins over `aegis.toml`, so this works for apps deployed from a server folder or a repository you can't change.
+
+## Change where an app's code comes from (admin)
+
+1. Open the app, **Settings** tab, **Repository** card, **Change source**.
+2. Pick **Git repository** (URL and branch) or **Folder on this server** (its path), and optionally an **App folder**.
+3. **Save source** and confirm. The next deployment uses it. Details: [Settings](settings.md#change-source).
+
+## Delete an app (admin)
+
+1. Open the app, **Settings** tab, **Danger zone** card at the bottom.
+2. Click **Delete app**, type the app's name, and click **Delete this app**. Tick **Keep the release directories and logs** to leave them on the server.
+3. Its processes stop, its domains are freed and it disappears; its history stays in Events. Details: [Settings](settings.md#delete-the-app).
+
 ## Add a secret (admin)
 
 1. **Settings → Secrets**: enter the **Name** (for example `DATABASE_URL`) and **Value**, click **Save secret**.

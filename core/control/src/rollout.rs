@@ -360,7 +360,12 @@ impl ControlPlane {
     }
 
     /// Stops processes (in parallel), giving each `timeout` to exit.
-    async fn stop_processes(&self, ids: &[ProcessId], timeout: Duration, reason: StopReason) {
+    pub(crate) async fn stop_processes(
+        &self,
+        ids: &[ProcessId],
+        timeout: Duration,
+        reason: StopReason,
+    ) {
         let mut set = tokio::task::JoinSet::new();
         for id in ids {
             if self.inner.supervisor.get(id).is_none() {

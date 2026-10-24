@@ -13,7 +13,7 @@ use axum::Json;
 use serde_json::Value;
 
 /// Delivery events listed in the webhook status.
-const RECENT_DELIVERIES: usize = 10;
+pub(crate) const RECENT_DELIVERIES: usize = 10;
 
 fn is_running(st: &AppState, id: &ProjectId) -> bool {
     st.control

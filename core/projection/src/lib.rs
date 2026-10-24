@@ -95,6 +95,10 @@ pub struct ReleaseState {
     /// by "most recently live", which differs from build order after a rollback.
     #[serde(default)]
     pub promoted_seq: Option<u64>,
+    /// Built from a server folder with uncommitted changes (`None`:
+    /// unknown, or cloned).
+    #[serde(default)]
+    pub source_dirty: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -163,6 +167,76 @@ pub trait Projection: Send + Sync {
     fn apply_event(&mut self, event: &Event);
 }
 
+/// An app's place in a group.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupMember {
+    pub project_id: ProjectId,
+    /// Globs of repository paths that concern this app (e.g.
+    /// `frontend_v2/**`); empty means the whole repository.
+    #[serde(default)]
+    pub watch_paths: Vec<String>,
+}
+
+/// Apps deployed from the same repository and branch, in deploy order.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupState {
+    pub id: String,
+    pub name: String,
+    pub repository_url: String,
+    pub branch: String,
+    /// When a member fails, roll back the members already switched in that
+    /// group deployment.
+    pub rollback_on_failure: bool,
+    pub members: Vec<GroupMember>,
+    pub created_at: String,
+    /// The latest group deployment.
+    pub last_deployment: Option<String>,
+}
+
+/// One member's part in a group deployment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupMemberRun {
+    pub project_id: ProjectId,
+    /// pending, deploying, deployed, skipped, failed or rolled_back.
+    pub status: String,
+    pub deployment_id: Option<DeploymentId>,
+    /// The release that was live before this run.
+    pub previous_version: Option<String>,
+    pub version: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// A deployment of a whole group at one commit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupDeploymentState {
+    pub id: String,
+    pub group_id: String,
+    /// The commit every member is built from (known once resolved).
+    pub commit: Option<String>,
+    pub only_changed: bool,
+    pub trigger: Option<String>,
+    /// Running, Success, Failed or RolledBack.
+    pub status: String,
+    pub error: Option<String>,
+    pub members: Vec<GroupMemberRun>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+    pub seq: u64,
+}
+
+/// A project removed with `ProjectDeleted`, remembered so files left on
+/// disk by an interrupted deletion can be cleaned up on the next boot, and
+/// so late events about it don't bring parts of it back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletedProject {
+    pub id: ProjectId,
+    pub name: String,
+    /// The operator asked to keep its release directories on disk.
+    pub keep_releases: bool,
+    /// Its releases at the time, for removing their artifact metadata.
+    pub release_ids: Vec<ReleaseId>,
+}
+
 #[derive(Default)]
 struct State {
     projects: HashMap<ProjectId, ProjectState>,
@@ -170,7 +244,21 @@ struct State {
     deployments: HashMap<DeploymentId, DeploymentState>,
     processes: HashMap<ProcessId, ProcessState>,
     servers: HashMap<ServerId, ServerState>,
+    /// Deleted projects (until a project with the same id is created again).
+    deleted: HashMap<ProjectId, DeletedProject>,
+    groups: HashMap<String, GroupState>,
+    group_deployments: HashMap<String, GroupDeploymentState>,
     seq: u64,
+}
+
+fn member_run<'a>(st: &'a mut State, payload: &Value) -> Option<&'a mut GroupMemberRun> {
+    let run = str_field(payload, "group_deployment_id")?;
+    let project = id_field::<ProjectId>(payload, "project_id")?;
+    st.group_deployments
+        .get_mut(run)?
+        .members
+        .iter_mut()
+        .find(|m| m.project_id == project)
 }
 
 #[derive(Clone, Default)]
@@ -240,7 +328,231 @@ impl ProjectionEngine {
         let seq = st.seq;
         let at = event.created_at.clone();
 
+        // Events about a deleted project (e.g. its processes reported
+        // stopping after the deletion was recorded) change nothing; only
+        // registering the id again brings it back, empty.
+        if event.event_type != "ProjectCreated" {
+            if let Some(id) = id_field::<ProjectId>(&payload, "project_id") {
+                if st.deleted.contains_key(&id) {
+                    return;
+                }
+            }
+        }
+
         match event.event_type.as_str() {
+            "GroupCreated" | "GroupUpdated" => {
+                let Some(id) = string_field(&payload, "group_id") else {
+                    return;
+                };
+                let previous = st.groups.get(&id).cloned();
+                if event.event_type == "GroupUpdated" && previous.is_none() {
+                    return;
+                }
+                st.groups.insert(
+                    id.clone(),
+                    GroupState {
+                        id,
+                        name: string_field(&payload, "name")
+                            .or_else(|| previous.as_ref().map(|g| g.name.clone()))
+                            .unwrap_or_default(),
+                        repository_url: string_field(&payload, "repository_url")
+                            .or_else(|| previous.as_ref().map(|g| g.repository_url.clone()))
+                            .unwrap_or_default(),
+                        branch: string_field(&payload, "branch")
+                            .or_else(|| previous.as_ref().map(|g| g.branch.clone()))
+                            .unwrap_or_else(|| "main".into()),
+                        rollback_on_failure: payload
+                            .get("rollback_on_failure")
+                            .and_then(|v| v.as_bool())
+                            .or(previous.as_ref().map(|g| g.rollback_on_failure))
+                            .unwrap_or(true),
+                        members: previous
+                            .as_ref()
+                            .map(|g| g.members.clone())
+                            .unwrap_or_default(),
+                        created_at: previous
+                            .as_ref()
+                            .map(|g| g.created_at.clone())
+                            .unwrap_or(at),
+                        last_deployment: previous.and_then(|g| g.last_deployment),
+                    },
+                );
+            }
+            "GroupMembersChanged" => {
+                let Some(id) = str_field(&payload, "group_id") else {
+                    return;
+                };
+                let members: Vec<GroupMember> = payload
+                    .get("members")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                // An app is in one group at most.
+                let ids: Vec<ProjectId> = members.iter().map(|m| m.project_id).collect();
+                for group in st.groups.values_mut() {
+                    if group.id != id {
+                        group.members.retain(|m| !ids.contains(&m.project_id));
+                    }
+                }
+                if let Some(group) = st.groups.get_mut(id) {
+                    group.members = members;
+                }
+            }
+            "GroupDeleted" => {
+                if let Some(id) = str_field(&payload, "group_id") {
+                    st.groups.remove(id);
+                    st.group_deployments.retain(|_, d| d.group_id != id);
+                }
+            }
+            "GroupDeploymentStarted" => {
+                let (Some(id), Some(group_id)) = (
+                    string_field(&payload, "group_deployment_id"),
+                    string_field(&payload, "group_id"),
+                ) else {
+                    return;
+                };
+                let members = id_list::<ProjectId>(&payload, "members")
+                    .into_iter()
+                    .map(|project_id| GroupMemberRun {
+                        project_id,
+                        status: "pending".into(),
+                        deployment_id: None,
+                        previous_version: None,
+                        version: None,
+                        reason: None,
+                    })
+                    .collect();
+                let Some(group) = st.groups.get_mut(&group_id) else {
+                    return;
+                };
+                group.last_deployment = Some(id.clone());
+                st.group_deployments.insert(
+                    id.clone(),
+                    GroupDeploymentState {
+                        id,
+                        group_id,
+                        commit: string_field(&payload, "commit"),
+                        only_changed: payload
+                            .get("only_changed")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true),
+                        trigger: string_field(&payload, "trigger"),
+                        status: "Running".into(),
+                        error: None,
+                        members,
+                        created_at: at,
+                        completed_at: None,
+                        seq,
+                    },
+                );
+            }
+            "GroupCheckoutReady" => {
+                if let Some(run) = str_field(&payload, "group_deployment_id")
+                    .and_then(|id| st.group_deployments.get_mut(id))
+                {
+                    run.commit = string_field(&payload, "commit").or(run.commit.take());
+                }
+            }
+            "GroupMemberSkipped"
+            | "GroupMemberDeploying"
+            | "GroupMemberDeployed"
+            | "GroupMemberFailed" => {
+                let status = match event.event_type.as_str() {
+                    "GroupMemberSkipped" => "skipped",
+                    "GroupMemberDeploying" => "deploying",
+                    "GroupMemberDeployed" => "deployed",
+                    _ => "failed",
+                };
+                if let Some(member) = member_run(&mut st, &payload) {
+                    member.status = status.into();
+                    if let Some(d) = id_field(&payload, "deployment_id") {
+                        member.deployment_id = Some(d);
+                    }
+                    if let Some(v) = string_field(&payload, "previous_version") {
+                        member.previous_version = Some(v);
+                    }
+                    if let Some(v) = string_field(&payload, "version") {
+                        member.version = Some(v);
+                    }
+                    member.reason = string_field(&payload, "reason");
+                }
+            }
+            "GroupMembersRolledBack" => {
+                let ids = id_list::<ProjectId>(&payload, "project_ids");
+                let requested = str_field(&payload, "reason") == Some("requested");
+                if let Some(run) = str_field(&payload, "group_deployment_id")
+                    .and_then(|id| st.group_deployments.get_mut(id))
+                {
+                    for member in run.members.iter_mut() {
+                        if ids.contains(&member.project_id) {
+                            member.status = "rolled_back".into();
+                        }
+                    }
+                    if requested {
+                        run.status = "RolledBack".into();
+                    }
+                }
+            }
+            "GroupDeploymentFinished" | "GroupDeploymentFailed" => {
+                if let Some(run) = str_field(&payload, "group_deployment_id")
+                    .and_then(|id| st.group_deployments.get_mut(id))
+                {
+                    run.status = if event.event_type == "GroupDeploymentFinished" {
+                        "Success"
+                    } else {
+                        "Failed"
+                    }
+                    .into();
+                    run.error = string_field(&payload, "reason");
+                    run.completed_at = Some(at);
+                }
+            }
+            "ProjectDeleted" => {
+                let Some(id) = id_field::<ProjectId>(&payload, "project_id") else {
+                    return;
+                };
+                let Some(project) = st.projects.remove(&id) else {
+                    return;
+                };
+                for group in st.groups.values_mut() {
+                    group.members.retain(|m| m.project_id != id);
+                }
+                let release_ids: Vec<ReleaseId> = st
+                    .releases
+                    .values()
+                    .filter(|r| r.project_id == id)
+                    .map(|r| r.id)
+                    .collect();
+                st.releases.retain(|_, r| r.project_id != id);
+                st.deployments.retain(|_, d| d.project_id != id);
+                st.processes.retain(|_, p| p.project_id != id);
+                let keep_releases = payload
+                    .get("keep_releases")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                st.deleted.insert(
+                    id,
+                    DeletedProject {
+                        id,
+                        name: project.name,
+                        keep_releases,
+                        release_ids,
+                    },
+                );
+            }
+            "ProjectSourceChanged" => {
+                if let Some(project) = id_field::<ProjectId>(&payload, "project_id")
+                    .and_then(|id| st.projects.get_mut(&id))
+                {
+                    project.repository_url =
+                        string_field(&payload, "repository_url").unwrap_or_default();
+                    if let Some(branch) = string_field(&payload, "branch").filter(|b| !b.is_empty())
+                    {
+                        project.branch = branch;
+                    }
+                    project.source_dir = string_field(&payload, "source_dir");
+                    project.source_subdir = string_field(&payload, "source_subdir");
+                }
+            }
             "ProjectCreated" => {
                 let (Some(id), Some(name)) = (
                     id_field::<ProjectId>(&payload, "project_id"),
@@ -248,6 +560,8 @@ impl ProjectionEngine {
                 ) else {
                     return;
                 };
+                // A deleted project's id registered again starts afresh.
+                st.deleted.remove(&id);
                 let previous = st.projects.get(&id).cloned();
                 st.projects.insert(
                     id,
@@ -462,6 +776,7 @@ impl ProjectionEngine {
                         created_at: at,
                         seq,
                         promoted_seq: None,
+                        source_dirty: payload.get("source_dirty").and_then(|v| v.as_bool()),
                     },
                 );
             }
@@ -660,6 +975,82 @@ impl ProjectionEngine {
 
     pub fn get_project(&self, id: &ProjectId) -> Option<ProjectState> {
         self.state.read().unwrap().projects.get(id).cloned()
+    }
+
+    /// Groups, by name.
+    pub fn get_groups(&self) -> Vec<GroupState> {
+        let mut groups: Vec<_> = self
+            .state
+            .read()
+            .unwrap()
+            .groups
+            .values()
+            .cloned()
+            .collect();
+        groups.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        groups
+    }
+
+    pub fn get_group(&self, id: &str) -> Option<GroupState> {
+        self.state.read().unwrap().groups.get(id).cloned()
+    }
+
+    /// The group an app belongs to.
+    pub fn group_of(&self, project_id: &ProjectId) -> Option<GroupState> {
+        self.state
+            .read()
+            .unwrap()
+            .groups
+            .values()
+            .find(|g| g.members.iter().any(|m| &m.project_id == project_id))
+            .cloned()
+    }
+
+    pub fn get_group_deployment(&self, id: &str) -> Option<GroupDeploymentState> {
+        self.state
+            .read()
+            .unwrap()
+            .group_deployments
+            .get(id)
+            .cloned()
+    }
+
+    /// A group's deployments, oldest first.
+    pub fn get_group_deployments(&self, group_id: &str) -> Vec<GroupDeploymentState> {
+        let mut runs: Vec<_> = self
+            .state
+            .read()
+            .unwrap()
+            .group_deployments
+            .values()
+            .filter(|d| d.group_id == group_id)
+            .cloned()
+            .collect();
+        runs.sort_by_key(|d| d.seq);
+        runs
+    }
+
+    /// Group deployments still marked as running (e.g. after a crash).
+    pub fn running_group_deployments(&self) -> Vec<GroupDeploymentState> {
+        self.state
+            .read()
+            .unwrap()
+            .group_deployments
+            .values()
+            .filter(|d| d.status == "Running")
+            .cloned()
+            .collect()
+    }
+
+    /// Projects deleted with `ProjectDeleted` (and not registered again).
+    pub fn deleted_projects(&self) -> Vec<DeletedProject> {
+        self.state
+            .read()
+            .unwrap()
+            .deleted
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Deployments, oldest first.
@@ -1191,5 +1582,110 @@ mod tests {
         assert_eq!(engine.get_projects()[0].name, "replayed-app");
         assert!(engine.get_releases().is_empty());
         assert!(engine.get_servers().is_empty());
+    }
+
+    #[test]
+    fn test_project_deleted_drops_everything_and_ignores_late_events() {
+        let engine = ProjectionEngine::new();
+        let (keep, gone) = (ProjectId::new(), ProjectId::new());
+        let (k, g) = (keep.to_string(), gone.to_string());
+        let release = ReleaseId::new();
+        let process = ProcessId::new();
+        let dep = DeploymentId::new();
+        let events = vec![
+            ev(
+                "ProjectCreated",
+                serde_json::json!({"project_id": k, "name": "keep"}),
+            ),
+            ev(
+                "ProjectCreated",
+                serde_json::json!({"project_id": g, "name": "web",
+                "repository_url": "https://github.com/acme/web.git"}),
+            ),
+            ev(
+                "DomainMapped",
+                serde_json::json!({"project_id": g, "domain": "web.example.com", "tls": "acme"}),
+            ),
+            ev(
+                "DeploymentQueued",
+                serde_json::json!({"deployment_id": dep.to_string(), "project_id": g}),
+            ),
+            ev(
+                "ReleaseCreated",
+                serde_json::json!({"release_id": release.to_string(), "project_id": g,
+                "deployment_id": dep.to_string(), "version": "r1"}),
+            ),
+            ev(
+                "ProcessStarted",
+                serde_json::json!({"process_id": process.to_string(), "project_id": g,
+                "release_version": "r1", "port": 4100}),
+            ),
+            ev(
+                "ReleasePromoted",
+                serde_json::json!({"release_id": release.to_string(), "project_id": g,
+                "version": "r1", "process_id": process.to_string()}),
+            ),
+            ev(
+                "ProjectDeleted",
+                serde_json::json!({"project_id": g, "name": "web", "keep_releases": false}),
+            ),
+            // Reported after the deletion was recorded.
+            ev(
+                "ProcessStopped",
+                serde_json::json!({"process_id": process.to_string(), "project_id": g, "reason": "requested"}),
+            ),
+            ev(
+                "ProcessStarted",
+                serde_json::json!({"process_id": ProcessId::new().to_string(), "project_id": g}),
+            ),
+            ev(
+                "DeploymentQueued",
+                serde_json::json!({"deployment_id": DeploymentId::new().to_string(), "project_id": g}),
+            ),
+        ];
+        engine.replay_from_store(&events);
+        assert!(engine.get_project(&gone).is_none());
+        assert!(engine.get_project(&keep).is_some());
+        assert!(engine.get_project_releases(&gone).is_empty());
+        assert!(engine.get_processes().is_empty());
+        assert!(engine.get_deployments().is_empty());
+        let deleted = engine.deleted_projects();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].name, "web");
+        assert_eq!(deleted[0].release_ids, vec![release]);
+        assert!(!deleted[0].keep_releases);
+
+        // The same id registered again starts empty.
+        engine.apply_event(&ev(
+            "ProjectCreated",
+            serde_json::json!({"project_id": g, "name": "web"}),
+        ));
+        let again = engine.get_project(&gone).unwrap();
+        assert!(again.domains.is_empty());
+        assert_eq!(again.current_release, None);
+        assert!(engine.deleted_projects().is_empty());
+    }
+
+    #[test]
+    fn test_project_source_changed() {
+        let engine = ProjectionEngine::new();
+        let id = ProjectId::new();
+        let p = id.to_string();
+        engine.apply_event(&ev("ProjectCreated", serde_json::json!({"project_id": p, "name": "app",
+            "repository_url": "https://github.com/acme/app.git", "branch": "main", "source_subdir": "web"})));
+        engine.apply_event(&ev("ProjectSourceChanged", serde_json::json!({"project_id": p,
+            "repository_url": "", "branch": null, "source_dir": "/opt/apps/app", "source_subdir": null})));
+        let project = engine.get_project(&id).unwrap();
+        assert_eq!(project.repository_url, "");
+        assert_eq!(project.source_dir.as_deref(), Some("/opt/apps/app"));
+        assert_eq!(project.source_subdir, None);
+        assert_eq!(project.branch, "main");
+        engine.apply_event(&ev("ProjectSourceChanged", serde_json::json!({"project_id": p,
+            "repository_url": "git@github.com:acme/app.git", "branch": "prod", "source_dir": null, "source_subdir": "api"})));
+        let project = engine.get_project(&id).unwrap();
+        assert_eq!(project.repository_url, "git@github.com:acme/app.git");
+        assert_eq!(project.branch, "prod");
+        assert_eq!(project.source_dir, None);
+        assert_eq!(project.source_subdir.as_deref(), Some("api"));
     }
 }
