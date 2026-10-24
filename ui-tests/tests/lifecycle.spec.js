@@ -53,12 +53,14 @@ test('timeouts, change of source and deleting an app', async ({ page }) => {
     expect(p.settings.health_check_timeout_secs).toBe(75);
     expect(p.settings.drain_timeout_secs).toBe(5);
 
-    // Out of range: refused, nothing saved.
+    // Out of range: the browser refuses to submit (1-3600), nothing is saved.
     await page.reload();
-    await expect(page.getByLabel('Health check timeout (seconds)')).toHaveValue('75');
-    await page.getByLabel('Health check timeout (seconds)').fill('4000');
+    const again = page.getByLabel('Health check timeout (seconds)');
+    await expect(again).toHaveValue('75');
+    await again.fill('4000');
     await page.getByRole('button', { name: 'Save settings' }).click();
-    await expect(page.locator('.toast.bad', { hasText: 'Health check timeout' })).toBeVisible();
+    expect(await again.evaluate((el) => el.checkValidity())).toBe(false);
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
     p = await project(page);
     expect(p.settings.health_check_timeout_secs).toBe(75);
 
