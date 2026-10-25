@@ -1159,6 +1159,7 @@ async function overviewPage(main, ctx) {
   const appsEl = h('div', { id: 'apps' });
   append(main,
     pageHeader('Overview', 'overview',
+      h('button', { class: 'btn', type: 'button', 'data-action': 'unlock-app', onclick: () => unlockAppDialog(() => loadApps().catch(() => {})) }, 'Unlock hidden app'),
       can('admin') ? h('a', { class: 'btn', href: '#/groups/new', 'data-action': 'new-group' }, '+ New group') : null,
       h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
     h('div', { class: 'section-head' }, h('h2', {}, 'Server'), helpButton('overview.host')),
@@ -1297,6 +1298,7 @@ function appCard(project, activeDeployment, reload) {
     h('div', { class: 'card-body' },
       h('div', { class: 'title' },
         h('a', { href: `#/apps/${enc(project.name)}` }, project.name),
+        project.protected ? h('span', { class: 'pill info', title: 'Hidden behind a password; unlocked for this session', 'data-hidden-app': '' }, 'Hidden') : null,
         h('span', { class: 'spacer' }),
         updatesBadge(project.updates),
         activeDeployment ? deploymentPill(activeDeployment.status) : null,
@@ -1643,6 +1645,7 @@ async function appPage(main, ctx, name, tab = 'deploy') {
       h('h1', {}, project.name),
       helpButton('app'),
       processPill(project),
+      project.protected ? h('span', { class: 'pill info', title: 'Hidden behind a password; unlocked for this session', 'data-hidden-app': '' }, 'Hidden') : null,
       p && p.runtime === 'docker'
         ? h('span', { 'data-runtime': 'docker', title: p.image || '' }, pill('Docker', 'info'))
         : null,
@@ -2975,7 +2978,85 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, dangerCard(ctx)));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, hideCard(ctx), dangerCard(ctx)));
+}
+
+/** Asks for an app's name and hide password; the app then shows for this session. */
+async function unlockAppDialog(after) {
+  let name = '';
+  let password = '';
+  const result = await modal(() => {
+    const nameIn = h('input', { id: 'unlock-name', class: 'mono', autocomplete: 'off', spellcheck: 'false', required: true, 'aria-label': 'App name' });
+    const passIn = h('input', { id: 'unlock-password', type: 'password', autocomplete: 'off', required: true, 'aria-label': 'Hide password' });
+    const form = h('form', {
+      method: 'dialog',
+      onsubmit: () => {
+        name = nameIn.value.trim();
+        password = passIn.value;
+      },
+    },
+    h('div', { class: 'dialog-body' },
+      h('h2', {}, 'Unlock a hidden app'),
+      h('p', { class: 'muted' }, 'Hidden apps are left out of every list. Enter the app\'s name and its hide password to see it until you sign out.'),
+      h('div', { class: 'field' }, h('label', { for: 'unlock-name' }, 'App name'), nameIn),
+      h('div', { class: 'field' }, h('label', { for: 'unlock-password' }, 'Hide password'), passIn)),
+    h('div', { class: 'form-actions' },
+      h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+      h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Unlock')));
+    setTimeout(() => nameIn.focus(), 0);
+    return form;
+  });
+  if (result !== 'ok' || !name) return;
+  const done = await run(null, () => api('POST', `/projects/${enc(name)}/unlock`, { password }), `${name} unlocked`);
+  if (done !== undefined) {
+    if (after) after();
+    go(`/apps/${enc(name)}`);
+  }
+}
+
+/** Settings → Hide this app: hide it behind a password, or lock/unhide it. */
+function hideCard(ctx) {
+  const project = ctx.project();
+  if (!can('admin')) return null;
+  if (project.protected) {
+    const lockBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'lock-app' }, 'Hide it now');
+    lockBtn.addEventListener('click', async () => {
+      const done = await run(lockBtn, () => api('POST', `/projects/${enc(project.id)}/lock`, {}), `${project.name} is hidden again`);
+      if (done !== undefined) go('/');
+    });
+    const unhideBtn = h('button', { class: 'btn danger', type: 'button', 'data-action': 'unhide-app' }, 'Stop hiding');
+    unhideBtn.addEventListener('click', async () => {
+      const ok = await confirmDialog({
+        title: `Stop hiding ${project.name}?`,
+        message: 'Everyone who may see it will see it again without a password.',
+        confirmLabel: 'Stop hiding',
+        danger: true,
+      });
+      if (!ok) return;
+      const done = await run(unhideBtn, () => api('DELETE', `/projects/${enc(project.id)}/hide`), `${project.name} is no longer hidden`);
+      if (done !== undefined) go(`/apps/${enc(project.name)}/settings`);
+    });
+    return h('section', { class: 'card', 'data-card': 'hide-app' },
+      cardHeader('Hidden app', 'app.hide'),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, 'This app is hidden behind a password. It is unlocked for your session only; other sessions must enter the password to see it.'),
+        h('div', { class: 'form-actions' }, lockBtn, ' ', unhideBtn)));
+  }
+  const passIn = h('input', { id: 'hide-password', type: 'password', autocomplete: 'new-password', minlength: 12, required: true, 'aria-label': 'Hide password' });
+  const hideBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'hide-app' }, 'Hide app');
+  const form = h('form', {
+    class: 'card-body',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const done = await run(hideBtn, () => api('PUT', `/projects/${enc(project.id)}/hide`, { password: passIn.value }), `${project.name} is hidden`);
+      if (done !== undefined) go(`/apps/${enc(project.name)}/settings`);
+    },
+  },
+  h('p', { class: 'muted small' }, 'Hide this app from every list, search and event feed. Anyone who wants to see it must enter the password (Overview → Unlock hidden app) in each new session.'),
+  h('div', { class: 'field' }, h('label', { for: 'hide-password' }, 'Password (at least 12 characters)'), passIn,
+    h('span', { class: 'hint' }, 'It cannot be recovered; keep it in a password manager.')),
+  h('div', { class: 'form-actions' }, hideBtn));
+  return h('section', { class: 'card', 'data-card': 'hide-app' }, cardHeader('Hide this app', 'app.hide'), form);
 }
 
 /** Settings → Danger zone: delete the app (typing its name to confirm). */
@@ -4633,6 +4714,31 @@ function roleSelect(id, value, label) {
     Object.entries(ROLE_HELP).map(([v, text]) => h('option', { value: v, selected: v === value }, text)));
 }
 
+/**
+ * Which apps an account may see: "all apps" or a checked list. `read()`
+ * gives the request fields (`all_apps` / `apps`).
+ */
+function appAccessPicker(apps, initial) {
+  const all = h('input', { type: 'radio', name: `access-${Math.random().toString(36).slice(2)}`, value: 'all', checked: !initial || initial.all_apps });
+  const some = h('input', { type: 'radio', name: all.name, value: 'some', checked: !!initial && !initial.all_apps });
+  const boxes = apps.map((a) => ({
+    name: a.name,
+    box: h('input', { type: 'checkbox', value: a.name, checked: !!initial && !initial.all_apps && (initial.apps || []).includes(a.name), 'aria-label': `Can see ${a.name}` }),
+  }));
+  const list = h('div', { class: 'app-access-list', hidden: all.checked },
+    boxes.length ? boxes.map((b) => h('label', { class: 'small' }, b.box, ' ', b.name)) : h('span', { class: 'muted small' }, 'No apps yet.'));
+  const sync = () => { list.hidden = all.checked; };
+  all.addEventListener('change', sync);
+  some.addEventListener('change', sync);
+  return {
+    el: h('div', { class: 'field app-access' },
+      h('label', { class: 'small' }, all, ' All apps (including apps added later)'),
+      h('label', { class: 'small' }, some, ' Only these apps'),
+      list),
+    read: () => (all.checked ? { all_apps: true } : { all_apps: false, apps: boxes.filter((b) => b.box.checked).map((b) => b.name) }),
+  };
+}
+
 /** Admins: create users, change roles, reset passwords, delete users. */
 function usersCard(ctx, me) {
   const tbody = h('tbody');
@@ -4675,9 +4781,36 @@ function usersCard(ctx, me) {
         const done = await run(deleteBtn, () => api('DELETE', `/users/${enc(u.username)}`), `${u.username} deleted`);
         if (done !== undefined) load().catch(() => {});
       });
+      const appsBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'user-apps', disabled: u.role === 'admin', title: u.role === 'admin' ? 'Admins always see every app' : '' },
+        u.all_apps ? 'All apps' : `${u.apps.length} app${u.apps.length === 1 ? '' : 's'}`);
+      appsBtn.addEventListener('click', async () => {
+        let apps;
+        try {
+          apps = await api('GET', '/projects');
+        } catch (err) {
+          toast(err.message, 'bad');
+          return;
+        }
+        let fields = null;
+        const result = await modal(() => {
+          const picker = appAccessPicker(apps, u);
+          return h('form', { method: 'dialog', onsubmit: () => { fields = picker.read(); } },
+            h('div', { class: 'dialog-body' },
+              h('h2', {}, `Apps ${u.username} can see`),
+              h('p', { class: 'muted' }, 'Other apps are left out of every list and answer "not found". Apps added later are not included until you add them here. Apps hidden behind a password only show to sessions that have unlocked them.'),
+              picker.el),
+            h('div', { class: 'form-actions' },
+              h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+              h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Save')));
+        });
+        if (result !== 'ok' || !fields) return;
+        const done = await run(appsBtn, () => api('PUT', `/users/${enc(u.username)}`, fields), `${u.username}: apps saved`);
+        if (done !== undefined) load().catch(() => {});
+      });
       return h('tr', { 'data-user': u.username },
         h('td', { 'data-label': 'User', class: 'mono' }, u.username, u.username === me ? h('span', { class: 'muted small' }, ' (you)') : null),
         h('td', { 'data-label': 'Role' }, sel),
+        h('td', { 'data-label': 'Apps', title: u.all_apps ? '' : u.apps.join(', ') }, appsBtn),
         h('td', { 'data-label': 'Created' }, timeEl(u.created_at)),
         h('td', { class: 'actions' }, resetBtn, ' ', deleteBtn));
     }));
@@ -4685,6 +4818,15 @@ function usersCard(ctx, me) {
 
   const nameIn = h('input', { id: 'user-name', class: 'mono', required: true, autocomplete: 'off', placeholder: 'ana', pattern: '[a-z0-9][a-z0-9._\\-]{0,63}' });
   const roleIn = roleSelect('user-role', 'viewer', 'Role');
+  // Apps are listed once the form is drawn; admins always see every app.
+  let picker = appAccessPicker([], null);
+  const accessSlot = h('div', {}, picker.el);
+  api('GET', '/projects').then((apps) => {
+    if (!ctx.alive()) return;
+    picker = appAccessPicker(apps, null);
+    replace(accessSlot, picker.el);
+  }).catch(() => {});
+  roleIn.addEventListener('change', () => { accessSlot.hidden = roleIn.value === 'admin'; });
   const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create-user' }, 'Add user');
   const form = h('form', {
     class: 'card-body',
@@ -4692,7 +4834,8 @@ function usersCard(ctx, me) {
       e.preventDefault();
       const username = nameIn.value.trim();
       const password = randomPassword();
-      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value }), `${username} added`);
+      const access = roleIn.value === 'admin' ? { all_apps: true } : picker.read();
+      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value, ...access }), `${username} added`);
       if (!created) return;
       nameIn.value = '';
       showPassword(username, password);
@@ -4703,15 +4846,16 @@ function usersCard(ctx, me) {
     h('div', { class: 'field' }, h('label', { for: 'user-name' }, 'Username'), nameIn,
       h('span', { class: 'hint' }, 'Lowercase letters, digits, . _ -')),
     h('div', { class: 'field' }, h('label', { for: 'user-role' }, 'Role'), roleIn)),
+  h('div', { class: 'field' }, h('label', {}, 'Apps they can see'), accessSlot),
   h('div', { class: 'form-actions' }, addBtn),
   shown);
 
-  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 4 }, errorBox(err)))));
+  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 5 }, errorBox(err)))));
   return h('section', { class: 'card', id: 'users' },
     cardHeader('Users', 'account.users'),
     h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Everyone signs in with their own account, so the audit log shows who did what. New users get a random password to pass on.')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
-      h('thead', {}, h('tr', {}, ['User', 'Role', 'Created', ''].map((t) => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['User', 'Role', 'Apps', 'Created', ''].map((t) => h('th', {}, t)))),
       tbody)),
     form);
 }

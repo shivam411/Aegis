@@ -272,6 +272,17 @@ export const HELP = {
     roles: 'Admins, signed in.',
     docs: 'groups.md#the-group-page',
   },
+  'app.hide': {
+    title: 'Hide this app',
+    summary: 'A hidden app is left out of every list, search and event feed, and every request about it answers "not found", until a session enters its password. The unlock lasts until that session ends. Use it for apps that only some people should even know exist; to give an account only some apps, set the account\'s apps under Account → Users.',
+    controls: [
+      ['Password', 'At least 12 characters. It cannot be recovered, so keep it in a password manager. Setting a new one locks every session again.'],
+      ['Hide it now', 'Hides the app again for your session.'],
+      ['Stop hiding', 'Removes the password; the app shows to everyone who may see it.'],
+    ],
+    roles: 'Admins, signed in (not API tokens). Anyone who may see the app can unlock it with the password. API tokens are not affected by hiding.',
+    docs: 'settings.md#hide-the-app',
+  },
   'app.delete': {
     title: 'Danger zone',
     summary: 'Deleting an app stops all its processes (they get the drain timeout to finish requests), stops serving its domains, and removes its secrets, deploy key, webhook secret, daily deploy and releases. Its events stay in the history. Its name and domains can be used again right away. Certificates already issued for its domains are kept, so mapping a domain again needs no new certificate.',
@@ -366,6 +377,7 @@ export const HELP = {
     summary: 'Everyone signs in with their own account, so the audit log shows who did what. New users and password resets get a random password that is shown once for you to pass on.',
     controls: [
       ['Role', 'Viewer reads only; deployer can also deploy, roll back, start and stop; admin can do everything.'],
+      ['Apps', 'Which apps the user sees: all of them (also ones added later) or only the ones you tick. Other apps are left out of every list and answer "not found". Admins always see every app.'],
       ['Reset password', 'Signs the user out everywhere and shows a new password once.'],
       ['Delete', 'Removes the user. Their past actions stay in the audit log. You cannot delete yourself.'],
       ['Add user', 'Creates a user with the chosen role.'],

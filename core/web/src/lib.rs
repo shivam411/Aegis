@@ -6,6 +6,7 @@
 //! user (session cookie + CSRF header for changes) or an API token. GitHub
 //! webhooks under `/hooks` are authenticated by their HMAC signature.
 
+mod access;
 mod api;
 mod appconfig;
 mod auth;
@@ -261,6 +262,7 @@ impl Modify for SecuritySchemes {
         auth::login, auth::logout, auth::session_info, auth::change_password,
         auth::list_tokens, auth::create_token, auth::revoke_token,
         users::list_users, users::create_user, users::update_user, users::delete_user,
+        access::hide_project, access::unhide_project, access::unlock_project, access::lock_project,
         auth::rotate_webhook_secret, auth::github_webhook,
         domains::list_domains, domains::map_domain, domains::unmap_domain, domains::proxy_status,
         appconfig::list_secrets, appconfig::set_secret, appconfig::delete_secret,
@@ -288,6 +290,7 @@ impl Modify for SecuritySchemes {
         ChangeSourceRequest, DeletedProjectDto,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
         NewTokenDto, users::UserDto, users::CreateUserRequest, users::UpdateUserRequest,
+        access::HideRequest, access::UnlockRequest,
         WebhookSecretDto, WebhookResult, ProjectSettingsDto, DetectRequest,
         DetectedDto, HostDto, BuildLogDto, ResourceLimitsDto, SetResourcesRequest, SampleDto,
         PointDto, MetricsDto, ResourceCapabilitiesDto, DockerStatusDto, ProjectResourcesDto,
@@ -312,7 +315,7 @@ impl Modify for SecuritySchemes {
         updates::GroupUpdatesDto
     )),
     tags(
-        (name = "auth"), (name = "users"), (name = "system"), (name = "projects"), (name = "deployments"),
+        (name = "auth"), (name = "users"), (name = "access"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
         (name = "domains"), (name = "secrets"), (name = "backups"), (name = "sources"),
         (name = "groups")
@@ -370,6 +373,12 @@ pub fn router(state: AppState) -> Router {
             "/projects/:project",
             get(api::get_project).delete(api::delete_project),
         )
+        .route(
+            "/projects/:project/hide",
+            put(access::hide_project).delete(access::unhide_project),
+        )
+        .route("/projects/:project/unlock", post(access::unlock_project))
+        .route("/projects/:project/lock", post(access::lock_project))
         .route("/projects/:project/source", put(api::change_source))
         .route("/projects/:project/deploy", post(api::deploy))
         .route("/projects/:project/rollback", post(api::rollback))

@@ -8,13 +8,14 @@
 
 Admins only. Everyone should sign in with their own account, so the audit log shows who did what.
 
-The table lists each user with their **Role**, when they were created, and two buttons:
+The table lists each user with their **Role**, the **Apps** they can see, when they were created, and some buttons:
 
 - **Role** menu: change it and it is saved at once. *Viewer: read only*; *Deployer: also deploy, roll back, start and stop*; *Admin: everything, including settings, secrets and users*. See [roles](README.md#roles).
+- **Apps** button: opens a dialog to choose **All apps** (the default; includes apps added later) or **Only these apps** with a checkbox per app. Everything else is left out of that user's lists, events, metrics and search, and answers "not found". It applies to open sessions at once. Admins always see every app, so the button is disabled for them. Apps hidden behind a password only show to sessions that unlocked them.
 - **Reset password**: after a confirmation, the user is signed out everywhere and a new random password is shown once. Give it to them; they can change it after signing in.
 - **Delete**: after a confirmation, the user is signed out and can't sign in again. Their past actions stay in the audit log. You can't delete yourself.
 
-To add a user, enter a **Username** (lowercase letters, digits, `.`, `_` and `-`), pick a **Role** and click **Add user**. The new user's random password is shown once.
+To add a user, enter a **Username** (lowercase letters, digits, `.`, `_` and `-`), pick a **Role**, choose which **Apps they can see** (all by default) and click **Add user**. The new user's random password is shown once.
 
 ## API tokens
 

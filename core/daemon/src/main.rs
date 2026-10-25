@@ -114,6 +114,9 @@ const USAGE: &str = "Usage:
   aegis-daemon admin set-role --name NAME --role viewer|deployer|admin
                                          Change a user's role (e.g. to regain an admin)
   aegis-daemon admin list-users          List users and their roles
+  aegis-daemon admin unhide-app --project ID
+                                         Remove an app's hide password (e.g. a lost one);
+                                         ID is the project id shown by `aegis list`
   aegis-daemon admin create-token --name NAME [--scope read|deploy]
                                          Create an API token for automation
   aegis-daemon admin backup [--no-releases] [--out PATH]
@@ -542,6 +545,21 @@ async fn admin(config: &Config, args: &[&str]) -> Result<(), anyhow::Error> {
                 )
                 .await?;
             println!("'{}' is now {}.", name, role.as_str());
+            Ok(())
+        }
+        ["unhide-app", "--project", id] => {
+            // The way back when a hide password is lost; needs the project id
+            // (`aegis list` shows it).
+            id.parse::<aegis_types::ProjectId>()
+                .map_err(|e| anyhow::anyhow!("Invalid project id: {}", e))?;
+            auth.remove_app_lock(id).await?;
+            store
+                .append_event(
+                    "AppUnhidden",
+                    serde_json::json!({"project_id": id, "actor": "local-admin"}),
+                )
+                .await?;
+            println!("App {} is no longer hidden.", id);
             Ok(())
         }
         ["list-users"] => {

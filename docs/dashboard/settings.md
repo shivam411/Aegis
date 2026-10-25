@@ -27,6 +27,15 @@ Buttons in the card header:
 
 **Save settings** first shows the change as a diff of `aegis.toml` (green lines added, red lines removed). Confirm with **Save settings** in that dialog. Settings apply to the **next** deployment; releases that are already built keep the settings they were built with. Dashboard settings win over the app's `aegis.toml`; the form always saves every field, so clearing a field (blank) goes back to the file's value.
 
+## Hide the app
+
+Admins only. **Hide this app** puts the app behind a password (at least 12 characters). A hidden app is left out of every list, search, event feed and graph, and every request about it answers "not found", until a session enters the password:
+
+1. Sign in, then **Overview → Unlock hidden app**.
+2. Enter the app's name and its password. The app, and a **Hidden** badge, show up until you sign out or **Hide it now**.
+
+Your own session stays unlocked when you hide an app. Setting a new password locks every session again. **Stop hiding** removes the password. The password cannot be recovered, so keep it in a password manager (an admin with shell access can remove it: `aegis-daemon admin unhide-app --project <id>`). API tokens, webhooks and schedules are not affected by hiding. To show an account only some apps, use [Account → Users → Apps](account.md#users).
+
 ## Repository
 
 Where deployments get the code (the repository URL and branch, or the directory, and the **App folder** of a monorepo app), and the app's **deploy key** for a private repository. Admins only.

@@ -115,6 +115,11 @@ pub struct ProjectDto {
     /// commit list), once one has run.
     #[serde(default)]
     pub updates: Option<crate::updates::UpdateSummaryDto>,
+    /// The app is hidden behind a password (and unlocked for you right
+    /// now, or you wouldn't see it). Set on the project list and `GET
+    /// /projects/{p}`.
+    #[serde(default)]
+    pub protected: bool,
 }
 
 /// The group an app belongs to.
@@ -326,6 +331,7 @@ impl From<ProjectView> for ProjectDto {
             group: view.group.map(|(id, name)| ProjectGroupDto { id, name }),
             commit: view.commit,
             updates: view.updates.map(Into::into),
+            protected: false,
         }
     }
 }

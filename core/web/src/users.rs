@@ -19,16 +19,66 @@ pub struct UserDto {
     pub role: String,
     pub created_at: String,
     pub password_changed_at: String,
+    /// True: the user sees every app (always the case for admins).
+    pub all_apps: bool,
+    /// With `all_apps` false, the names of the only apps the user sees.
+    pub apps: Vec<String>,
 }
 
-impl From<UserInfo> for UserDto {
-    fn from(u: UserInfo) -> Self {
-        Self {
-            username: u.username,
-            role: u.role.as_str().to_string(),
-            created_at: u.created_at,
-            password_changed_at: u.password_changed_at,
+fn user_dto(st: &AppState, u: UserInfo) -> UserDto {
+    let projects = st.control.list_projects();
+    UserDto {
+        all_apps: u.apps.is_none(),
+        apps: u
+            .apps
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|id| {
+                projects
+                    .iter()
+                    .find(|p| p.project.id.to_string() == *id)
+                    .map(|p| p.project.name.clone())
+            })
+            .collect(),
+        username: u.username,
+        role: u.role.as_str().to_string(),
+        created_at: u.created_at,
+        password_changed_at: u.password_changed_at,
+    }
+}
+
+/// App ids for names or ids, or the error for the first unknown one.
+fn resolve_apps(st: &AppState, apps: &[String]) -> ApiResult<Vec<String>> {
+    let mut ids: Vec<String> = Vec::new();
+    for key in apps {
+        let id = st.control.resolve_project(key.trim())?.id.to_string();
+        if !ids.contains(&id) {
+            ids.push(id);
         }
+    }
+    Ok(ids)
+}
+
+/// `Some(ids)`: limited to those apps; `None`: all apps.
+fn access_change(
+    st: &AppState,
+    role: Role,
+    all_apps: Option<bool>,
+    apps: Option<&[String]>,
+) -> ApiResult<Option<Option<Vec<String>>>> {
+    match (all_apps, apps) {
+        (None, None) => Ok(None),
+        (Some(true), Some(list)) if !list.is_empty() => Err(ApiError::bad_request(
+            "Give either all_apps: true or a list of apps, not both",
+        )),
+        (Some(true), _) => Ok(Some(None)),
+        (_, _) if role == Role::Admin => Err(ApiError::bad_request(
+            "Admins always see every app; use the deployer or viewer role to limit apps",
+        )),
+        (Some(false), None) => Err(ApiError::bad_request(
+            "all_apps: false needs `apps`, the list of apps the user may see",
+        )),
+        (_, Some(list)) => Ok(Some(Some(resolve_apps(st, list)?))),
     }
 }
 
@@ -41,6 +91,13 @@ pub struct CreateUserRequest {
     pub password: String,
     /// "viewer", "deployer" or "admin".
     pub role: String,
+    /// `true` (the default) lets the user see every app.
+    #[serde(default)]
+    pub all_apps: Option<bool>,
+    /// Names or ids of the only apps the user may see (not for admins).
+    /// Apps added later are not included until you add them.
+    #[serde(default)]
+    pub apps: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]
@@ -50,6 +107,10 @@ pub struct UpdateUserRequest {
     pub role: Option<String>,
     /// New password; signs the user out everywhere.
     pub password: Option<String>,
+    /// `true`: the user sees every app again.
+    pub all_apps: Option<bool>,
+    /// Replaces the list of apps the user may see (empty: none).
+    pub apps: Option<Vec<String>>,
 }
 
 fn parse_role(value: &str) -> ApiResult<Role> {
@@ -76,7 +137,7 @@ pub(crate) async fn list_users(State(st): State<AppState>) -> ApiResult<Json<Vec
             .await
             .map_err(ApiError::internal)?
             .into_iter()
-            .map(Into::into)
+            .map(|u| user_dto(&st, u))
             .collect(),
     ))
 }
@@ -92,19 +153,33 @@ pub(crate) async fn create_user(
 ) -> ApiResult<(StatusCode, Json<UserDto>)> {
     let role = parse_role(&req.role)?;
     let username = req.username.trim();
+    // Checked before the account exists, so a bad app name leaves nothing behind.
+    let access = access_change(&st, role, req.all_apps, req.apps.as_deref())?;
     let user = st
         .auth
         .create_user(username, &req.password, role)
         .await
         .map_err(ApiError::internal)?
         .map_err(refused)?;
+    if let Some(Some(ids)) = &access {
+        st.auth
+            .set_user_apps(username, Some(ids))
+            .await
+            .map_err(ApiError::internal)?;
+    }
     st.control
         .record(
             "UserCreated",
-            json!({"username": user.username, "role": role.as_str()}),
+            json!({"username": user.username, "role": role.as_str(), "apps": access.as_ref().map(|a| a.clone().map_or(json!("all"), |ids| json!(ids)))}),
         )
         .await?;
-    Ok((StatusCode::CREATED, Json(user.into())))
+    let user = st
+        .auth
+        .user(username)
+        .await
+        .map_err(ApiError::internal)?
+        .unwrap_or(user);
+    Ok((StatusCode::CREATED, Json(user_dto(&st, user))))
 }
 
 #[utoipa::path(put, path = "/api/v1/users/{username}", tag = "users",
@@ -147,6 +222,24 @@ pub(crate) async fn update_user(
             )
             .await?;
     }
+    let access = access_change(
+        &st,
+        role.unwrap_or(before.role),
+        req.all_apps,
+        req.apps.as_deref(),
+    )?;
+    if let Some(apps) = &access {
+        st.auth
+            .set_user_apps(&username, apps.as_deref())
+            .await
+            .map_err(ApiError::internal)?;
+        st.control
+            .record(
+                "UserAppsChanged",
+                json!({"username": username, "apps": apps.as_ref().map_or(json!("all"), |ids| json!(ids))}),
+            )
+            .await?;
+    }
     if let Some(password) = &req.password {
         st.auth
             .set_password(&username, password)
@@ -162,7 +255,7 @@ pub(crate) async fn update_user(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| refused(UserError::NotFound))?;
-    Ok(Json(user.into()))
+    Ok(Json(user_dto(&st, user)))
 }
 
 #[utoipa::path(delete, path = "/api/v1/users/{username}", tag = "users",

@@ -133,6 +133,58 @@ pub struct UserInfo {
     pub role: Role,
     pub created_at: String,
     pub password_changed_at: String,
+    /// The apps (project ids) the user may see; `None`: all of them.
+    pub apps: Option<Vec<String>>,
+}
+
+/// What a request may see of the apps: those a user isn't given, and those
+/// hidden behind a password the session hasn't entered.
+#[derive(Debug, Clone, Default)]
+pub struct Visibility {
+    /// Project ids the user may see; `None`: all.
+    allowed: Option<std::collections::HashSet<String>>,
+    /// Hidden apps this session has not unlocked.
+    locked: std::collections::HashSet<String>,
+    /// Every password-hidden app, unlocked or not.
+    protected: std::collections::HashSet<String>,
+}
+
+impl Visibility {
+    /// Sees everything (API tokens, admins without hidden apps).
+    pub fn all() -> Self {
+        Self::default()
+    }
+
+    /// True when the request must act as if the app does not exist.
+    pub fn hides(&self, project_id: &str) -> bool {
+        self.locked.contains(project_id)
+            || self
+                .allowed
+                .as_ref()
+                .is_some_and(|allowed| !allowed.contains(project_id))
+    }
+
+    /// True when nothing is hidden (lets callers skip filtering).
+    pub fn sees_all(&self) -> bool {
+        self.allowed.is_none() && self.locked.is_empty()
+    }
+
+    /// True when the app has a hide password, unlocked or not.
+    pub fn is_protected(&self, project_id: &str) -> bool {
+        self.protected.contains(project_id)
+    }
+
+    /// True when the user's account limits them to a list of apps.
+    pub fn is_restricted(&self) -> bool {
+        self.allowed.is_some()
+    }
+
+    /// True when the user may unlock this app (it is in their list).
+    pub fn may_unlock(&self, project_id: &str) -> bool {
+        self.allowed
+            .as_ref()
+            .is_none_or(|allowed| allowed.contains(project_id))
+    }
 }
 
 /// Why a user change was refused.
@@ -416,15 +468,27 @@ impl AuthStore {
     // ------------------------------------------------------------------
 
     pub async fn list_users(&self) -> Result<Vec<UserInfo>, anyhow::Error> {
+        let mut apps: std::collections::HashMap<String, Vec<String>> = Default::default();
+        for row in sqlx::query("SELECT username, project_id FROM user_apps ORDER BY project_id")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            apps.entry(row.try_get(0)?)
+                .or_default()
+                .push(row.try_get(1)?);
+        }
         sqlx::query(
-            "SELECT username, role, created_at, password_changed_at FROM users ORDER BY username",
+            "SELECT username, role, created_at, password_changed_at, all_apps FROM users ORDER BY username",
         )
         .fetch_all(&self.pool)
         .await?
         .iter()
         .map(|row| {
+            let username: String = row.try_get(0)?;
+            let all_apps = row.try_get::<i64, _>(4)? != 0;
             Ok(UserInfo {
-                username: row.try_get(0)?,
+                apps: (!all_apps).then(|| apps.remove(&username).unwrap_or_default()),
+                username,
                 role: Role::parse(row.try_get::<&str, _>(1)?).unwrap_or(Role::Viewer),
                 created_at: row.try_get(2)?,
                 password_changed_at: row.try_get(3)?,
@@ -480,6 +544,7 @@ impl AuthStore {
             role,
             created_at: now.clone(),
             password_changed_at: now,
+            apps: None,
         }))
     }
 
@@ -535,11 +600,19 @@ impl AuthStore {
             .bind(username)
             .execute(&self.pool)
             .await?;
+        sqlx::query("DELETE FROM user_apps WHERE username = ?")
+            .bind(username)
+            .execute(&self.pool)
+            .await?;
         Ok(Ok(()))
     }
 
     pub async fn delete_session(&self, token: &str) -> Result<(), anyhow::Error> {
         sqlx::query("DELETE FROM sessions WHERE id_hash = ?")
+            .bind(sha256_hex(token))
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM session_unlocks WHERE id_hash = ?")
             .bind(sha256_hex(token))
             .execute(&self.pool)
             .await?;
@@ -557,6 +630,11 @@ impl AuthStore {
                 .bind(now)
                 .execute(&self.pool)
                 .await?;
+        sqlx::query(
+            "DELETE FROM session_unlocks WHERE id_hash NOT IN (SELECT id_hash FROM sessions)",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(res.rows_affected())
     }
 
@@ -652,6 +730,211 @@ impl AuthStore {
             .execute(&self.pool)
             .await?;
         Ok(Some(info))
+    }
+
+    // ------------------------------------------------------------------
+    // App access and hidden apps
+    // ------------------------------------------------------------------
+
+    /// Limits a user to `apps` (project ids), or to every app with `None`.
+    /// Returns false when the user doesn't exist.
+    pub async fn set_user_apps(
+        &self,
+        username: &str,
+        apps: Option<&[String]>,
+    ) -> Result<bool, anyhow::Error> {
+        let mut tx = self.pool.begin().await?;
+        let changed = sqlx::query("UPDATE users SET all_apps = ? WHERE username = ?")
+            .bind(i64::from(apps.is_none()))
+            .bind(username)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if changed == 0 {
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM user_apps WHERE username = ?")
+            .bind(username)
+            .execute(&mut *tx)
+            .await?;
+        for id in apps.unwrap_or_default() {
+            sqlx::query("INSERT OR IGNORE INTO user_apps (username, project_id) VALUES (?, ?)")
+                .bind(username)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// What a signed-in user (and, for hidden apps, this session) may see.
+    /// Admins are never limited to a list.
+    pub async fn visibility(
+        &self,
+        username: &str,
+        role: Role,
+        session_token: &str,
+    ) -> Result<Visibility, anyhow::Error> {
+        let allowed = if role == Role::Admin {
+            None
+        } else {
+            let all_apps = sqlx::query("SELECT all_apps FROM users WHERE username = ?")
+                .bind(username)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|row| row.try_get::<i64, _>(0))
+                .transpose()?
+                .unwrap_or(1)
+                != 0;
+            if all_apps {
+                None
+            } else {
+                let rows = sqlx::query("SELECT project_id FROM user_apps WHERE username = ?")
+                    .bind(username)
+                    .fetch_all(&self.pool)
+                    .await?;
+                Some(
+                    rows.iter()
+                        .map(|r| r.try_get::<String, _>(0))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
+        };
+        let protected: std::collections::HashSet<String> =
+            sqlx::query("SELECT project_id FROM app_locks")
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(|r| r.try_get::<String, _>(0))
+                .collect::<Result<_, _>>()?;
+        let mut locked = protected.clone();
+        if !locked.is_empty() {
+            for row in sqlx::query("SELECT project_id FROM session_unlocks WHERE id_hash = ?")
+                .bind(sha256_hex(session_token))
+                .fetch_all(&self.pool)
+                .await?
+            {
+                locked.remove(&row.try_get::<String, _>(0)?);
+            }
+        }
+        Ok(Visibility {
+            allowed,
+            locked,
+            protected,
+        })
+    }
+
+    /// Hides an app behind a password (replacing an earlier one).
+    pub async fn set_app_lock(
+        &self,
+        project_id: &str,
+        password: &str,
+    ) -> Result<Result<(), String>, anyhow::Error> {
+        if password.chars().count() < MIN_PASSWORD_LEN {
+            return Ok(Err(format!(
+                "The hide password must be at least {} characters",
+                MIN_PASSWORD_LEN
+            )));
+        }
+        let hash = hash_blocking(password.to_string()).await?;
+        sqlx::query(
+            "INSERT INTO app_locks (project_id, password_hash, created_at) VALUES (?, ?, ?)
+             ON CONFLICT(project_id) DO UPDATE SET password_hash = excluded.password_hash, created_at = excluded.created_at",
+        )
+        .bind(project_id)
+        .bind(hash)
+        .bind(now_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        // A new password ends every earlier unlock.
+        sqlx::query("DELETE FROM session_unlocks WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(Ok(()))
+    }
+
+    /// Stops hiding an app.
+    pub async fn remove_app_lock(&self, project_id: &str) -> Result<(), anyhow::Error> {
+        sqlx::query("DELETE FROM app_locks WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM session_unlocks WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Checks an app's hide password in constant-ish time. `None` (no such
+    /// app, or it isn't hidden) is checked against a dummy hash so the
+    /// answer doesn't reveal which apps exist or are hidden.
+    pub async fn verify_app_lock(
+        &self,
+        project_id: Option<&str>,
+        password: &str,
+    ) -> Result<bool, anyhow::Error> {
+        let stored: Option<String> = match project_id {
+            Some(id) => sqlx::query("SELECT password_hash FROM app_locks WHERE project_id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|row| row.try_get(0))
+                .transpose()?,
+            None => None,
+        };
+        let exists = stored.is_some();
+        let hash = stored.unwrap_or_else(|| self.dummy_hash.as_ref().clone());
+        let password = password.to_string();
+        let _permit = self.verify_permits.acquire().await?;
+        let ok = tokio::task::spawn_blocking(move || verify_password(&password, &hash)).await?;
+        Ok(exists && ok)
+    }
+
+    /// Lets this session see an unlocked app until it ends.
+    pub async fn unlock_app(
+        &self,
+        session_token: &str,
+        project_id: &str,
+    ) -> Result<(), anyhow::Error> {
+        sqlx::query("INSERT OR IGNORE INTO session_unlocks (id_hash, project_id) VALUES (?, ?)")
+            .bind(sha256_hex(session_token))
+            .bind(project_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Hides an unlocked app again for this session.
+    pub async fn relock_app(
+        &self,
+        session_token: &str,
+        project_id: &str,
+    ) -> Result<(), anyhow::Error> {
+        sqlx::query("DELETE FROM session_unlocks WHERE id_hash = ? AND project_id = ?")
+            .bind(sha256_hex(session_token))
+            .bind(project_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Forgets everything about a deleted app: its hide password, unlocks
+    /// and places in users' app lists.
+    pub async fn forget_project(&self, project_id: &str) -> Result<(), anyhow::Error> {
+        for sql in [
+            "DELETE FROM app_locks WHERE project_id = ?",
+            "DELETE FROM session_unlocks WHERE project_id = ?",
+            "DELETE FROM user_apps WHERE project_id = ?",
+        ] {
+            sqlx::query(sql)
+                .bind(project_id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn webhook_secret(&self, project_id: &str) -> Result<Option<String>, anyhow::Error> {

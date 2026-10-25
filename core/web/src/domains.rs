@@ -158,7 +158,10 @@ pub(crate) async fn unmap_domain(
 
 #[utoipa::path(get, path = "/api/v1/proxy", tag = "domains",
     responses((status = 200, description = "Listeners, routes and certificates of the built-in proxy", body = ProxyStatusDto)))]
-pub(crate) async fn proxy_status(State(st): State<AppState>) -> Json<ProxyStatusDto> {
+pub(crate) async fn proxy_status(
+    State(st): State<AppState>,
+    axum::Extension(vis): axum::Extension<aegis_auth::Visibility>,
+) -> Json<ProxyStatusDto> {
     let Some(status) = st.control.proxy_status() else {
         return Json(ProxyStatusDto {
             enabled: false,
@@ -188,6 +191,7 @@ pub(crate) async fn proxy_status(State(st): State<AppState>) -> Json<ProxyStatus
         routes: status
             .routes
             .into_iter()
+            .filter(|r| r.project_id.as_deref().is_none_or(|id| !vis.hides(id)))
             .map(|r| ProxyRouteDto {
                 project_name: r.project_id.as_deref().and_then(name_of),
                 domain: r.domain,

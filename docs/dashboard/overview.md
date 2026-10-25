@@ -7,6 +7,7 @@ The Overview is the home page (`#/`, or <kbd>g</kbd> <kbd>o</kbd>). It shows how
 ## Page header
 
 - **+ New app** opens the [new app wizard](new-app.md). Only admins see it. The <kbd>n</kbd> key does the same.
+- **Unlock hidden app** asks for an app's name and its hide password and shows that app until you sign out. See [Hide the app](settings.md#hide-the-app). Apps you have unlocked carry a **Hidden** badge.
 - **?** explains the page.
 
 ## Host tiles
