@@ -2978,7 +2978,7 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, hideCard(ctx), dangerCard(ctx)));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, hideCard(ctx, rerender), dangerCard(ctx)));
 }
 
 /** Asks for an app's name and hide password; the app then shows for this session. */
@@ -3015,7 +3015,7 @@ async function unlockAppDialog(after) {
 }
 
 /** Settings → Hide this app: hide it behind a password, or lock/unhide it. */
-function hideCard(ctx) {
+function hideCard(ctx, rerender) {
   const project = ctx.project();
   if (!can('admin')) return null;
   if (project.protected) {
@@ -3034,7 +3034,7 @@ function hideCard(ctx) {
       });
       if (!ok) return;
       const done = await run(unhideBtn, () => api('DELETE', `/projects/${enc(project.id)}/hide`), `${project.name} is no longer hidden`);
-      if (done !== undefined) go(`/apps/${enc(project.name)}/settings`);
+      if (done !== undefined) rerender();
     });
     return h('section', { class: 'card', 'data-card': 'hide-app' },
       cardHeader('Hidden app', 'app.hide'),
@@ -3049,7 +3049,7 @@ function hideCard(ctx) {
     onsubmit: async (e) => {
       e.preventDefault();
       const done = await run(hideBtn, () => api('PUT', `/projects/${enc(project.id)}/hide`, { password: passIn.value }), `${project.name} is hidden`);
-      if (done !== undefined) go(`/apps/${enc(project.name)}/settings`);
+      if (done !== undefined) rerender();
     },
   },
   h('p', { class: 'muted small' }, 'Hide this app from every list, search and event feed. Anyone who wants to see it must enter the password (Overview → Unlock hidden app) in each new session.'),
