@@ -107,3 +107,20 @@ test('switch to the list view and restart the selected apps', async ({ page }) =
   await page.locator('[data-view="grid"]').click();
   await expect(page.locator('table.apps-table')).toHaveCount(0);
 });
+
+test('events and deployments are paged', async ({ page }) => {
+  await login(page);
+  await page.goto('/#/events');
+  await expect(page.locator('[data-events] li').first()).toBeVisible();
+  await page.locator('[data-page-size]').selectOption('25');
+  const label = page.locator('[data-page-label]');
+  await expect(label).toContainText('1–25 of');
+  await page.locator('[data-page="next"]').click();
+  await expect(label).toContainText('26–');
+  await expect(page.locator('[data-events] li')).not.toHaveCount(0);
+  await page.locator('[data-page="prev"]').click();
+  await expect(label).toContainText('1–25 of');
+
+  await page.goto('/#/deployments');
+  await expect(page.locator('tr[data-deployment]').first()).toBeVisible();
+});

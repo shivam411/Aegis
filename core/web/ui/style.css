@@ -728,3 +728,8 @@ ul.scan-warnings li.bad { color: var(--bad); }
 .app-card .title .app-select { margin-right: 0.5rem; }
 .apps-table .select-cell { width: 2rem; }
 .apps-table td .source { max-width: 22rem; }
+
+/* Page controls under long lists (events, deployments). */
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.pager[hidden] { display: none; }
+.pager .spacer { flex: 1; }

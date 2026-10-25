@@ -4322,6 +4322,61 @@ const EVENT_CATEGORIES = [
   ['update', 'Aegis updates', (t) => t.startsWith('Update')],
 ];
 
+/**
+ * Page controls for a long list held in memory: page size, Previous/Next and
+ * "51–100 of 230". `slice(items)` returns the current page; call `update()`
+ * after the list changes. The size is remembered in this browser.
+ */
+function pager(key, onChange) {
+  const sizes = [25, 50, 100, 200];
+  let size = 50;
+  try {
+    const saved = Number(localStorage.getItem(`aegis.page-size.${key}`));
+    if (sizes.includes(saved)) size = saved;
+  } catch {
+    /* storage unavailable */
+  }
+  let page = 0;
+  let total = 0;
+  const sizeSel = h('select', { 'aria-label': 'Rows per page', 'data-page-size': '' },
+    sizes.map((n) => h('option', { value: n, selected: n === size }, `${n} per page`)));
+  const prev = h('button', { class: 'btn small', type: 'button', 'data-page': 'prev' }, 'Previous');
+  const next = h('button', { class: 'btn small', type: 'button', 'data-page': 'next' }, 'Next');
+  const label = h('span', { class: 'muted small', 'data-page-label': '', 'aria-live': 'polite' });
+  const el = h('div', { class: 'pager' }, label, h('span', { class: 'spacer' }), sizeSel, prev, next);
+  const sync = () => {
+    const pages = Math.max(1, Math.ceil(total / size));
+    if (page >= pages) page = pages - 1;
+    const from = total ? page * size + 1 : 0;
+    label.textContent = `${from}–${Math.min(total, (page + 1) * size)} of ${total}`;
+    prev.disabled = page <= 0;
+    next.disabled = page >= pages - 1;
+    el.hidden = total <= sizes[0];
+  };
+  sizeSel.addEventListener('change', () => {
+    size = Number(sizeSel.value);
+    page = 0;
+    try {
+      localStorage.setItem(`aegis.page-size.${key}`, String(size));
+    } catch {
+      /* storage unavailable */
+    }
+    onChange();
+  });
+  prev.addEventListener('click', () => { page -= 1; onChange(); });
+  next.addEventListener('click', () => { page += 1; onChange(); });
+  return {
+    el,
+    /** Back to the first page (after a filter changes). */
+    reset: () => { page = 0; },
+    slice: (items) => {
+      total = items.length;
+      sync();
+      return items.slice(page * size, (page + 1) * size);
+    },
+  };
+}
+
 async function eventsPage(main, ctx) {
   if (!state.projects.length) state.projects = await api('GET', '/projects');
   if (!ctx.alive()) return;
@@ -4334,6 +4389,7 @@ async function eventsPage(main, ctx) {
   const list = h('ul', { class: 'events', 'data-events': '' });
   const count = h('span', { class: 'muted small' });
   let events = [];
+  const pg = pager('events', () => draw());
 
   const matches = (e) => {
     const [, , test] = EVENT_CATEGORIES.find(([v]) => v === categorySel.value);
@@ -4345,25 +4401,28 @@ async function eventsPage(main, ctx) {
   const draw = () => {
     const shown = events.filter(matches);
     count.textContent = `${shown.length} of ${events.length}`;
-    replace(list, shown.length ? shown.map(eventItem) : h('li', { class: 'empty' }, 'No matching events.'));
+    const visible = pg.slice(shown);
+    replace(list, visible.length ? visible.map(eventItem) : h('li', { class: 'empty' }, 'No matching events.'));
   };
+  const redraw = () => { pg.reset(); draw(); };
   const load = async () => {
     const q = projectSel.value ? `project=${enc(projectSel.value)}&` : '';
     events = (await api('GET', `/events?${q}limit=${limitSel.value}`)).reverse();
-    if (ctx.alive()) draw();
+    if (ctx.alive()) redraw();
   };
 
   projectSel.addEventListener('change', () => load().catch((err) => toast(err.message, 'bad')));
   limitSel.addEventListener('change', () => load().catch((err) => toast(err.message, 'bad')));
-  categorySel.addEventListener('change', draw);
-  search.addEventListener('input', debounce(draw, 120));
+  categorySel.addEventListener('change', redraw);
+  search.addEventListener('input', debounce(redraw, 120));
 
   append(main,
     pageHeader('Events', 'events', count),
     h('div', { class: 'card' },
       h('div', { class: 'card-header filters' }, projectSel, categorySel, limitSel, search,
         h('label', { class: 'small', for: 'events-live' }, live, ' Live')),
-      list));
+      list,
+      h('div', { class: 'card-body' }, pg.el)));
   await load();
   onEvents(ctx, (e) => {
     if (e.event_type === '_resync') {
@@ -4372,11 +4431,7 @@ async function eventsPage(main, ctx) {
     }
     if (!live.checked) return;
     events.unshift(e);
-    if (matches(e)) {
-      if (list.firstChild?.classList?.contains('empty')) list.replaceChildren();
-      list.prepend(eventItem(e));
-      count.textContent = `${events.filter(matches).length} of ${events.length}`;
-    }
+    if (matches(e)) draw();
   });
 }
 
@@ -4395,17 +4450,20 @@ async function deploymentsPage(main, ctx) {
     h('table', { class: 'stack' },
       h('thead', {}, h('tr', {}, ['Status', 'App', 'Release', 'Trigger', 'Stage', 'Started', 'Duration'].map((t) => h('th', {}, t)))),
       tableBody));
+  const pg = pager('deployments', () => draw());
+  wrap.append(h('div', { class: 'card-body' }, pg.el));
   append(main, pageHeader('Deployments', 'deployments'), wrap);
   let deployments = [];
 
   const draw = () => {
     const shown = deployments.filter((d) => (!projectSel.value || d.project_id === projectSel.value)
       && (!statusSel.value || (statusSel.value === 'active' ? isActiveDeployment(d) : d.status === statusSel.value)));
+    const visible = pg.slice(shown);
     if (!shown.length) {
       replace(tableBody, h('tr', {}, h('td', { colspan: 7, class: 'empty' }, deployments.length ? 'No deployments match.' : 'No deployments yet.')));
       return;
     }
-    replace(tableBody, shown.map((d) => h('tr', {
+    replace(tableBody, visible.map((d) => h('tr', {
       class: 'clickable',
       'data-deployment': d.id,
       tabindex: '0',
@@ -4429,8 +4487,9 @@ async function deploymentsPage(main, ctx) {
     replace(projectSel, h('option', { value: '' }, 'All apps'), projects.map((p) => h('option', { value: p.id, selected: p.id === selected }, p.name)));
     draw();
   };
-  projectSel.addEventListener('change', draw);
-  statusSel.addEventListener('change', draw);
+  const refilter = () => { pg.reset(); draw(); };
+  projectSel.addEventListener('change', refilter);
+  statusSel.addEventListener('change', refilter);
   await load();
   const reload = debounce(() => load().catch(() => {}), 300);
   onEvents(ctx, (e) => {

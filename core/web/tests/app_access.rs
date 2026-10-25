@@ -167,6 +167,37 @@ async fn users_see_only_their_apps_and_hidden_apps_need_the_password() {
         .call(&api, "GET", "/api/v1/projects/shop", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK);
+    // Deployments and events of other apps never show, in lists or by id.
+    let mut blog_deployment = String::new();
+    for app in ["shop", "blog"] {
+        let (status, body) = api
+            .call("POST", &format!("/api/v1/projects/{app}/deploy"), json!({}))
+            .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        if app == "blog" {
+            blog_deployment = body["deployment_id"].as_str().unwrap().to_string();
+        }
+    }
+    let (_, all) = api.get("/api/v1/deployments").await;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    let (_, mine) = dee
+        .call(&api, "GET", "/api/v1/deployments", json!({}))
+        .await;
+    let mine = mine.as_array().unwrap();
+    assert_eq!(mine.len(), 1, "{mine:?}");
+    let (_, shop) = api.get("/api/v1/projects/shop").await;
+    assert_eq!(mine[0]["project_id"], shop["id"]);
+    for suffix in ["", "/log", "/events"] {
+        let (status, _) = dee
+            .call(
+                &api,
+                "GET",
+                &format!("/api/v1/deployments/{blog_deployment}{suffix}"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{suffix}");
+    }
     // Events about hidden apps are left out of the shared feed.
     let (_, events) = dee
         .call(&api, "GET", "/api/v1/events?limit=100", json!({}))
