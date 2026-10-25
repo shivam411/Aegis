@@ -1157,6 +1157,9 @@ function loginPage() {
 async function overviewPage(main, ctx) {
   const hostEl = h('div', { class: 'grid stats', id: 'host' });
   const appsEl = h('div', { id: 'apps' });
+  const barEl = h('div', { id: 'apps-bar' });
+  const selected = new Set();
+  let view = appsView();
   append(main,
     pageHeader('Overview', 'overview',
       h('button', { class: 'btn', type: 'button', 'data-action': 'unlock-app', onclick: () => unlockAppDialog(() => loadApps().catch(() => {})) }, 'Unlock hidden app'),
@@ -1164,7 +1167,7 @@ async function overviewPage(main, ctx) {
       h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
     h('div', { class: 'section-head' }, h('h2', {}, 'Server'), helpButton('overview.host')),
     hostEl,
-    h('div', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', {}, 'Apps'), helpButton('overview.apps')), appsEl));
+    h('div', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', {}, 'Apps'), helpButton('overview.apps')), barEl, appsEl));
 
   const loadHost = async () => {
     try {
@@ -1174,30 +1177,49 @@ async function overviewPage(main, ctx) {
       if (ctx.alive()) replace(hostEl, errorBox(err));
     }
   };
-  const loadApps = async () => {
-    const [projects, deployments, groups] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments'), api('GET', '/groups')]);
-    state.projects = projects;
-    if (!ctx.alive()) return;
-    if (projects.length && groups.length) {
-      const active = new Map();
-      for (const d of deployments) if (isActiveDeployment(d)) active.set(d.project_id, d);
-      const grouped = new Set(groups.flatMap((g) => g.members.map((m) => m.project_id)));
-      const byId = new Map(projects.map((p) => [p.id, p]));
-      replace(appsEl,
-        h('div', { class: 'grid' }, groups.map((g) => groupCard(g, byId, active, loadApps))),
-        h('div', { class: 'grid apps' }, projects.filter((p) => !grouped.has(p.id)).map((p) => appCard(p, active.get(p.id), loadApps))));
-      return;
-    }
+  let lastApps = null;
+  const sel = {
+    has: (name) => selected.has(name),
+    toggle: (name, on) => {
+      if (on) selected.add(name);
+      else selected.delete(name);
+      drawBar();
+    },
+  };
+  const drawBar = () => {
+    const apps = lastApps ? lastApps.projects.filter((p) => !lastApps.grouped.has(p.id)) : [];
+    for (const name of [...selected]) if (!apps.some((p) => p.name === name)) selected.delete(name);
+    replace(barEl, appsToolbar(apps, selected, view, (v) => { view = v; setAppsView(v); redraw(); }, () => { redraw(); }, loadApps));
+  };
+  const redraw = () => {
+    if (!lastApps) return;
+    const { projects, active, groups, grouped } = lastApps;
     if (projects.length === 0) {
       replace(appsEl, h('div', { class: 'card empty' },
         h('h2', {}, 'No apps yet'),
         h('p', {}, 'Point Aegis at a git repository or a directory on this server.'),
         h('a', { class: 'btn primary', href: '#/apps/new' }, 'Create your first app')));
+      drawBar();
       return;
     }
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const loose = projects.filter((p) => !grouped.has(p.id));
+    replace(appsEl,
+      groups.length ? h('div', { class: 'grid' }, groups.map((g) => groupCard(g, byId, active, loadApps))) : null,
+      view === 'list'
+        ? appsTable(loose, active, loadApps, sel)
+        : h('div', { class: 'grid apps' }, loose.map((p) => appCard(p, active.get(p.id), loadApps, sel))));
+    drawBar();
+  };
+  const loadApps = async () => {
+    const [projects, deployments, groups] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments'), api('GET', '/groups')]);
+    state.projects = projects;
+    if (!ctx.alive()) return;
     const active = new Map();
     for (const d of deployments) if (isActiveDeployment(d)) active.set(d.project_id, d);
-    replace(appsEl, h('div', { class: 'grid apps' }, projects.map((p) => appCard(p, active.get(p.id), loadApps))));
+    const grouped = new Set(groups.flatMap((g) => g.members.map((m) => m.project_id)));
+    lastApps = { projects, active, groups, grouped };
+    redraw();
   };
 
   await Promise.all([loadHost(), loadApps()]);
@@ -1292,11 +1314,151 @@ function updatesBadge(u, { relevantOnly = false } = {}) {
   return bits.length ? bits : null;
 }
 
-function appCard(project, activeDeployment, reload) {
+/** "grid" (cards) or "list" (table); remembered in this browser. */
+function appsView() {
+  try {
+    return localStorage.getItem('aegis.apps-view') === 'list' ? 'list' : 'grid';
+  } catch {
+    return 'grid';
+  }
+}
+
+function setAppsView(view) {
+  try {
+    localStorage.setItem('aegis.apps-view', view);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** The checkbox that selects an app for bulk actions (deployers and admins). */
+function selectBox(project, sel) {
+  if (!sel || !can('deployer')) return null;
+  return h('input', {
+    type: 'checkbox',
+    class: 'app-select',
+    'data-select': project.name,
+    'aria-label': `Select ${project.name}`,
+    checked: sel.has(project.name),
+    onchange: (e) => sel.toggle(project.name, e.currentTarget.checked),
+  });
+}
+
+/** The apps as a table: one row per app. */
+function appsTable(projects, active, reload, sel) {
+  if (!projects.length) return null;
+  const rows = projects.map((project) => {
+    const p = project.process;
+    const activeDeployment = active.get(project.id);
+    return h('tr', { 'data-app': project.name },
+      can('deployer') ? h('td', { class: 'select-cell' }, selectBox(project, sel)) : null,
+      h('td', { 'data-label': 'App' },
+        h('a', { href: `#/apps/${enc(project.name)}` }, project.name),
+        project.protected ? h('span', { class: 'pill info', 'data-hidden-app': '', title: 'Hidden behind a password; unlocked for this session' }, 'Hidden') : null,
+        h('div', { class: 'source muted small truncate', title: sourceText(project) }, sourceText(project))),
+      h('td', { 'data-label': 'Status' }, processPill(project), activeDeployment ? deploymentPill(activeDeployment.status) : null, updatesBadge(project.updates)),
+      h('td', { 'data-label': 'Version', class: 'mono small truncate', title: project.current_release || '' }, project.current_release || '–'),
+      h('td', { 'data-label': 'Uptime' }, uptime(p)),
+      h('td', { 'data-label': 'CPU' }, project.usage ? fmtCores(project.usage.cpu_cores, project.resources.cpu_cores) : '–'),
+      h('td', { 'data-label': 'Memory' }, project.usage ? fmtUsage(project.usage.memory_bytes, project.resources.memory_bytes) : '–'),
+      h('td', { class: 'actions' },
+        can('deployer') ? h('button', { class: 'btn small primary', type: 'button', 'data-action': 'deploy', onclick: (e) => quickDeploy(project, e.currentTarget) }, 'Deploy') : null,
+        ' ', processButtons(project, reload),
+        ' ', h('a', { class: 'btn small ghost', href: `#/apps/${enc(project.name)}/logs` }, 'Logs')));
+  });
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'table stack apps-table', 'data-view': 'list' },
+    h('thead', {}, h('tr', {},
+      can('deployer') ? h('th', { class: 'select-cell' }, '') : null,
+      ['App', 'Status', 'Version', 'Uptime', 'CPU', 'Memory', ''].map((t) => h('th', {}, t)))),
+    h('tbody', {}, rows)));
+}
+
+/**
+ * Above the apps: the grid/list switch and, for deployers, select-all and
+ * the bulk actions for the selected apps.
+ */
+function appsToolbar(apps, selected, view, setView, redraw, reload) {
+  const viewBtn = (v, label) => h('button', {
+    class: `btn small${view === v ? ' primary' : ''}`,
+    type: 'button',
+    'data-view': v,
+    'aria-pressed': String(view === v),
+    onclick: () => view !== v && setView(v),
+  }, label);
+  const parts = [h('div', { class: 'view-switch', role: 'group', 'aria-label': 'Layout' }, viewBtn('grid', 'Grid'), viewBtn('list', 'List'))];
+  if (can('deployer') && apps.length) {
+    const all = apps.length > 0 && apps.every((p) => selected.has(p.name));
+    parts.push(h('label', { class: 'small select-all' },
+      h('input', {
+        type: 'checkbox',
+        'data-select-all': '',
+        checked: all,
+        onchange: (e) => {
+          for (const p of apps) {
+            if (e.currentTarget.checked) selected.add(p.name);
+            else selected.delete(p.name);
+          }
+          redraw();
+        },
+      }), ' Select all'));
+    if (selected.size) {
+      const chosen = apps.filter((p) => selected.has(p.name));
+      parts.push(h('span', { class: 'muted small', 'data-selected-count': String(chosen.length) }, `${chosen.length} selected`));
+      for (const [action, label, danger] of [['deploy', 'Deploy', false], ['restart', 'Restart', false], ['start', 'Start', false], ['stop', 'Stop', true]]) {
+        parts.push(h('button', {
+          class: `btn small${danger ? ' danger' : ''}${action === 'deploy' ? ' primary' : ''}`,
+          type: 'button',
+          'data-bulk': action,
+          onclick: (e) => bulkAction(action, chosen, e.currentTarget, reload),
+        }, label));
+      }
+      parts.push(h('button', { class: 'btn small ghost', type: 'button', 'data-bulk': 'clear', onclick: () => { selected.clear(); redraw(); } }, 'Clear'));
+    }
+  }
+  return h('div', { class: 'apps-toolbar' }, parts);
+}
+
+/** Deploy, start, restart or stop the chosen apps one after another and report. */
+async function bulkAction(action, apps, btn, reload) {
+  const needsProcess = action !== 'deploy';
+  const doable = apps.filter((p) => !needsProcess || p.current_release);
+  const skipped = apps.length - doable.length;
+  if (!doable.length) {
+    toast('None of the selected apps has a release to run yet', 'bad');
+    return;
+  }
+  const verb = { deploy: 'Deploy', restart: 'Restart', start: 'Start', stop: 'Stop' }[action];
+  const ok = await confirmDialog({
+    title: `${verb} ${doable.length} app${doable.length === 1 ? '' : 's'}?`,
+    message: `${doable.map((p) => p.name).join(', ')}${skipped ? ` (${skipped} without a release skipped)` : ''}. They are handled one after another.`,
+    confirmLabel: verb,
+    danger: action === 'stop',
+  });
+  if (!ok) return;
+  btn.disabled = true;
+  const failed = [];
+  for (const p of doable) {
+    try {
+      if (action === 'deploy') await api('POST', `/projects/${enc(p.name)}/deploy`, {});
+      else await api('POST', `/processes/${enc(p.name)}/${action}`);
+    } catch (err) {
+      if (err.status === 401) return;
+      failed.push(`${p.name}: ${err.message}`);
+    }
+  }
+  btn.disabled = false;
+  const done = doable.length - failed.length;
+  const past = { deploy: 'queued for deployment', restart: 'restarted', start: 'started', stop: 'stopped' }[action];
+  toast(`${done} app${done === 1 ? '' : 's'} ${past}${failed.length ? `; ${failed.length} failed: ${failed.join('; ')}` : ''}`, failed.length ? 'bad' : '');
+  reload().catch(() => {});
+}
+
+function appCard(project, activeDeployment, reload, sel) {
   const p = project.process;
   return h('article', { class: 'card app-card', 'data-app': project.name },
     h('div', { class: 'card-body' },
       h('div', { class: 'title' },
+        selectBox(project, sel),
         h('a', { href: `#/apps/${enc(project.name)}` }, project.name),
         project.protected ? h('span', { class: 'pill info', title: 'Hidden behind a password; unlocked for this session', 'data-hidden-app': '' }, 'Hidden') : null,
         h('span', { class: 'spacer' }),

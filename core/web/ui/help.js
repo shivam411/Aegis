@@ -40,6 +40,8 @@ export const HELP = {
       ['Deploy', 'Starts a deployment of the latest code with the app\'s default strategy and opens its progress.'],
       ['Start / Stop / Restart', 'Controls the running process. Stop and Restart ask first.'],
       ['Logs', 'Opens the app\'s live log.'],
+      ['Grid / List', 'Switches between cards and a table with one row per app. Remembered in this browser.'],
+      ['Checkboxes and bulk actions', 'Tick apps (or Select all) and Deploy, Restart, Start or Stop them together. They run one after another and a toast reports any that failed. Apps in a group are handled through their group.'],
     ],
     roles: 'Everyone can see the cards. Deploy, Start, Stop and Restart need deployer or admin.',
     docs: 'overview.md#app-cards',

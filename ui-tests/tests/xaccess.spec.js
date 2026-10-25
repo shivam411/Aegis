@@ -84,3 +84,26 @@ test('limit an account to some apps', async ({ page }) => {
     await expect(row).toHaveCount(0);
   });
 });
+
+test('switch to the list view and restart the selected apps', async ({ page }) => {
+  await login(page);
+  const first = page.locator('[data-app]').first();
+  await expect(first).toBeVisible();
+  const name = await first.getAttribute('data-app');
+
+  await page.locator('[data-view="list"]').click();
+  await expect(page.locator('table.apps-table')).toBeVisible();
+  await page.reload();
+  await expect(page.locator('table.apps-table')).toBeVisible();
+
+  await page.locator(`[data-select="${name}"]`).check();
+  await expect(page.locator('[data-selected-count]')).toHaveText('1 selected');
+  await page.locator('[data-bulk="deploy"]').click();
+  await confirm(page, 'Deploy');
+  await expect(page.locator('.toast', { hasText: 'queued for deployment' })).toBeVisible();
+
+  await page.locator('[data-bulk="clear"]').click();
+  await expect(page.locator('[data-selected-count]')).toHaveCount(0);
+  await page.locator('[data-view="grid"]').click();
+  await expect(page.locator('table.apps-table')).toHaveCount(0);
+});

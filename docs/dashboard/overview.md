@@ -49,6 +49,12 @@ The buttons at the bottom of the card:
 
 Start, Stop and Restart only appear once the app has a release.
 
+## Grid or list, and bulk actions
+
+- **Grid / List** above the apps switches between cards and a table (one row per app: status, version, uptime, CPU, memory and the same buttons). Your choice is remembered in this browser.
+- Deployers and admins see a checkbox on every app and **Select all**. With apps selected, **Deploy**, **Restart**, **Start** and **Stop** act on all of them after one confirmation. The apps are handled one after another; a message reports how many succeeded and which failed (and why). Start, Restart and Stop skip apps that have no release yet. **Clear** empties the selection.
+- Apps that belong to a [group](groups.md) are not selectable: deploy them through their group, so they keep their order and commit.
+
 ## Help
 
 Click **?** next to **Apps** for a summary of the card and its buttons:
