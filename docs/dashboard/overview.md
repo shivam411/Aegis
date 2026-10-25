@@ -7,6 +7,7 @@ The Overview is the home page (`#/`, or <kbd>g</kbd> <kbd>o</kbd>). It shows how
 ## Page header
 
 - **+ New app** opens the [new app wizard](new-app.md). Only admins see it. The <kbd>n</kbd> key does the same.
+- **Unlock hidden app** asks for an app's name and its hide password and shows that app until you sign out. See [Hide the app](settings.md#hide-the-app). Apps you have unlocked carry a **Hidden** badge.
 - **?** explains the page.
 
 ## Host tiles
@@ -47,6 +48,12 @@ The buttons at the bottom of the card:
 | **Logs** | Opens the [Logs tab](logs.md). | Everyone |
 
 Start, Stop and Restart only appear once the app has a release.
+
+## Grid or list, and bulk actions
+
+- **Grid / List** above the apps switches between cards and a table (one row per app: status, version, uptime, CPU, memory and the same buttons). Your choice is remembered in this browser.
+- Deployers and admins see a checkbox on every app and **Select all**. With apps selected, **Deploy**, **Restart**, **Start** and **Stop** act on all of them after one confirmation. The apps are handled one after another; a message reports how many succeeded and which failed (and why). Start, Restart and Stop skip apps that have no release yet. **Clear** empties the selection.
+- Apps that belong to a [group](groups.md) are not selectable: deploy them through their group, so they keep their order and commit.
 
 ## Help
 

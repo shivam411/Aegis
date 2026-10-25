@@ -139,7 +139,10 @@ fn user_only(path: &str) -> bool {
         || path.starts_with("/api/v1/backups/")
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
-        || matches!(section, Some("webhook" | "secrets" | "deploy-key"))
+        || matches!(
+            section,
+            Some("webhook" | "secrets" | "deploy-key" | "hide" | "unlock" | "lock")
+        )
         // A group's webhook secret, like an app's.
         || (path.starts_with("/api/v1/groups/")
             && path.split('/').nth(5) == Some("webhook"))
@@ -195,6 +198,9 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         ["system", "update", ..] => Role::Admin,
         // Shows the aegis.toml a settings change would produce; saves nothing.
         ["projects", _, "settings", "preview"] => Role::Viewer,
+        // Entering a hide password (or hiding the app again) changes nothing
+        // but what this session sees.
+        ["projects", _, "unlock" | "lock"] => Role::Viewer,
         ["projects", _, "deploy" | "rollback"] => Role::Deployer,
         ["groups", _, "deploy" | "rollback"] => Role::Deployer,
         // "Check now" for new commits: reads the git server, changes nothing.
@@ -272,14 +278,22 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
             }
         }
     }
+    let vis = match crate::access::visibility_for(&st, &principal, &credential).await {
+        Ok(vis) => vis,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(denied) = crate::access::guard(&st, &vis, req.method(), &path) {
+        return denied.into_response();
+    }
     let actor = principal.actor();
+    req.extensions_mut().insert(vis);
     req.extensions_mut().insert(principal);
     req.extensions_mut().insert(credential);
     with_actor(actor, next.run(req)).await
 }
 
 /// The client address, taking a local reverse proxy into account.
-fn client_ip(st: &AppState, peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
+pub(crate) fn client_ip(st: &AppState, peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
     let peer_ip = peer.map(|p| p.ip());
     if st.settings.trust_proxy && peer_ip.is_some_and(|ip| ip.is_loopback()) {
         // The proxy appends the address it saw; earlier entries are client-supplied.
@@ -305,7 +319,12 @@ fn session_cookie(st: &AppState, value: &str, max_age: u64) -> HeaderValue {
 }
 
 /// Records an audit event; failures are logged, not surfaced.
-async fn audit(st: &AppState, actor: String, event_type: &str, payload: serde_json::Value) {
+pub(crate) async fn audit(
+    st: &AppState,
+    actor: String,
+    event_type: &str,
+    payload: serde_json::Value,
+) {
     let result = with_actor(actor, st.control.record(event_type, payload)).await;
     if let Err(e) = result {
         tracing::error!(error = %e, event_type, "Failed to record audit event");

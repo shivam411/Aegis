@@ -6,6 +6,12 @@
 
 Each entry shows the time, the event type, a summary, and who did it (`by user:<name>` or `by token:<name>`). Colours: green for successes, amber for warnings, red for failures. **Details** shows the event's data as JSON.
 
+## Paging
+
+Long lists are paged: **25, 50, 100 or 200 per page** (remembered in this browser) with **Previous** / **Next** and a "51–100 of 230" counter. Changing a filter goes back to the first page. The controls appear once there are more than 25 rows.
+
+Events about apps you may not see are left out, including in the live stream.
+
 ## Filters
 
 | Control | What it does |

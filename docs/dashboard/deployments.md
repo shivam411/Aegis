@@ -16,6 +16,14 @@
 
 Filter with the **App** and **Status** menus (**In progress**, **Succeeded**, **Failed**, **Rolled back**). Click a row, or focus it and press Enter, to open it.
 
+## Paging
+
+Long lists are paged: **25, 50, 100 or 200 per page** (remembered in this browser) with **Previous** / **Next** and a "51–100 of 230" counter. Changing a filter goes back to the first page. The controls appear once there are more than 25 rows.
+
+## Who sees which apps
+
+Only the deployments and events of the apps you may see are listed (see [Account → Users → Apps](account.md#users)). Give someone just `api` and `dashboard` and the other apps, and their deployments and events, are not shown anywhere in their dashboard.
+
 ## Deployment details
 
 The deployment page (`#/deployments/<id>`) has the same pipeline card as the [Deploy tab](deploy.md#deployment-progress), with the stages, rollout steps, outcome and full build log, and an **Events** card listing everything that happened during the deployment, in order. **Open &lt;app&gt;** goes to the app page.

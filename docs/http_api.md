@@ -58,7 +58,7 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `POST /system/update/check` | Admins, signed in (not API tokens): ask GitHub now. Refused (409) with `[update] check = false` |
 | `POST /system/update/apply` | Admins, signed in: back up, download, verify (release signature, then SHA-256) and install the latest release, then restart (202; follow `phase`). `{"version"?}` must match the latest known release. 409 with the command to run when the daemon can't replace its own binary, or when this build has no release signing key. See [upgrading.md](upgrading.md) |
 | `POST /detect` | Detect runtime and default commands: `{"source_dir"}` or `{"repository_url", "branch"?}` (shallow clone into scratch space), plus `"source_subdir"?` (look inside that folder) and `"project"?` (an existing app: clone with its deploy key, default to its folder). `start_hint` is set when the package.json start script hard-codes its port: `{"port", "script", "suggested_start"}` (e.g. `npx next start -p $PORT`) |
-| `GET /projects` | Projects with their live release, schedule and process, plus `instances` (every instance of the live release with its process, CPU and memory; one entry for single-instance apps) and `standby` (a BlueGreen previous release kept running, or `null`) |
+| `GET /projects` | Projects (only those the caller may see; `protected` is true for apps hidden behind a password) with their live release, schedule and process, plus `instances` (every instance of the live release with its process, CPU and memory; one entry for single-instance apps) and `standby` (a BlueGreen previous release kept running, or `null`) |
 | `POST /projects` | Register a project: `{"name", "source_dir"?, "repository_url"?, "branch"?, "project_id"?, "source_subdir"?}`. `source_subdir` (e.g. `apps/web`, relative, no `..`) builds and runs only that folder of the source |
 | `GET /projects/{project}` | One project |
 | `DELETE /projects/{project}?confirm={name}&keep_releases=` | Delete the app. `confirm` must repeat its name (or id), else **400**. Stops all its processes (instances and a BlueGreen standby; taken out of the proxy first, then given the drain timeout to finish requests), stops serving its domains, and deletes its secrets, deploy key, webhook secret, env-file setting, daily deploy, resource limits, Docker images and (unless `keep_releases=true`) its release directories, logs and artifact metadata. ACME certificates already issued are kept on disk. Records `ProjectDeleted`; its earlier events stay. Its name and domains can be used again at once. Returns `{"project_id", "name", "stopped_processes", "domains", "secrets_removed", "releases_kept", "kept_dir"}`. **409** while a deployment of it is queued or running. Admins, signed in (API tokens get 403) |
@@ -99,8 +99,10 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /auth/session` | Who is calling; the CSRF token for sessions |
 | `POST /auth/password` | `{"current_password", "new_password"}`; ends all sessions (users only) |
 | `GET /tokens` · `POST /tokens` · `DELETE /tokens/{id}` | List, create (`{"name", "scope": "read"\|"deploy"}`; shown once) and revoke API tokens (admins only) |
-| `GET /users` · `POST /users` | List users; create one (**201**): `{"username", "password", "role"}` (admins only) |
-| `PUT /users/{name}` · `DELETE /users/{name}` | Change `role` and/or set a new `password` (signs them out); delete (**204**). The last admin can't be demoted or deleted; you can't delete yourself (**409**). Admins only |
+| `GET /users` · `POST /users` | List users (each with `all_apps` and, when false, the `apps` they may see); create one (**201**): `{"username", "password", "role", "all_apps"?, "apps"?}`. `all_apps: true` (the default) lets the user see every app; `apps` is a list of app names or ids they are limited to (not for admins; **400** if both are given, **404** for an unknown app). Admins only |
+| `PUT /users/{name}` · `DELETE /users/{name}` | Change `role`, set a new `password` (signs them out), and/or change app access with `all_apps: true` or `apps: [...]` (an empty list: no apps); applies to open sessions at once. Delete (**204**). The last admin can't be demoted or deleted; you can't delete yourself (**409**). Admins only |
+| `PUT /projects/{project}/hide` · `DELETE /projects/{project}/hide` | Hide the app behind a password: `{"password"}` (at least 12 characters; **204**; your own session stays unlocked) / stop hiding it (**204**). Admins, signed in (API tokens get 403). See [Hidden apps](#hidden-apps-and-app-access) |
+| `POST /projects/{project}/unlock` · `POST /projects/{project}/lock` | Enter a hidden app's password (`{"password"}`, **204**; **403** for a wrong password *or* an app that does not exist, hidden or not allowed to you; **429** after repeated failures) so this session sees it until it ends / hide it again for this session. Signed-in users, any role |
 | `POST /projects/{project}/webhook` | Create or replace the GitHub webhook secret (users only; shown once) |
 | `GET /projects/{project}/deploy-key` | The app's SSH deploy key: `{"public_key", "fingerprint", "created_at", "clone_url", "add_key_url"}` (**404** without one). The private key is never returned. Admins, signed in (API tokens get 403) |
 | `POST /projects/{project}/deploy-key` | Generate an Ed25519 deploy key (**201**, same body). `{"replace": true}` replaces an existing key (else **409**). Admins, signed in |
@@ -121,6 +123,15 @@ Outside `/api/v1`:
 | `POST /hooks/github/groups/{group-id}` | A group's GitHub push webhook: a push to its branch deploys the group's changed apps at the pushed commit |
 
 Raw event injection (`aegis emit-event`) is deliberately not offered over HTTP.
+
+### Hidden apps and app access
+
+Two features limit which apps a signed-in user sees. Both answer **404** `not_found` for an app the caller can't see, exactly as for an app that does not exist, on every path that names it (`/projects/{project}/…`, `/processes/{target}/…`, `/deployments/{id}/…`, `?project=`), and both leave such apps out of `/projects`, `/status` counts, `/processes`, `/deployments`, `/events` (and its stream), `/metrics/stream`, `/proxy` routes and `/groups` (a group with an app you can't see is hidden whole).
+
+- **Per-user app lists.** `PUT /users/{name}` with `apps` limits a non-admin account to those apps. Apps created later are not included until added. Admins are never limited.
+- **Hidden apps.** An admin hides an app with a password; each session must unlock it (`POST /projects/{project}/unlock`) after signing in. Unlocks end with the session, and setting a new password or removing the hiding ends them for everyone.
+
+API tokens are not limited by either: an admin issued them, and automation (CI deploys) must keep working. Hidden or not, GitHub webhooks and schedules keep deploying the app.
 
 ### Errors
 

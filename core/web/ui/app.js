@@ -1157,13 +1157,17 @@ function loginPage() {
 async function overviewPage(main, ctx) {
   const hostEl = h('div', { class: 'grid stats', id: 'host' });
   const appsEl = h('div', { id: 'apps' });
+  const barEl = h('div', { id: 'apps-bar' });
+  const selected = new Set();
+  let view = appsView();
   append(main,
     pageHeader('Overview', 'overview',
+      h('button', { class: 'btn', type: 'button', 'data-action': 'unlock-app', onclick: () => unlockAppDialog(() => loadApps().catch(() => {})) }, 'Unlock hidden app'),
       can('admin') ? h('a', { class: 'btn', href: '#/groups/new', 'data-action': 'new-group' }, '+ New group') : null,
       h('a', { class: 'btn primary', href: '#/apps/new', 'data-requires': 'admin', 'data-tour': 'new-app' }, '+ New app')),
     h('div', { class: 'section-head' }, h('h2', {}, 'Server'), helpButton('overview.host')),
     hostEl,
-    h('div', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', {}, 'Apps'), helpButton('overview.apps')), appsEl));
+    h('div', { class: 'section' }, h('div', { class: 'section-head' }, h('h2', {}, 'Apps'), helpButton('overview.apps')), barEl, appsEl));
 
   const loadHost = async () => {
     try {
@@ -1173,30 +1177,49 @@ async function overviewPage(main, ctx) {
       if (ctx.alive()) replace(hostEl, errorBox(err));
     }
   };
-  const loadApps = async () => {
-    const [projects, deployments, groups] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments'), api('GET', '/groups')]);
-    state.projects = projects;
-    if (!ctx.alive()) return;
-    if (projects.length && groups.length) {
-      const active = new Map();
-      for (const d of deployments) if (isActiveDeployment(d)) active.set(d.project_id, d);
-      const grouped = new Set(groups.flatMap((g) => g.members.map((m) => m.project_id)));
-      const byId = new Map(projects.map((p) => [p.id, p]));
-      replace(appsEl,
-        h('div', { class: 'grid' }, groups.map((g) => groupCard(g, byId, active, loadApps))),
-        h('div', { class: 'grid apps' }, projects.filter((p) => !grouped.has(p.id)).map((p) => appCard(p, active.get(p.id), loadApps))));
-      return;
-    }
+  let lastApps = null;
+  const sel = {
+    has: (name) => selected.has(name),
+    toggle: (name, on) => {
+      if (on) selected.add(name);
+      else selected.delete(name);
+      drawBar();
+    },
+  };
+  const drawBar = () => {
+    const apps = lastApps ? lastApps.projects.filter((p) => !lastApps.grouped.has(p.id)) : [];
+    for (const name of [...selected]) if (!apps.some((p) => p.name === name)) selected.delete(name);
+    replace(barEl, appsToolbar(apps, selected, view, (v) => { view = v; setAppsView(v); redraw(); }, () => { redraw(); }, loadApps));
+  };
+  const redraw = () => {
+    if (!lastApps) return;
+    const { projects, active, groups, grouped } = lastApps;
     if (projects.length === 0) {
       replace(appsEl, h('div', { class: 'card empty' },
         h('h2', {}, 'No apps yet'),
         h('p', {}, 'Point Aegis at a git repository or a directory on this server.'),
         h('a', { class: 'btn primary', href: '#/apps/new' }, 'Create your first app')));
+      drawBar();
       return;
     }
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const loose = projects.filter((p) => !grouped.has(p.id));
+    replace(appsEl,
+      groups.length ? h('div', { class: 'grid' }, groups.map((g) => groupCard(g, byId, active, loadApps))) : null,
+      view === 'list'
+        ? appsTable(loose, active, loadApps, sel)
+        : h('div', { class: 'grid apps' }, loose.map((p) => appCard(p, active.get(p.id), loadApps, sel))));
+    drawBar();
+  };
+  const loadApps = async () => {
+    const [projects, deployments, groups] = await Promise.all([api('GET', '/projects'), api('GET', '/deployments'), api('GET', '/groups')]);
+    state.projects = projects;
+    if (!ctx.alive()) return;
     const active = new Map();
     for (const d of deployments) if (isActiveDeployment(d)) active.set(d.project_id, d);
-    replace(appsEl, h('div', { class: 'grid apps' }, projects.map((p) => appCard(p, active.get(p.id), loadApps))));
+    const grouped = new Set(groups.flatMap((g) => g.members.map((m) => m.project_id)));
+    lastApps = { projects, active, groups, grouped };
+    redraw();
   };
 
   await Promise.all([loadHost(), loadApps()]);
@@ -1291,12 +1314,153 @@ function updatesBadge(u, { relevantOnly = false } = {}) {
   return bits.length ? bits : null;
 }
 
-function appCard(project, activeDeployment, reload) {
+/** "grid" (cards) or "list" (table); remembered in this browser. */
+function appsView() {
+  try {
+    return localStorage.getItem('aegis.apps-view') === 'list' ? 'list' : 'grid';
+  } catch {
+    return 'grid';
+  }
+}
+
+function setAppsView(view) {
+  try {
+    localStorage.setItem('aegis.apps-view', view);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** The checkbox that selects an app for bulk actions (deployers and admins). */
+function selectBox(project, sel) {
+  if (!sel || !can('deployer')) return null;
+  return h('input', {
+    type: 'checkbox',
+    class: 'app-select',
+    'data-select': project.name,
+    'aria-label': `Select ${project.name}`,
+    checked: sel.has(project.name),
+    onchange: (e) => sel.toggle(project.name, e.currentTarget.checked),
+  });
+}
+
+/** The apps as a table: one row per app. */
+function appsTable(projects, active, reload, sel) {
+  if (!projects.length) return null;
+  const rows = projects.map((project) => {
+    const p = project.process;
+    const activeDeployment = active.get(project.id);
+    return h('tr', { 'data-app': project.name },
+      can('deployer') ? h('td', { class: 'select-cell' }, selectBox(project, sel)) : null,
+      h('td', { 'data-label': 'App' },
+        h('a', { href: `#/apps/${enc(project.name)}` }, project.name),
+        project.protected ? h('span', { class: 'pill info', 'data-hidden-app': '', title: 'Hidden behind a password; unlocked for this session' }, 'Hidden') : null,
+        h('div', { class: 'source muted small truncate', title: sourceText(project) }, sourceText(project))),
+      h('td', { 'data-label': 'Status' }, processPill(project), activeDeployment ? deploymentPill(activeDeployment.status) : null, updatesBadge(project.updates)),
+      h('td', { 'data-label': 'Version', class: 'mono small truncate', title: project.current_release || '' }, project.current_release || '–'),
+      h('td', { 'data-label': 'Uptime' }, uptime(p)),
+      h('td', { 'data-label': 'CPU' }, project.usage ? fmtCores(project.usage.cpu_cores, project.resources.cpu_cores) : '–'),
+      h('td', { 'data-label': 'Memory' }, project.usage ? fmtUsage(project.usage.memory_bytes, project.resources.memory_bytes) : '–'),
+      h('td', { class: 'actions' },
+        can('deployer') ? h('button', { class: 'btn small primary', type: 'button', 'data-action': 'deploy', onclick: (e) => quickDeploy(project, e.currentTarget) }, 'Deploy') : null,
+        ' ', processButtons(project, reload),
+        ' ', h('a', { class: 'btn small ghost', href: `#/apps/${enc(project.name)}/logs` }, 'Logs')));
+  });
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'table stack apps-table', 'data-view': 'list' },
+    h('thead', {}, h('tr', {},
+      can('deployer') ? h('th', { class: 'select-cell' }, '') : null,
+      ['App', 'Status', 'Version', 'Uptime', 'CPU', 'Memory', ''].map((t) => h('th', {}, t)))),
+    h('tbody', {}, rows)));
+}
+
+/**
+ * Above the apps: the grid/list switch and, for deployers, select-all and
+ * the bulk actions for the selected apps.
+ */
+function appsToolbar(apps, selected, view, setView, redraw, reload) {
+  const viewBtn = (v, label) => h('button', {
+    class: `btn small${view === v ? ' primary' : ''}`,
+    type: 'button',
+    'data-view': v,
+    'aria-pressed': String(view === v),
+    onclick: () => view !== v && setView(v),
+  }, label);
+  const parts = [h('div', { class: 'view-switch', role: 'group', 'aria-label': 'Layout' }, viewBtn('grid', 'Grid'), viewBtn('list', 'List'))];
+  if (can('deployer') && apps.length) {
+    const all = apps.length > 0 && apps.every((p) => selected.has(p.name));
+    parts.push(h('label', { class: 'small select-all' },
+      h('input', {
+        type: 'checkbox',
+        'data-select-all': '',
+        checked: all,
+        onchange: (e) => {
+          for (const p of apps) {
+            if (e.currentTarget.checked) selected.add(p.name);
+            else selected.delete(p.name);
+          }
+          redraw();
+        },
+      }), ' Select all'));
+    if (selected.size) {
+      const chosen = apps.filter((p) => selected.has(p.name));
+      parts.push(h('span', { class: 'muted small', 'data-selected-count': String(chosen.length) }, `${chosen.length} selected`));
+      for (const [action, label, danger] of [['deploy', 'Deploy', false], ['restart', 'Restart', false], ['start', 'Start', false], ['stop', 'Stop', true]]) {
+        parts.push(h('button', {
+          class: `btn small${danger ? ' danger' : ''}${action === 'deploy' ? ' primary' : ''}`,
+          type: 'button',
+          'data-bulk': action,
+          onclick: (e) => bulkAction(action, chosen, e.currentTarget, reload),
+        }, label));
+      }
+      parts.push(h('button', { class: 'btn small ghost', type: 'button', 'data-bulk': 'clear', onclick: () => { selected.clear(); redraw(); } }, 'Clear'));
+    }
+  }
+  return h('div', { class: 'apps-toolbar' }, parts);
+}
+
+/** Deploy, start, restart or stop the chosen apps one after another and report. */
+async function bulkAction(action, apps, btn, reload) {
+  const needsProcess = action !== 'deploy';
+  const doable = apps.filter((p) => !needsProcess || p.current_release);
+  const skipped = apps.length - doable.length;
+  if (!doable.length) {
+    toast('None of the selected apps has a release to run yet', 'bad');
+    return;
+  }
+  const verb = { deploy: 'Deploy', restart: 'Restart', start: 'Start', stop: 'Stop' }[action];
+  const ok = await confirmDialog({
+    title: `${verb} ${doable.length} app${doable.length === 1 ? '' : 's'}?`,
+    message: `${doable.map((p) => p.name).join(', ')}${skipped ? ` (${skipped} without a release skipped)` : ''}. They are handled one after another.`,
+    confirmLabel: verb,
+    danger: action === 'stop',
+  });
+  if (!ok) return;
+  btn.disabled = true;
+  const failed = [];
+  for (const p of doable) {
+    try {
+      if (action === 'deploy') await api('POST', `/projects/${enc(p.name)}/deploy`, {});
+      else await api('POST', `/processes/${enc(p.name)}/${action}`);
+    } catch (err) {
+      if (err.status === 401) return;
+      failed.push(`${p.name}: ${err.message}`);
+    }
+  }
+  btn.disabled = false;
+  const done = doable.length - failed.length;
+  const past = { deploy: 'queued for deployment', restart: 'restarted', start: 'started', stop: 'stopped' }[action];
+  toast(`${done} app${done === 1 ? '' : 's'} ${past}${failed.length ? `; ${failed.length} failed: ${failed.join('; ')}` : ''}`, failed.length ? 'bad' : '');
+  reload().catch(() => {});
+}
+
+function appCard(project, activeDeployment, reload, sel) {
   const p = project.process;
   return h('article', { class: 'card app-card', 'data-app': project.name },
     h('div', { class: 'card-body' },
       h('div', { class: 'title' },
+        selectBox(project, sel),
         h('a', { href: `#/apps/${enc(project.name)}` }, project.name),
+        project.protected ? h('span', { class: 'pill info', title: 'Hidden behind a password; unlocked for this session', 'data-hidden-app': '' }, 'Hidden') : null,
         h('span', { class: 'spacer' }),
         updatesBadge(project.updates),
         activeDeployment ? deploymentPill(activeDeployment.status) : null,
@@ -1643,6 +1807,7 @@ async function appPage(main, ctx, name, tab = 'deploy') {
       h('h1', {}, project.name),
       helpButton('app'),
       processPill(project),
+      project.protected ? h('span', { class: 'pill info', title: 'Hidden behind a password; unlocked for this session', 'data-hidden-app': '' }, 'Hidden') : null,
       p && p.runtime === 'docker'
         ? h('span', { 'data-runtime': 'docker', title: p.image || '' }, pill('Docker', 'info'))
         : null,
@@ -2975,7 +3140,85 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, dangerCard(ctx)));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, hideCard(ctx, rerender), dangerCard(ctx)));
+}
+
+/** Asks for an app's name and hide password; the app then shows for this session. */
+async function unlockAppDialog(after) {
+  let name = '';
+  let password = '';
+  const result = await modal(() => {
+    const nameIn = h('input', { id: 'unlock-name', class: 'mono', autocomplete: 'off', spellcheck: 'false', required: true, 'aria-label': 'App name' });
+    const passIn = h('input', { id: 'unlock-password', type: 'password', autocomplete: 'off', required: true, 'aria-label': 'Hide password' });
+    const form = h('form', {
+      method: 'dialog',
+      onsubmit: () => {
+        name = nameIn.value.trim();
+        password = passIn.value;
+      },
+    },
+    h('div', { class: 'dialog-body' },
+      h('h2', {}, 'Unlock a hidden app'),
+      h('p', { class: 'muted' }, 'Hidden apps are left out of every list. Enter the app\'s name and its hide password to see it until you sign out.'),
+      h('div', { class: 'field' }, h('label', { for: 'unlock-name' }, 'App name'), nameIn),
+      h('div', { class: 'field' }, h('label', { for: 'unlock-password' }, 'Hide password'), passIn)),
+    h('div', { class: 'form-actions' },
+      h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+      h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Unlock')));
+    setTimeout(() => nameIn.focus(), 0);
+    return form;
+  });
+  if (result !== 'ok' || !name) return;
+  const done = await run(null, () => api('POST', `/projects/${enc(name)}/unlock`, { password }), `${name} unlocked`);
+  if (done !== undefined) {
+    if (after) after();
+    go(`/apps/${enc(name)}`);
+  }
+}
+
+/** Settings → Hide this app: hide it behind a password, or lock/unhide it. */
+function hideCard(ctx, rerender) {
+  const project = ctx.project();
+  if (!can('admin')) return null;
+  if (project.protected) {
+    const lockBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'lock-app' }, 'Hide it now');
+    lockBtn.addEventListener('click', async () => {
+      const done = await run(lockBtn, () => api('POST', `/projects/${enc(project.id)}/lock`, {}), `${project.name} is hidden again`);
+      if (done !== undefined) go('/');
+    });
+    const unhideBtn = h('button', { class: 'btn danger', type: 'button', 'data-action': 'unhide-app' }, 'Stop hiding');
+    unhideBtn.addEventListener('click', async () => {
+      const ok = await confirmDialog({
+        title: `Stop hiding ${project.name}?`,
+        message: 'Everyone who may see it will see it again without a password.',
+        confirmLabel: 'Stop hiding',
+        danger: true,
+      });
+      if (!ok) return;
+      const done = await run(unhideBtn, () => api('DELETE', `/projects/${enc(project.id)}/hide`), `${project.name} is no longer hidden`);
+      if (done !== undefined) rerender();
+    });
+    return h('section', { class: 'card', 'data-card': 'hide-app' },
+      cardHeader('Hidden app', 'app.hide'),
+      h('div', { class: 'card-body' },
+        h('p', { class: 'muted small' }, 'This app is hidden behind a password. It is unlocked for your session only; other sessions must enter the password to see it.'),
+        h('div', { class: 'form-actions' }, lockBtn, ' ', unhideBtn)));
+  }
+  const passIn = h('input', { id: 'hide-password', type: 'password', autocomplete: 'new-password', minlength: 12, required: true, 'aria-label': 'Hide password' });
+  const hideBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'hide-app' }, 'Hide app');
+  const form = h('form', {
+    class: 'card-body',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const done = await run(hideBtn, () => api('PUT', `/projects/${enc(project.id)}/hide`, { password: passIn.value }), `${project.name} is hidden`);
+      if (done !== undefined) rerender();
+    },
+  },
+  h('p', { class: 'muted small' }, 'Hide this app from every list, search and event feed. Anyone who wants to see it must enter the password (Overview → Unlock hidden app) in each new session.'),
+  h('div', { class: 'field' }, h('label', { for: 'hide-password' }, 'Password (at least 12 characters)'), passIn,
+    h('span', { class: 'hint' }, 'It cannot be recovered; keep it in a password manager.')),
+  h('div', { class: 'form-actions' }, hideBtn));
+  return h('section', { class: 'card', 'data-card': 'hide-app' }, cardHeader('Hide this app', 'app.hide'), form);
 }
 
 /** Settings → Danger zone: delete the app (typing its name to confirm). */
@@ -4079,6 +4322,61 @@ const EVENT_CATEGORIES = [
   ['update', 'Aegis updates', (t) => t.startsWith('Update')],
 ];
 
+/**
+ * Page controls for a long list held in memory: page size, Previous/Next and
+ * "51–100 of 230". `slice(items)` returns the current page; call `update()`
+ * after the list changes. The size is remembered in this browser.
+ */
+function pager(key, onChange) {
+  const sizes = [25, 50, 100, 200];
+  let size = 50;
+  try {
+    const saved = Number(localStorage.getItem(`aegis.page-size.${key}`));
+    if (sizes.includes(saved)) size = saved;
+  } catch {
+    /* storage unavailable */
+  }
+  let page = 0;
+  let total = 0;
+  const sizeSel = h('select', { 'aria-label': 'Rows per page', 'data-page-size': '' },
+    sizes.map((n) => h('option', { value: n, selected: n === size }, `${n} per page`)));
+  const prev = h('button', { class: 'btn small', type: 'button', 'data-page': 'prev' }, 'Previous');
+  const next = h('button', { class: 'btn small', type: 'button', 'data-page': 'next' }, 'Next');
+  const label = h('span', { class: 'muted small', 'data-page-label': '', 'aria-live': 'polite' });
+  const el = h('div', { class: 'pager' }, label, h('span', { class: 'spacer' }), sizeSel, prev, next);
+  const sync = () => {
+    const pages = Math.max(1, Math.ceil(total / size));
+    if (page >= pages) page = pages - 1;
+    const from = total ? page * size + 1 : 0;
+    label.textContent = `${from}–${Math.min(total, (page + 1) * size)} of ${total}`;
+    prev.disabled = page <= 0;
+    next.disabled = page >= pages - 1;
+    el.hidden = total <= sizes[0];
+  };
+  sizeSel.addEventListener('change', () => {
+    size = Number(sizeSel.value);
+    page = 0;
+    try {
+      localStorage.setItem(`aegis.page-size.${key}`, String(size));
+    } catch {
+      /* storage unavailable */
+    }
+    onChange();
+  });
+  prev.addEventListener('click', () => { page -= 1; onChange(); });
+  next.addEventListener('click', () => { page += 1; onChange(); });
+  return {
+    el,
+    /** Back to the first page (after a filter changes). */
+    reset: () => { page = 0; },
+    slice: (items) => {
+      total = items.length;
+      sync();
+      return items.slice(page * size, (page + 1) * size);
+    },
+  };
+}
+
 async function eventsPage(main, ctx) {
   if (!state.projects.length) state.projects = await api('GET', '/projects');
   if (!ctx.alive()) return;
@@ -4091,6 +4389,7 @@ async function eventsPage(main, ctx) {
   const list = h('ul', { class: 'events', 'data-events': '' });
   const count = h('span', { class: 'muted small' });
   let events = [];
+  const pg = pager('events', () => draw());
 
   const matches = (e) => {
     const [, , test] = EVENT_CATEGORIES.find(([v]) => v === categorySel.value);
@@ -4102,25 +4401,28 @@ async function eventsPage(main, ctx) {
   const draw = () => {
     const shown = events.filter(matches);
     count.textContent = `${shown.length} of ${events.length}`;
-    replace(list, shown.length ? shown.map(eventItem) : h('li', { class: 'empty' }, 'No matching events.'));
+    const visible = pg.slice(shown);
+    replace(list, visible.length ? visible.map(eventItem) : h('li', { class: 'empty' }, 'No matching events.'));
   };
+  const redraw = () => { pg.reset(); draw(); };
   const load = async () => {
     const q = projectSel.value ? `project=${enc(projectSel.value)}&` : '';
     events = (await api('GET', `/events?${q}limit=${limitSel.value}`)).reverse();
-    if (ctx.alive()) draw();
+    if (ctx.alive()) redraw();
   };
 
   projectSel.addEventListener('change', () => load().catch((err) => toast(err.message, 'bad')));
   limitSel.addEventListener('change', () => load().catch((err) => toast(err.message, 'bad')));
-  categorySel.addEventListener('change', draw);
-  search.addEventListener('input', debounce(draw, 120));
+  categorySel.addEventListener('change', redraw);
+  search.addEventListener('input', debounce(redraw, 120));
 
   append(main,
     pageHeader('Events', 'events', count),
     h('div', { class: 'card' },
       h('div', { class: 'card-header filters' }, projectSel, categorySel, limitSel, search,
         h('label', { class: 'small', for: 'events-live' }, live, ' Live')),
-      list));
+      list,
+      h('div', { class: 'card-body' }, pg.el)));
   await load();
   onEvents(ctx, (e) => {
     if (e.event_type === '_resync') {
@@ -4129,11 +4431,7 @@ async function eventsPage(main, ctx) {
     }
     if (!live.checked) return;
     events.unshift(e);
-    if (matches(e)) {
-      if (list.firstChild?.classList?.contains('empty')) list.replaceChildren();
-      list.prepend(eventItem(e));
-      count.textContent = `${events.filter(matches).length} of ${events.length}`;
-    }
+    if (matches(e)) draw();
   });
 }
 
@@ -4152,17 +4450,20 @@ async function deploymentsPage(main, ctx) {
     h('table', { class: 'stack' },
       h('thead', {}, h('tr', {}, ['Status', 'App', 'Release', 'Trigger', 'Stage', 'Started', 'Duration'].map((t) => h('th', {}, t)))),
       tableBody));
+  const pg = pager('deployments', () => draw());
+  wrap.append(h('div', { class: 'card-body' }, pg.el));
   append(main, pageHeader('Deployments', 'deployments'), wrap);
   let deployments = [];
 
   const draw = () => {
     const shown = deployments.filter((d) => (!projectSel.value || d.project_id === projectSel.value)
       && (!statusSel.value || (statusSel.value === 'active' ? isActiveDeployment(d) : d.status === statusSel.value)));
+    const visible = pg.slice(shown);
     if (!shown.length) {
       replace(tableBody, h('tr', {}, h('td', { colspan: 7, class: 'empty' }, deployments.length ? 'No deployments match.' : 'No deployments yet.')));
       return;
     }
-    replace(tableBody, shown.map((d) => h('tr', {
+    replace(tableBody, visible.map((d) => h('tr', {
       class: 'clickable',
       'data-deployment': d.id,
       tabindex: '0',
@@ -4186,8 +4487,9 @@ async function deploymentsPage(main, ctx) {
     replace(projectSel, h('option', { value: '' }, 'All apps'), projects.map((p) => h('option', { value: p.id, selected: p.id === selected }, p.name)));
     draw();
   };
-  projectSel.addEventListener('change', draw);
-  statusSel.addEventListener('change', draw);
+  const refilter = () => { pg.reset(); draw(); };
+  projectSel.addEventListener('change', refilter);
+  statusSel.addEventListener('change', refilter);
   await load();
   const reload = debounce(() => load().catch(() => {}), 300);
   onEvents(ctx, (e) => {
@@ -4633,6 +4935,31 @@ function roleSelect(id, value, label) {
     Object.entries(ROLE_HELP).map(([v, text]) => h('option', { value: v, selected: v === value }, text)));
 }
 
+/**
+ * Which apps an account may see: "all apps" or a checked list. `read()`
+ * gives the request fields (`all_apps` / `apps`).
+ */
+function appAccessPicker(apps, initial) {
+  const all = h('input', { type: 'radio', name: `access-${Math.random().toString(36).slice(2)}`, value: 'all', checked: !initial || initial.all_apps });
+  const some = h('input', { type: 'radio', name: all.name, value: 'some', checked: !!initial && !initial.all_apps });
+  const boxes = apps.map((a) => ({
+    name: a.name,
+    box: h('input', { type: 'checkbox', value: a.name, checked: !!initial && !initial.all_apps && (initial.apps || []).includes(a.name), 'aria-label': `Can see ${a.name}` }),
+  }));
+  const list = h('div', { class: 'app-access-list', hidden: all.checked },
+    boxes.length ? boxes.map((b) => h('label', { class: 'small' }, b.box, ' ', b.name)) : h('span', { class: 'muted small' }, 'No apps yet.'));
+  const sync = () => { list.hidden = all.checked; };
+  all.addEventListener('change', sync);
+  some.addEventListener('change', sync);
+  return {
+    el: h('div', { class: 'field app-access' },
+      h('label', { class: 'small' }, all, ' All apps (including apps added later)'),
+      h('label', { class: 'small' }, some, ' Only these apps'),
+      list),
+    read: () => (all.checked ? { all_apps: true } : { all_apps: false, apps: boxes.filter((b) => b.box.checked).map((b) => b.name) }),
+  };
+}
+
 /** Admins: create users, change roles, reset passwords, delete users. */
 function usersCard(ctx, me) {
   const tbody = h('tbody');
@@ -4675,9 +5002,36 @@ function usersCard(ctx, me) {
         const done = await run(deleteBtn, () => api('DELETE', `/users/${enc(u.username)}`), `${u.username} deleted`);
         if (done !== undefined) load().catch(() => {});
       });
+      const appsBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'user-apps', disabled: u.role === 'admin', title: u.role === 'admin' ? 'Admins always see every app' : '' },
+        u.all_apps ? 'All apps' : `${u.apps.length} app${u.apps.length === 1 ? '' : 's'}`);
+      appsBtn.addEventListener('click', async () => {
+        let apps;
+        try {
+          apps = await api('GET', '/projects');
+        } catch (err) {
+          toast(err.message, 'bad');
+          return;
+        }
+        let fields = null;
+        const result = await modal(() => {
+          const picker = appAccessPicker(apps, u);
+          return h('form', { method: 'dialog', onsubmit: () => { fields = picker.read(); } },
+            h('div', { class: 'dialog-body' },
+              h('h2', {}, `Apps ${u.username} can see`),
+              h('p', { class: 'muted' }, 'Other apps are left out of every list and answer "not found". Apps added later are not included until you add them here. Apps hidden behind a password only show to sessions that have unlocked them.'),
+              picker.el),
+            h('div', { class: 'form-actions' },
+              h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+              h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Save')));
+        });
+        if (result !== 'ok' || !fields) return;
+        const done = await run(appsBtn, () => api('PUT', `/users/${enc(u.username)}`, fields), `${u.username}: apps saved`);
+        if (done !== undefined) load().catch(() => {});
+      });
       return h('tr', { 'data-user': u.username },
         h('td', { 'data-label': 'User', class: 'mono' }, u.username, u.username === me ? h('span', { class: 'muted small' }, ' (you)') : null),
         h('td', { 'data-label': 'Role' }, sel),
+        h('td', { 'data-label': 'Apps', title: u.all_apps ? '' : u.apps.join(', ') }, appsBtn),
         h('td', { 'data-label': 'Created' }, timeEl(u.created_at)),
         h('td', { class: 'actions' }, resetBtn, ' ', deleteBtn));
     }));
@@ -4685,6 +5039,15 @@ function usersCard(ctx, me) {
 
   const nameIn = h('input', { id: 'user-name', class: 'mono', required: true, autocomplete: 'off', placeholder: 'ana', pattern: '[a-z0-9][a-z0-9._\\-]{0,63}' });
   const roleIn = roleSelect('user-role', 'viewer', 'Role');
+  // Apps are listed once the form is drawn; admins always see every app.
+  let picker = appAccessPicker([], null);
+  const accessSlot = h('div', {}, picker.el);
+  api('GET', '/projects').then((apps) => {
+    if (!ctx.alive()) return;
+    picker = appAccessPicker(apps, null);
+    replace(accessSlot, picker.el);
+  }).catch(() => {});
+  roleIn.addEventListener('change', () => { accessSlot.hidden = roleIn.value === 'admin'; });
   const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create-user' }, 'Add user');
   const form = h('form', {
     class: 'card-body',
@@ -4692,7 +5055,8 @@ function usersCard(ctx, me) {
       e.preventDefault();
       const username = nameIn.value.trim();
       const password = randomPassword();
-      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value }), `${username} added`);
+      const access = roleIn.value === 'admin' ? { all_apps: true } : picker.read();
+      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value, ...access }), `${username} added`);
       if (!created) return;
       nameIn.value = '';
       showPassword(username, password);
@@ -4703,15 +5067,16 @@ function usersCard(ctx, me) {
     h('div', { class: 'field' }, h('label', { for: 'user-name' }, 'Username'), nameIn,
       h('span', { class: 'hint' }, 'Lowercase letters, digits, . _ -')),
     h('div', { class: 'field' }, h('label', { for: 'user-role' }, 'Role'), roleIn)),
+  h('div', { class: 'field' }, h('label', {}, 'Apps they can see'), accessSlot),
   h('div', { class: 'form-actions' }, addBtn),
   shown);
 
-  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 4 }, errorBox(err)))));
+  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 5 }, errorBox(err)))));
   return h('section', { class: 'card', id: 'users' },
     cardHeader('Users', 'account.users'),
     h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Everyone signs in with their own account, so the audit log shows who did what. New users get a random password to pass on.')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
-      h('thead', {}, h('tr', {}, ['User', 'Role', 'Created', ''].map((t) => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['User', 'Role', 'Apps', 'Created', ''].map((t) => h('th', {}, t)))),
       tbody)),
     form);
 }

@@ -288,9 +288,15 @@ fn current_specs(group: &GroupState) -> Vec<MemberSpec> {
 
 #[utoipa::path(get, path = "/api/v1/groups", tag = "groups",
     responses((status = 200, body = [GroupDto])))]
-pub(crate) async fn list_groups(State(st): State<AppState>) -> ApiResult<Json<Vec<GroupDto>>> {
+pub(crate) async fn list_groups(
+    State(st): State<AppState>,
+    axum::Extension(vis): axum::Extension<aegis_auth::Visibility>,
+) -> ApiResult<Json<Vec<GroupDto>>> {
     let mut out = Vec::new();
     for group in st.control.list_groups() {
+        if crate::access::group_hidden(&vis, &group) {
+            continue;
+        }
         out.push(group_dto(&st, group).await?);
     }
     Ok(Json(out))

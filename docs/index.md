@@ -16,11 +16,13 @@ Aegis is pre-1.0 and early. What is tested in CI, and what isn't measured yet, i
 - **Rollbacks** — Roll back to any retained release without rebuilding.
 - **Web Dashboard & HTTP API** — Deploy, roll back, stream logs and audit from the browser; sign-in, API tokens and TLS built in.
 - **Live Resource Limits** — Per-app CPU and memory limits with Linux cgroups, changed without a restart.
+- **Users, Roles & App Access** — Viewer, deployer and admin accounts; limit an account to some apps (or all), and hide an app behind a password.
 - **Notifications & Webhooks** — Slack alerts and signed GitHub push webhooks.
 
 ## Quick Links
 
-- [Installation Guide](install.md) · [Upgrading](upgrading.md)
+- [Installation Guide](install.md) · [Upgrading](upgrading.md) · [Migrating from PM2/systemd](migration_guide.md)
+- [`agent.md`](../agent.md) — copy-paste prompts that let an AI coding agent install, migrate and manage Aegis
 - [Quickstart Tutorial](quickstart.md)
 - [Dashboard Guide](dashboard/README.md) — every page of the web dashboard, with screenshots
 - [Architecture Deep Dive](architecture.md)

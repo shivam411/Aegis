@@ -1,9 +1,11 @@
 //! The control-plane endpoints: projects, deployments, processes, logs and
 //! events. Everything here requires an authenticated principal (see `auth`).
 
+use crate::access::{event_hidden, visible_project};
 use crate::auth::Credential;
 use crate::dto::*;
 use crate::{non_empty, ApiError, ApiJson, ApiResult, AppState};
+use aegis_auth::Visibility;
 use aegis_control::{ControlError, ProcessAction, RegisterProject};
 use aegis_types::{DeploymentId, ProjectId};
 use axum::extract::{Path, Query, State};
@@ -51,14 +53,22 @@ pub struct LogsQuery {
 
 #[utoipa::path(get, path = "/api/v1/status", tag = "system",
     responses((status = 200, body = StatusDto)))]
-pub(crate) async fn status(State(st): State<AppState>) -> ApiResult<Json<StatusDto>> {
+pub(crate) async fn status(
+    State(st): State<AppState>,
+    Extension(vis): Extension<Visibility>,
+) -> ApiResult<Json<StatusDto>> {
     let event_count = st
         .control
         .store()
         .get_event_count()
         .await
         .map_err(|e| ApiError::from(ControlError::Internal(e)))?;
-    let projects = st.control.list_projects();
+    let projects: Vec<_> = st
+        .control
+        .list_projects()
+        .into_iter()
+        .filter(|p| !vis.hides(&p.project.id.to_string()))
+        .collect();
     Ok(Json(StatusDto {
         version: st.version.clone(),
         project_count: projects.len(),
@@ -73,12 +83,22 @@ pub(crate) async fn status(State(st): State<AppState>) -> ApiResult<Json<StatusD
 
 #[utoipa::path(get, path = "/api/v1/projects", tag = "projects",
     responses((status = 200, body = [ProjectDto])))]
-pub(crate) async fn list_projects(State(st): State<AppState>) -> Json<Vec<ProjectDto>> {
+pub(crate) async fn list_projects(
+    State(st): State<AppState>,
+    Extension(vis): Extension<Visibility>,
+) -> Json<Vec<ProjectDto>> {
     Json(
         st.control
             .list_projects()
             .into_iter()
-            .map(Into::into)
+            .filter(|p| !vis.hides(&p.project.id.to_string()))
+            .map(|p| {
+                let protected = vis.is_protected(&p.project.id.to_string());
+                ProjectDto {
+                    protected,
+                    ..p.into()
+                }
+            })
             .collect(),
     )
 }
@@ -126,10 +146,14 @@ pub(crate) fn project_view(st: &AppState, id: &ProjectId) -> ApiResult<ProjectDt
     responses((status = 200, body = ProjectDto), (status = 404, body = ErrorBody)))]
 pub(crate) async fn get_project(
     State(st): State<AppState>,
+    Extension(vis): Extension<Visibility>,
     Path(key): Path<String>,
 ) -> ApiResult<Json<ProjectDto>> {
     let project = st.control.resolve_project(&key)?;
-    Ok(Json(project_view(&st, &project.id)?))
+    Ok(Json(ProjectDto {
+        protected: vis.is_protected(&project.id.to_string()),
+        ..project_view(&st, &project.id)?
+    }))
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
@@ -168,6 +192,10 @@ pub(crate) async fn delete_project(
         .control
         .delete_project(project.id, q.keep_releases.unwrap_or(false))
         .await?;
+    st.auth
+        .forget_project(&project.id.to_string())
+        .await
+        .map_err(ApiError::internal)?;
     Ok(Json(deleted.into()))
 }
 
@@ -289,16 +317,18 @@ pub(crate) async fn list_releases(
     responses((status = 200, description = "Oldest first", body = [DeploymentDto])))]
 pub(crate) async fn list_deployments(
     State(st): State<AppState>,
+    Extension(vis): Extension<Visibility>,
     Query(q): Query<ProjectFilter>,
 ) -> ApiResult<Json<Vec<DeploymentDto>>> {
     let project = match non_empty(q.project) {
-        Some(key) => Some(st.control.resolve_project(&key)?.id),
+        Some(key) => Some(visible_project(&st, &vis, &key)?.id),
         None => None,
     };
     Ok(Json(
         st.control
             .list_deployments(project.as_ref())
             .into_iter()
+            .filter(|d| !vis.hides(&d.project_id.to_string()))
             .map(Into::into)
             .collect(),
     ))
@@ -331,16 +361,18 @@ pub(crate) async fn get_deployment(
     responses((status = 200, body = [ProcessDto])))]
 pub(crate) async fn list_processes(
     State(st): State<AppState>,
+    Extension(vis): Extension<Visibility>,
     Query(q): Query<ProjectFilter>,
 ) -> ApiResult<Json<Vec<ProcessDto>>> {
     let project = match non_empty(q.project) {
-        Some(key) => Some(st.control.resolve_project(&key)?.id),
+        Some(key) => Some(visible_project(&st, &vis, &key)?.id),
         None => None,
     };
     Ok(Json(
         st.control
             .list_processes(project.as_ref())
             .into_iter()
+            .filter(|p| !vis.hides(&p.project_id.to_string()))
             .map(Into::into)
             .collect(),
     ))
@@ -404,15 +436,22 @@ pub(crate) async fn get_logs(
     responses((status = 200, description = "Oldest first", body = [EventDto])))]
 pub(crate) async fn list_events(
     State(st): State<AppState>,
+    Extension(vis): Extension<Visibility>,
     Query(q): Query<EventsQuery>,
 ) -> ApiResult<Json<Vec<EventDto>>> {
     let project = match non_empty(q.project) {
-        Some(key) => Some(st.control.resolve_project(&key)?.id),
+        Some(key) => Some(visible_project(&st, &vis, &key)?.id),
         None => None,
     };
     let limit = q.limit.unwrap_or(50).clamp(1, 1000);
     let events = st.control.list_events(project.as_ref(), limit).await?;
-    Ok(Json(events.into_iter().map(Into::into).collect()))
+    Ok(Json(
+        events
+            .into_iter()
+            .map(EventDto::from)
+            .filter(|e| !event_hidden(&vis, e))
+            .collect(),
+    ))
 }
 
 // ----------------------------------------------------------------------
@@ -466,20 +505,25 @@ pub(crate) fn json_event(name: &str, id: Option<String>, data: &impl serde::Seri
 pub(crate) async fn stream_events(
     State(st): State<AppState>,
     Extension(credential): Extension<Credential>,
+    Extension(vis): Extension<Visibility>,
     Query(q): Query<ProjectFilter>,
 ) -> ApiResult<Sse<SseStream>> {
     let project = match non_empty(q.project) {
-        Some(key) => Some(st.control.resolve_project(&key)?.id.to_string()),
+        Some(key) => Some(visible_project(&st, &vis, &key)?.id.to_string()),
         None => None,
     };
     let rx = st.control.store().subscribe();
     let events = BroadcastStream::new(rx)
         .filter_map(move |item| {
             let project = project.clone();
+            let vis = vis.clone();
             async move {
                 match item {
                     Ok(event) => {
                         let dto = EventDto::from(event);
+                        if event_hidden(&vis, &dto) {
+                            return None;
+                        }
                         let wanted = project.as_ref().is_none_or(|p| {
                             dto.payload.get("project_id").and_then(|v| v.as_str())
                                 == Some(p.as_str())
@@ -571,10 +615,11 @@ pub(crate) async fn update_settings(
               (status = 409, description = "The source couldn't be read (e.g. clone failed)", body = ErrorBody)))]
 pub(crate) async fn detect(
     State(st): State<AppState>,
+    Extension(vis): Extension<Visibility>,
     ApiJson(req): ApiJson<DetectRequest>,
 ) -> ApiResult<Json<DetectedDto>> {
     let project = match non_empty(req.project) {
-        Some(key) => Some(st.control.resolve_project(&key)?),
+        Some(key) => Some(visible_project(&st, &vis, &key)?),
         None => None,
     };
     let detected = st

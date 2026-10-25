@@ -2496,6 +2496,127 @@
         }
       }
     },
+    "/api/v1/projects/{project}/hide": {
+      "put": {
+        "tags": [
+          "access"
+        ],
+        "operationId": "hide_project",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The app is hidden from everyone until their session unlocks it; this session stays unlocked"
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "access"
+        ],
+        "operationId": "unhide_project",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The app is visible again (to whoever may see it)"
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/lock": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "operationId": "lock_project",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The app is hidden again for this session"
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/metrics": {
       "get": {
         "tags": [
@@ -3089,6 +3210,60 @@
           },
           "404": {
             "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/unlock": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "operationId": "unlock_project",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The app is visible to this session until it ends"
+          },
+          "403": {
+            "description": "Wrong app or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong passwords; see Retry-After",
             "content": {
               "application/json": {
                 "schema": {
@@ -4322,6 +4497,23 @@
           "role"
         ],
         "properties": {
+          "all_apps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` (the default) lets the user see every app."
+          },
+          "apps": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Names or ids of the only apps the user may see (not for admins).\nApps added later are not included until you add them."
+          },
           "password": {
             "type": "string",
             "description": "At least 12 characters. Give it to the person out of band; they can\nchange it after signing in."
@@ -5407,6 +5599,19 @@
           }
         }
       },
+      "HideRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "At least 12 characters. Needed to see the app again after signing in."
+          }
+        },
+        "additionalProperties": false
+      },
       "HostDto": {
         "type": "object",
         "required": [
@@ -6120,6 +6325,10 @@
                 "description": "The process serving the live release."
               }
             ]
+          },
+          "protected": {
+            "type": "boolean",
+            "description": "The app is hidden behind a password (and unlocked for you right\nnow, or you wouldn't see it). Set on the project list and `GET\n/projects/{p}`."
           },
           "repository_url": {
             "type": "string"
@@ -7235,6 +7444,18 @@
           }
         }
       },
+      "UnlockRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateMemberRequest": {
         "type": "object",
         "properties": {
@@ -7416,6 +7637,25 @@
       "UpdateUserRequest": {
         "type": "object",
         "properties": {
+          "all_apps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true`: the user sees every app again.",
+            "default": null
+          },
+          "apps": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replaces the list of apps the user may see (empty: none).",
+            "default": null
+          },
           "password": {
             "type": [
               "string",
@@ -7541,9 +7781,22 @@
           "username",
           "role",
           "created_at",
-          "password_changed_at"
+          "password_changed_at",
+          "all_apps",
+          "apps"
         ],
         "properties": {
+          "all_apps": {
+            "type": "boolean",
+            "description": "True: the user sees every app (always the case for admins)."
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "With `all_apps` false, the names of the only apps the user sees."
+          },
           "created_at": {
             "type": "string"
           },
@@ -7726,6 +7979,9 @@
     },
     {
       "name": "users"
+    },
+    {
+      "name": "access"
     },
     {
       "name": "system"

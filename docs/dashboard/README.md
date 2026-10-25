@@ -45,7 +45,7 @@ Every user has one of three roles. The dashboard hides controls your role can't 
 | **Deployer** | Everything a viewer can, plus deploy, roll back, start, stop and restart apps. |
 | **Admin** | Everything, including adding apps, settings, secrets, domains, limits, webhooks, users, API tokens, backups and Aegis updates. |
 
-Admins manage roles under [Account → Users](account.md#users).
+Admins manage roles, and which apps each account can see, under [Account → Users](account.md#users). An admin can also [hide an app behind a password](settings.md#hide-the-app).
 
 ## Things that work everywhere
 

@@ -35,9 +35,15 @@ Each person signs in with their own account, so the audit log records who did wh
 - Admins manage users in the dashboard (**Account → Users**) or with `GET/POST /api/v1/users`, `PUT/DELETE /api/v1/users/{name}`. New users and admin password resets get a random password that is shown once.
 - A role change applies to the user's open sessions immediately. A password reset or deletion signs them out.
 - There is always at least one admin: the last admin can't be demoted or deleted, and nobody can delete their own account.
-- On the server: `aegis-daemon admin create-user --name ana --role deployer`, `admin set-role --name ana --role admin` (e.g. to regain an admin) and `admin list-users`.
+- On the server: `aegis-daemon admin create-user --name ana --role deployer`, `admin set-role --name ana --role admin` (e.g. to regain an admin), `admin list-users` and `admin unhide-app --project ID` (removes a lost hide password).
 - Roles are enforced by the server on every request; the dashboard only hides controls a role can't use.
 - Accounts that existed before roles were added (the original `admin`) are admins.
+
+### Limiting apps per user, and hidden apps
+
+- **App lists.** An admin can limit a viewer or deployer to a list of apps (**Account → Users → Apps**, or `apps` in `PUT /api/v1/users/{name}`). Apps outside the list are left out of every list, feed and stream and answer `404` like an app that does not exist. The default is **all apps**, including ones added later; admins always see all apps.
+- **Hidden apps.** **Settings → Hide this app** (admins) puts an app behind a password (Argon2id, at least 12 characters). Nobody sees it, admins included, until their session enters the password (**Overview → Unlock hidden app**); the unlock lasts until the session ends. Wrong passwords are throttled like sign-ins and an unknown app, a hidden app and a wrong password all answer the same `403`, so names can't be probed. Unlocking and failures are audited (`AppUnlocked`, `AppUnlockFailed`); hiding and unhiding are `AppHidden` / `AppUnhidden`.
+- Both are enforced by the server in one place, before any handler runs, so a new endpoint that names an app is covered. **API tokens are not limited**, and webhooks/schedules still deploy hidden apps.
 
 ### API tokens
 
@@ -198,7 +204,7 @@ See [`upgrading.md`](upgrading.md) for the procedure.
 
 ## Known limitations
 
-- A single `admin` account; there are no roles yet (roadmap Phase 6).
+- Hiding an app, and limiting an account to some apps, only controls what the dashboard and API show to signed-in users. It is not isolation: anyone with a shell on the server, an API token, or the `admin` role plus the hide password sees everything, and a hide password cannot be recovered (on the server, `aegis-daemon admin unhide-app --project <id>` removes it; `aegis list` shows project ids).
 - Anyone with a shell on the server who can reach `127.0.0.1:50051` can use the gRPC API. With `behind_proxy`, local processes (including your apps) can also send their own `X-Forwarded-For` to the loopback API port.
 - Credentials embedded in a repository URL (`https://user:token@…`) are stored in events that `read` tokens can see; they are redacted only in build logs. Prefer SSH deploy keys.
 - Apps run as the same user as the daemon, so a compromised app can read the daemon's database. Per-app users are future work.

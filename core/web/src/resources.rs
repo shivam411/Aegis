@@ -176,19 +176,28 @@ struct MetricsUpdateDto {
 pub(crate) async fn stream_metrics(
     State(st): State<AppState>,
     Extension(credential): Extension<Credential>,
+    Extension(vis): Extension<aegis_auth::Visibility>,
     Query(q): Query<MetricsStreamQuery>,
 ) -> ApiResult<Sse<SseStream>> {
     let project = match non_empty(q.project) {
-        Some(key) => Some(st.control.resolve_project(&key)?.id.to_string()),
+        Some(key) => Some(
+            crate::access::visible_project(&st, &vis, &key)?
+                .id
+                .to_string(),
+        ),
         None => None,
     };
     let include_host = q.host;
     let updates = BroadcastStream::new(st.control.subscribe_metrics())
         .filter_map(move |item| {
             let project = project.clone();
+            let vis = vis.clone();
             async move {
                 match item {
                     Ok(update) => {
+                        if vis.hides(&update.series) {
+                            return None;
+                        }
                         let wanted = match &project {
                             None => true,
                             Some(p) => {
