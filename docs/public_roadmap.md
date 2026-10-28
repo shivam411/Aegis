@@ -35,6 +35,11 @@ An operator-focused summary of the Aegis roadmap. The detailed, phased plan is [
 
 ---
 
+## 🟣 NEXT (proposed)
+The detailed plan for the next phase (access control, canary deploys, observability, cloud integrations, add-ons and a multi-node fleet) is in [`plan_phase7.md`](plan_phase7.md).
+
+---
+
 ## 🔵 LATER (Future Horizons)
 - **Multi-node fleet:** a remote node agent reusing the same control-plane API, with a server selector in the dashboard and rolling fleet updates.
 - **Plugin ecosystem:** more integrations on the event bus.
