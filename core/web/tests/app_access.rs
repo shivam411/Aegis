@@ -273,6 +273,31 @@ async fn users_see_only_their_apps_and_hidden_apps_need_the_password() {
         StatusCode::NOT_FOUND,
         "can't change what you can't see"
     );
+    // Nor can a group reference an app that is hidden from this session.
+    let (status, _) = admin2
+        .call(
+            &api,
+            "POST",
+            "/api/v1/groups",
+            json!({"name": "g", "repository_url": "https://example.com/r.git", "members": [{"project": "blog"}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Events and deployments page from the newest end.
+    let (_, all) = admin
+        .call(&api, "GET", "/api/v1/events?limit=1000", json!({}))
+        .await;
+    let all = all.as_array().unwrap();
+    assert!(all.len() > 4);
+    let (_, first) = admin
+        .call(&api, "GET", "/api/v1/events?limit=2", json!({}))
+        .await;
+    let (_, second) = admin
+        .call(&api, "GET", "/api/v1/events?limit=2&offset=2", json!({}))
+        .await;
+    let n = all.len();
+    assert_eq!(first.as_array().unwrap()[..], all[n - 2..]);
+    assert_eq!(second.as_array().unwrap()[..], all[n - 4..n - 2]);
     // API tokens are not limited.
     assert_eq!(
         api.get("/api/v1/projects")

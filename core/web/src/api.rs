@@ -9,7 +9,7 @@ use aegis_auth::Visibility;
 use aegis_control::{ControlError, ProcessAction, RegisterProject};
 use aegis_types::{DeploymentId, ProjectId};
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::{Extension, Json};
 use futures_util::stream::{self, BoxStream, StreamExt as _};
@@ -38,6 +38,36 @@ pub struct EventsQuery {
     pub project: Option<String>,
     /// Most recent N events (default 50, max 1000).
     pub limit: Option<usize>,
+    /// Skip this many of the most recent events first (default 0), to read
+    /// older pages. The page itself is returned oldest first.
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DeploymentsQuery {
+    /// Project id or name; all projects when omitted.
+    pub project: Option<String>,
+    /// `active` (queued or running), or a final status such as `Success`,
+    /// `Failed` or `RolledBack`; all when omitted.
+    pub status: Option<String>,
+    /// Most recent N deployments (default: all, max 1000 when `offset` is used).
+    pub limit: Option<usize>,
+    /// Skip this many of the most recent deployments first (default 0).
+    pub offset: Option<usize>,
+}
+
+/// Total number of rows before paging, for clients that page.
+pub(crate) const TOTAL_COUNT: &str = "x-total-count";
+
+/// Rows `offset..offset+limit` counted from the newest end of an
+/// oldest-first list, still in oldest-first order.
+fn page_from_newest<T>(mut rows: Vec<T>, offset: usize, limit: usize) -> Vec<T> {
+    let end = rows.len().saturating_sub(offset);
+    let start = end.saturating_sub(limit);
+    rows.truncate(end);
+    rows.drain(..start);
+    rows
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
@@ -313,25 +343,42 @@ pub(crate) async fn list_releases(
 }
 
 #[utoipa::path(get, path = "/api/v1/deployments", tag = "deployments",
-    params(ProjectFilter),
-    responses((status = 200, description = "Oldest first", body = [DeploymentDto])))]
+    params(DeploymentsQuery),
+    responses((status = 200, description = "Oldest first; `X-Total-Count` is the number of matches before paging", body = [DeploymentDto])))]
 pub(crate) async fn list_deployments(
     State(st): State<AppState>,
     Extension(vis): Extension<Visibility>,
-    Query(q): Query<ProjectFilter>,
-) -> ApiResult<Json<Vec<DeploymentDto>>> {
+    Query(q): Query<DeploymentsQuery>,
+) -> ApiResult<(HeaderMap, Json<Vec<DeploymentDto>>)> {
     let project = match non_empty(q.project) {
         Some(key) => Some(visible_project(&st, &vis, &key)?.id),
         None => None,
     };
-    Ok(Json(
-        st.control
-            .list_deployments(project.as_ref())
-            .into_iter()
-            .filter(|d| !vis.hides(&d.project_id.to_string()))
-            .map(Into::into)
-            .collect(),
-    ))
+    let status = non_empty(q.status);
+    let rows: Vec<DeploymentDto> = st
+        .control
+        .list_deployments(project.as_ref())
+        .into_iter()
+        .filter(|d| !vis.hides(&d.project_id.to_string()))
+        .map(DeploymentDto::from)
+        .filter(|d| match status.as_deref() {
+            None => true,
+            Some("active") => matches!(d.status.as_str(), "Queued" | "InProgress"),
+            Some(s) => d.status == s,
+        })
+        .collect();
+    let total = rows.len();
+    let rows = match (q.limit, q.offset) {
+        (None, None) => rows,
+        (limit, offset) => page_from_newest(
+            rows,
+            offset.unwrap_or(0),
+            limit.unwrap_or(50).clamp(1, 1000),
+        ),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(TOTAL_COUNT, HeaderValue::from(total));
+    Ok((headers, Json(rows)))
 }
 
 #[utoipa::path(get, path = "/api/v1/deployments/{id}", tag = "deployments",
@@ -433,25 +480,31 @@ pub(crate) async fn get_logs(
 
 #[utoipa::path(get, path = "/api/v1/events", tag = "events",
     params(EventsQuery),
-    responses((status = 200, description = "Oldest first", body = [EventDto])))]
+    responses((status = 200, description = "Oldest first; `X-Total-Count` is the number of visible events before paging", body = [EventDto])))]
 pub(crate) async fn list_events(
     State(st): State<AppState>,
     Extension(vis): Extension<Visibility>,
     Query(q): Query<EventsQuery>,
-) -> ApiResult<Json<Vec<EventDto>>> {
+) -> ApiResult<(HeaderMap, Json<Vec<EventDto>>)> {
     let project = match non_empty(q.project) {
         Some(key) => Some(visible_project(&st, &vis, &key)?.id),
         None => None,
     };
     let limit = q.limit.unwrap_or(50).clamp(1, 1000);
-    let events = st.control.list_events(project.as_ref(), limit).await?;
-    Ok(Json(
-        events
-            .into_iter()
-            .map(EventDto::from)
-            .filter(|e| !event_hidden(&vis, e))
-            .collect(),
-    ))
+    let offset = q.offset.unwrap_or(0);
+    // Everything visible to the caller, so the total and the pages are exact.
+    let events: Vec<EventDto> = st
+        .control
+        .list_events(project.as_ref(), usize::MAX)
+        .await?
+        .into_iter()
+        .map(EventDto::from)
+        .filter(|e| !event_hidden(&vis, e))
+        .collect();
+    let total = events.len();
+    let mut headers = HeaderMap::new();
+    headers.insert(TOTAL_COUNT, HeaderValue::from(total));
+    Ok((headers, Json(page_from_newest(events, offset, limit))))
 }
 
 // ----------------------------------------------------------------------

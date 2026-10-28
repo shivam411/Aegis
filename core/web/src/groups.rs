@@ -263,12 +263,16 @@ pub(crate) async fn group_dto(st: &AppState, group: GroupState) -> ApiResult<Gro
     })
 }
 
-fn member_specs(st: &AppState, members: Vec<MemberRequest>) -> ApiResult<Vec<MemberSpec>> {
+fn member_specs(
+    st: &AppState,
+    vis: &aegis_auth::Visibility,
+    members: Vec<MemberRequest>,
+) -> ApiResult<Vec<MemberSpec>> {
     members
         .into_iter()
         .map(|m| {
             Ok(MemberSpec {
-                project_id: st.control.resolve_project(m.project.trim())?.id,
+                project_id: crate::access::visible_project(st, vis, m.project.trim())?.id,
                 watch_paths: m.watch_paths,
             })
         })
@@ -307,9 +311,10 @@ pub(crate) async fn list_groups(
     responses((status = 201, body = GroupDto), (status = 400, body = ErrorBody)))]
 pub(crate) async fn create_group(
     State(st): State<AppState>,
+    axum::Extension(vis): axum::Extension<aegis_auth::Visibility>,
     ApiJson(req): ApiJson<GroupRequest>,
 ) -> ApiResult<(StatusCode, Json<GroupDto>)> {
-    let members = member_specs(&st, req.members)?;
+    let members = member_specs(&st, &vis, req.members)?;
     let group = st
         .control
         .create_group(
@@ -386,10 +391,11 @@ pub(crate) async fn delete_group(
     responses((status = 200, body = GroupDto), (status = 400, body = ErrorBody)))]
 pub(crate) async fn set_members(
     State(st): State<AppState>,
+    axum::Extension(vis): axum::Extension<aegis_auth::Visibility>,
     Path(key): Path<String>,
     ApiJson(req): ApiJson<MembersRequest>,
 ) -> ApiResult<Json<GroupDto>> {
-    let members = member_specs(&st, req.members)?;
+    let members = member_specs(&st, &vis, req.members)?;
     let group = st.control.set_group_members(&key, members).await?;
     Ok(Json(group_dto(&st, group).await?))
 }
@@ -400,11 +406,12 @@ pub(crate) async fn set_members(
     responses((status = 200, body = GroupDto), (status = 400, body = ErrorBody)))]
 pub(crate) async fn add_member(
     State(st): State<AppState>,
+    axum::Extension(vis): axum::Extension<aegis_auth::Visibility>,
     Path(key): Path<String>,
     ApiJson(req): ApiJson<AddMemberRequest>,
 ) -> ApiResult<Json<GroupDto>> {
     let group = st.control.resolve_group(&key)?;
-    let project = st.control.resolve_project(req.project.trim())?;
+    let project = crate::access::visible_project(&st, &vis, req.project.trim())?;
     let mut members = current_specs(&group);
     if members.iter().any(|m| m.project_id == project.id) {
         return Err(ApiError::bad_request(format!(

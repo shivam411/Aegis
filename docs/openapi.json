@@ -503,11 +503,40 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`active` (queued or running), or a final status such as `Success`,\n`Failed` or `RolledBack`; all when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Most recent N deployments (default: all, max 1000 when `offset` is used).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Skip this many of the most recent deployments first (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Oldest first",
+            "description": "Oldest first; `X-Total-Count` is the number of matches before paging",
             "content": {
               "application/json": {
                 "schema": {
@@ -703,11 +732,21 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Skip this many of the most recent events first (default 0), to read\nolder pages. The page itself is returned oldest first.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Oldest first",
+            "description": "Oldest first; `X-Total-Count` is the number of visible events before paging",
             "content": {
               "application/json": {
                 "schema": {
