@@ -1,8 +1,25 @@
 # Plan: Phase 7 (access, safer releases, ecosystem, fleet)
 
-Status: **proposed**. This plan follows the [public roadmap](public_roadmap.md) and the detailed [web control plane roadmap](roadmap_web_control_plane.md). Pick milestones in order; each one ships on its own and has a "done when" check. Sizes: **S** ≈ days, **M** ≈ 1–2 weeks, **L** ≈ several weeks.
+Status: **in progress** (see the progress table below). This plan follows the [public roadmap](public_roadmap.md) and the detailed [web control plane roadmap](roadmap_web_control_plane.md). Pick milestones in order; each one ships on its own and has a "done when" check. Sizes: **S** ≈ days, **M** ≈ 1–2 weeks, **L** ≈ several weeks.
 
 Principles (unchanged): one binary, embedded SQLite, no required external services; every feature is optional and off by default; every change is an audited event; nothing is called validated without a CI test.
+
+## Progress
+
+| Item | State |
+| :--- | :--- |
+| M0: app lists, hidden apps, list view, bulk actions, paging, `agent.md` | ✅ Shipped ([PR 27](https://github.com/shivam411/Aegis/pull/27)) |
+| M0: server-side paging (`limit`, `offset`, `X-Total-Count`), groups can't reference hidden apps, bulk rollback | ✅ Done |
+| M0: mobile test of the new screens | ⬜ Not done |
+| M2: live URL check after promotion, rollback that keeps the HTTP status or error, on-demand check | ✅ Done (experimental) |
+| M2: deploy hooks, approval gates, canary and traffic split, preview environments | ⬜ Not started |
+| M3: Prometheus `/metrics` and Grafana dashboard, on demand | ✅ Done (experimental); request counts per app need proxy counters first |
+| M3: more alert channels, alert rules, log shipping, status page | ⬜ Not started |
+| M5: jobs (cron and one-off commands) | ✅ Done (experimental) |
+| M5: managed add-ons, buildpacks, scale to zero, autoscaling | ⬜ Not started (see "Why M5 is split") |
+| Subdomain quick-add in the dashboard | ✅ Done |
+
+**Why M5 is split.** Add-ons (Postgres, Redis) need a non-HTTP health check (`pg_isready` through `docker exec`), backups of their volumes and a way to hand connection strings to an app. Buildpacks need a builder (Nixpacks or `pack`) installed and a CI deploy test per language. Scale to zero and autoscaling both need per-app request counts in the built-in proxy, which would also feed canary deploys and Prometheus. Each is its own change.
 
 ---
 

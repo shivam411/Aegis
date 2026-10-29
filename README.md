@@ -30,6 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | b
 | 🔄 **Instant Rollbacks** | Roll back to any retained release without rebuilding from source. |
 | 🎛️ **Live Resource Limits** | Per-app CPU and memory limits with Linux cgroups (v2 or v1), changed from dashboard sliders without restarting the app. Live and 7-day charts, OOM and throttling alerts. |
 | 🌐 **Web Dashboard** | Deploy, roll back, stream logs, watch resources and audit everything from the browser. |
+| 🧪 **Jobs & Live URL Check** | Cron and on-demand commands in the live release; after a deploy Aegis requests your URL and rolls back (keeping the HTTP status) if it isn't up. |
+| 📈 **Prometheus & Grafana (opt-in)** | Switch on `/metrics` from the dashboard and import the ready-made Grafana dashboard. |
 | 👥 **Users, Roles & App Access** | Viewer, deployer and admin accounts; limit an account to a list of apps (or all), and hide sensitive apps behind a password. |
 | 🔌 **Notifications & Webhooks** | Slack alerts for failed deploys, crashes and resource pressure; signed GitHub push webhooks trigger deploys. |
 

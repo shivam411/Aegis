@@ -64,6 +64,15 @@ Every capability in Aegis is in one of four maturity tiers. A feature moves up a
 | :--- | :---: | :--- |
 | **Docker runtime** (`[run] runtime = "docker"`, [guide](docker_runtime.md)) | 🧪 Experimental | Unit tests for `[run]` validation, `docker` argument building (including that secrets never reach a command line) and limit mapping in [`core/config`](../core/config/src/lib.rs) and [`integrations/docker`](../integrations/docker/src/); supervisor tests with a fake launcher in [`runtime/process`](../runtime/process/src/lib.rs). [`core/control/tests/docker.rs`](../core/control/tests/docker.rs) runs against the real Docker daemon on CI's Ubuntu runner (`AEGIS_REQUIRE_DOCKER=1` makes a missing Docker a failure there). It covers the image build, the health check, a secret reaching the container, a redeploy through the proxy with no failed requests, live `docker update` limits, a killed container being restarted, an unhealthy release rolled back, a rollback that reuses the old image, image pruning, a daemon restart and a stop. [`docker_missing.rs`](../core/control/tests/docker_missing.rs) covers a host without Docker. Not used in production; dashboard display of the runtime is not browser-tested. |
 
+### Phase 7
+
+| Feature | Status | Evidence |
+| :--- | :---: | :--- |
+| **Per-user app lists and password-hidden apps** | 🟡 Validated | [`core/web/tests/app_access.rs`](../core/web/tests/app_access.rs), Playwright [`xaccess.spec.js`](../ui-tests/tests/xaccess.spec.js) |
+| **Live URL check with rollback** (`[deploy] verify_url`) | 🧪 Experimental | [`core/control/tests/live_check.rs`](../core/control/tests/live_check.rs) (real processes: 404 rolls back and keeps the status; manual check), [`core/web/tests/verify.rs`](../core/web/tests/verify.rs). HTTPS targets are not tested against a real certificate. |
+| **Prometheus `/metrics` and Grafana dashboard** | 🧪 Experimental | [`core/web/tests/prometheus.rs`](../core/web/tests/prometheus.rs); the dashboard JSON has not been imported into a real Grafana in CI |
+| **Jobs (cron and one-off commands)** | 🧪 Experimental | Cron parser unit tests in [`core/control/src/cron.rs`](../core/control/src/cron.rs); [`core/control/tests/jobs.rs`](../core/control/tests/jobs.rs) (environment, secrets, exit codes, timeout kill, no double run), [`core/web/tests/jobs.rs`](../core/web/tests/jobs.rs). The scheduler loop itself (a due job starting by itself) is not covered by a test. |
+
 ### CLI and tools
 
 | Feature | Status | Evidence |
