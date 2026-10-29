@@ -85,6 +85,10 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /projects/{project}/updates` · `POST /projects/{project}/updates/check` | New changes since the live release: `{"kind": "git"\|"folder", "branch", "head", "live_commit", "deployed", "behind", "commits": [{"sha", "author", "date", "message"}], "changed_files", "relevant", "dirty", "up_to_date", "error"}`. GET returns the latest check (running one if there is none); POST checks now (deployers). `changed_files` is filtered by the app's watch paths in a group; `dirty` counts uncommitted files of a folder app. `GET /projects` includes the summary as `updates` |
 | `GET /groups/{group}/updates` · `POST /groups/{group}/updates/check` | The same for every app of a group (one fetch), plus `changed_apps` |
 | `GET`/`POST /groups/{group}/webhook` · `POST /groups/{group}/webhook/test` | The group's GitHub webhook: status and recent deliveries, a new secret (shown once), a signed test ping. Admins, signed in |
+| `GET /projects/{project}/jobs` · `POST /projects/{project}/jobs` | App jobs ([jobs.md](dashboard/jobs.md)): list with `next_run` and `last_run`; create (**201**): `{"name", "schedule", "command", "timeout_secs"?, "enabled"?}` (cron in UTC). Admins, signed in (tokens get 403) |
+| `PUT`/`DELETE /projects/{project}/jobs/{job}` | Change `name`, `schedule`, `command`, `timeout_secs`, `enabled`; delete (**204**). Admins, signed in |
+| `POST /projects/{project}/jobs/{job}/run` | Start it now (**202**, the run; **409** if it is running or the app has no live release). Deployers, API tokens too |
+| `GET /projects/{project}/jobs/{job}/runs` | The last 50 runs, newest first, each with `status`, `exit_code` and `output_tail` |
 | `GET /proxy` | The built-in proxy: `enabled`, ports, ACME settings, and every route with its upstream port and certificate state |
 | `GET /deployments?project=` | Deployment history |
 | `GET /deployments/{id}` | One deployment: status, current stage, error |

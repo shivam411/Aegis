@@ -64,3 +64,33 @@ test('turn Prometheus metrics on and download the Grafana dashboard', async ({ p
   await card.locator('[data-action="toggle-prometheus"]').click();
   await expect(card.locator('[data-scrape-url]')).toHaveCount(0);
 });
+
+test('add, pause and delete a job', async ({ page }) => {
+  await login(page);
+  const name = await page.locator('[data-app]').first().getAttribute('data-app');
+  await page.goto(`/#/apps/${name}/settings`);
+  const card = page.locator('[data-card="jobs"]');
+  await card.locator('#job-name').fill('nightly-cleanup');
+  await card.locator('#job-preset').selectOption('0 3 * * *');
+  await expect(card.locator('#job-schedule')).toHaveValue('0 3 * * *');
+  await card.locator('#job-command').fill('echo cleaning');
+  await card.locator('[data-action="add-job"]').click();
+  const row = card.locator('tr[data-job="nightly-cleanup"]');
+  await expect(row).toBeVisible();
+  await expect(row).toContainText('0 3 * * *');
+  await expect(row.locator('time').first()).toBeVisible();
+
+  await row.locator('[data-action="toggle-job"]').click();
+  await expect(row).toContainText('Paused');
+
+  // A bad schedule is refused with a message.
+  await card.locator('#job-name').fill('broken');
+  await card.locator('#job-schedule').fill('61 * * * *');
+  await card.locator('#job-command').fill('true');
+  await card.locator('[data-action="add-job"]').click();
+  await expect(page.locator('.toast.bad', { hasText: 'minute' })).toBeVisible();
+
+  await row.locator('[data-action="delete-job"]').click();
+  await confirm(page, 'Delete');
+  await expect(row).toHaveCount(0);
+});

@@ -15,6 +15,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[allow(dead_code)]
 struct Harness {
     control: ControlPlane,
     store: EventStore,

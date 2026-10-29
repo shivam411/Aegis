@@ -163,6 +163,12 @@ fn deletes_project(method: &Method, path: &str) -> bool {
             .is_some_and(|rest| !rest.is_empty() && !rest.trim_end_matches('/').contains('/'))
 }
 
+/// A job is a command the server runs, so tokens may run jobs but not
+/// create, change or delete them.
+fn changes_jobs(path: &str) -> bool {
+    path.starts_with("/api/v1/projects/") && path.contains("/jobs") && !path.ends_with("/run")
+}
+
 /// Mapping a domain decides where public traffic (and certificates) go, so
 /// even deploy tokens may only read domains.
 fn changes_domains(path: &str) -> bool {
@@ -203,6 +209,7 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // but what this session sees.
         ["projects", _, "unlock" | "lock"] => Role::Viewer,
         ["projects", _, "deploy" | "rollback" | "verify"] => Role::Deployer,
+        ["projects", _, "jobs", _, "run"] => Role::Deployer,
         ["groups", _, "deploy" | "rollback"] => Role::Deployer,
         // "Check now" for new commits: reads the git server, changes nothing.
         ["projects" | "groups", _, "updates", "check"] => Role::Deployer,
@@ -239,6 +246,12 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
             if user_only(&path) || deletes_project(req.method(), &path) {
                 return ApiError::forbidden(
                     "This endpoint requires a signed-in user, not an API token",
+                )
+                .into_response();
+            }
+            if mutating && changes_jobs(&path) {
+                return ApiError::forbidden(
+                    "Only a signed-in user can create, change or delete jobs, not an API token",
                 )
                 .into_response();
             }

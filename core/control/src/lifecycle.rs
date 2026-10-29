@@ -230,6 +230,9 @@ impl ControlPlane {
             .into_iter()
             .find(|d| d.id == project_id)
             .ok_or_else(|| ControlError::Internal(anyhow::anyhow!("Deletion was not recorded")))?;
+        if let Err(e) = self.delete_jobs(project_id).await {
+            tracing::error!(error = %e, "Removing a deleted app's jobs failed");
+        }
         let secrets_removed = match self.purge_deleted(&deleted).await {
             Ok(n) => n,
             Err(e) => {

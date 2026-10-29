@@ -3175,7 +3175,126 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, hideCard(ctx, rerender), dangerCard(ctx)));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, jobsCard(ctx), hideCard(ctx, rerender), dangerCard(ctx)));
+}
+
+const JOB_PRESETS = [
+  ['*/5 * * * *', 'Every 5 minutes'], ['*/15 * * * *', 'Every 15 minutes'], ['0 * * * *', 'Hourly'],
+  ['0 3 * * *', 'Daily at 03:00 UTC'], ['0 3 * * 1', 'Mondays at 03:00 UTC'], ['0 0 1 * *', 'Monthly (1st, 00:00 UTC)'], ['', 'Custom…'],
+];
+
+const JOB_STATUS_KIND = { success: 'ok', failed: 'bad', timeout: 'bad', running: 'info live', skipped: 'warn' };
+
+/** Settings → Jobs: commands run in the live release on a cron schedule or on demand. */
+function jobsCard(ctx) {
+  const project = ctx.project();
+  const base = `/projects/${enc(project.id)}/jobs`;
+  const list = h('div', { class: 'table-wrap' });
+  const load = async () => {
+    try {
+      const jobs = await api('GET', base);
+      if (ctx.alive()) draw(jobs);
+    } catch (err) {
+      if (ctx.alive()) replace(list, errorBox(err));
+    }
+  };
+
+  const showRuns = async (job) => {
+    const runs = await run(null, () => api('GET', `${base}/${enc(job.id)}/runs`));
+    if (!runs) return;
+    await modal(() => h('form', { method: 'dialog' },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, `Runs of ${job.name}`),
+        runs.length
+          ? h('div', { class: 'job-runs' }, runs.map((r) => h('details', { 'data-run': r.status },
+            h('summary', {}, pill(r.status, JOB_STATUS_KIND[r.status] || ''), ' ', timeEl(r.started_at), ` · ${r.trigger}`,
+              r.exit_code != null ? ` · exit ${r.exit_code}` : '',
+              r.finished_at ? ` · ${fmtDuration(durationBetween(r.started_at, r.finished_at))}` : ''),
+            h('pre', { class: 'log-tail' }, r.output_tail || '(no output)'))))
+          : h('p', { class: 'muted' }, 'No runs yet.')),
+      h('div', { class: 'form-actions' }, h('button', { class: 'btn', value: 'close', type: 'submit' }, 'Close'))));
+  };
+
+  const draw = (jobs) => {
+    if (!jobs.length) {
+      replace(list, h('p', { class: 'muted small' }, 'No jobs yet.'));
+      return;
+    }
+    replace(list, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['Job', 'Schedule (UTC)', 'Next run', 'Last run', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, jobs.map((j) => {
+        const runBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'run-job' }, 'Run now');
+        runBtn.addEventListener('click', async () => {
+          const r = await run(runBtn, () => api('POST', `${base}/${enc(j.id)}/run`, {}), `${j.name} started`);
+          if (r) setTimeout(load, 1500);
+        });
+        const histBtn = h('button', { class: 'btn small ghost', type: 'button', 'data-action': 'job-runs' }, 'Runs');
+        histBtn.addEventListener('click', () => showRuns(j));
+        const toggle = h('button', { class: 'btn small', type: 'button', 'data-action': 'toggle-job' }, j.enabled ? 'Pause' : 'Resume');
+        toggle.addEventListener('click', async () => {
+          const r = await run(toggle, () => api('PUT', `${base}/${enc(j.id)}`, { enabled: !j.enabled }));
+          if (r) load();
+        });
+        const del = h('button', { class: 'btn small danger', type: 'button', 'data-action': 'delete-job' }, 'Delete');
+        del.addEventListener('click', async () => {
+          if (!(await confirmDialog({ title: `Delete ${j.name}?`, message: 'The job and its run history are removed.', confirmLabel: 'Delete', danger: true }))) return;
+          const r = await run(del, () => api('DELETE', `${base}/${enc(j.id)}`), `${j.name} deleted`);
+          if (r !== undefined) load();
+        });
+        return h('tr', { 'data-job': j.name },
+          h('td', { 'data-label': 'Job' }, h('strong', {}, j.name), h('div', { class: 'mono small muted truncate', title: j.command }, j.command)),
+          h('td', { 'data-label': 'Schedule', class: 'mono' }, j.schedule),
+          h('td', { 'data-label': 'Next run' }, j.enabled ? (j.next_run ? timeEl(j.next_run) : '–') : pill('Paused', 'warn')),
+          h('td', { 'data-label': 'Last run' }, j.last_run ? [pill(j.last_run.status, JOB_STATUS_KIND[j.last_run.status] || ''), ' ', timeEl(j.last_run.started_at)] : '–'),
+          h('td', { class: 'actions' },
+            can('deployer') ? runBtn : null, ' ', histBtn,
+            can('admin') ? [' ', toggle, ' ', del] : null));
+      }))));
+  };
+
+  let form = null;
+  if (can('admin')) {
+    const nameIn = h('input', { id: 'job-name', required: true, autocomplete: 'off', placeholder: 'nightly-cleanup', maxlength: 64 });
+    const preset = h('select', { id: 'job-preset', 'aria-label': 'Schedule' }, JOB_PRESETS.map(([v, l]) => h('option', { value: v }, l)));
+    const cronIn = h('input', { id: 'job-schedule', class: 'mono', required: true, autocomplete: 'off', spellcheck: 'false', value: JOB_PRESETS[0][0], 'aria-label': 'Cron expression' });
+    preset.addEventListener('change', () => {
+      if (preset.value) cronIn.value = preset.value;
+      cronIn.focus();
+    });
+    const cmdIn = h('textarea', { id: 'job-command', class: 'mono', rows: 2, required: true, spellcheck: 'false', placeholder: 'npm run cleanup' });
+    const timeoutIn = h('input', { id: 'job-timeout', type: 'number', min: 1, max: 86400, placeholder: '3600' });
+    const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'add-job' }, 'Add job');
+    form = h('form', {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const req = { name: nameIn.value.trim(), schedule: cronIn.value.trim(), command: cmdIn.value.trim() };
+        if (timeoutIn.value) req.timeout_secs = Number(timeoutIn.value);
+        const created = await run(addBtn, () => api('POST', base, req), (j) => `${j.name} added`);
+        if (!created) return;
+        nameIn.value = '';
+        cmdIn.value = '';
+        load();
+      },
+    },
+    h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'job-name' }, 'Job name'), nameIn),
+      h('div', { class: 'field' }, h('label', { for: 'job-preset' }, 'Schedule'), preset),
+      h('div', { class: 'field' }, h('label', { for: 'job-schedule' }, 'Cron (UTC)'), cronIn,
+        h('span', { class: 'hint' }, 'minute hour day-of-month month day-of-week, e.g. */15 * * * *'))),
+    h('div', { class: 'field' }, h('label', { for: 'job-command' }, 'Command'), cmdIn,
+      h('span', { class: 'hint' }, 'Runs with sh in the live release\'s folder, with the app\'s variables and secrets. Output is kept with each run.')),
+    h('div', { class: 'row' }, h('div', { class: 'field' }, h('label', { for: 'job-timeout' }, 'Timeout (seconds)'), timeoutIn)),
+    h('div', { class: 'form-actions' }, addBtn));
+  }
+
+  onEvents(ctx, (e) => {
+    if (e.event_type === '_resync' || (e.event_type.startsWith('Job') && e.payload?.project_id === project.id)) load();
+  });
+  load();
+  return h('section', { class: 'card', 'data-card': 'jobs' },
+    cardHeader('Jobs', 'app.jobs'),
+    h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Scheduled and on-demand commands in the live release: migrations, cleanups, reports. They need a deployed app and are not available for container apps yet.')),
+    list, form ? h('div', { class: 'card-body' }, form) : null);
 }
 
 /** Asks for an app's name and hide password; the app then shows for this session. */

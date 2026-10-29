@@ -15,6 +15,7 @@ mod domains;
 pub mod dto;
 mod groups;
 mod guard;
+mod jobs;
 mod metrics;
 mod resources;
 mod sources;
@@ -254,6 +255,8 @@ impl Modify for SecuritySchemes {
     paths(
         api::status, api::list_projects, api::create_project, api::get_project,
         api::delete_project, api::change_source, api::deploy,
+        jobs::list_jobs, jobs::create_job, jobs::update_job, jobs::delete_job, jobs::run_job,
+        jobs::list_job_runs,
         api::rollback, api::verify_project, api::set_schedule, api::list_releases, api::list_deployments,
         api::get_deployment, api::list_processes, api::process_action, api::get_logs,
         api::stream_logs, api::list_events, api::stream_events, api::host,
@@ -288,7 +291,8 @@ impl Modify for SecuritySchemes {
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, InstanceDto, StandbyDto, ReleaseDto,
         DeploymentDto, EventDto,
         LogLineDto, LogsDto, CreateProjectRequest, DeployRequest, DeployAccepted,
-        RollbackRequest, RollbackResult, VerifyRequest, LiveCheckDto, ScheduleRequest, ErrorBody, ErrorDetail,
+        RollbackRequest, RollbackResult, VerifyRequest, LiveCheckDto,
+        jobs::JobDto, jobs::JobRunDto, jobs::CreateJobRequest, jobs::UpdateJobRequest, ScheduleRequest, ErrorBody, ErrorDetail,
         ChangeSourceRequest, DeletedProjectDto,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
         NewTokenDto, users::UserDto, users::CreateUserRequest, users::UpdateUserRequest,
@@ -320,7 +324,7 @@ impl Modify for SecuritySchemes {
         (name = "auth"), (name = "users"), (name = "access"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
         (name = "domains"), (name = "secrets"), (name = "backups"), (name = "sources"),
-        (name = "groups")
+        (name = "groups"), (name = "jobs")
     )
 )]
 pub struct ApiDoc;
@@ -390,6 +394,19 @@ pub fn router(state: AppState) -> Router {
         .route("/projects/:project/deploy", post(api::deploy))
         .route("/projects/:project/rollback", post(api::rollback))
         .route("/projects/:project/verify", post(api::verify_project))
+        .route(
+            "/projects/:project/jobs",
+            get(jobs::list_jobs).post(jobs::create_job),
+        )
+        .route(
+            "/projects/:project/jobs/:job",
+            put(jobs::update_job).delete(jobs::delete_job),
+        )
+        .route("/projects/:project/jobs/:job/run", post(jobs::run_job))
+        .route(
+            "/projects/:project/jobs/:job/runs",
+            get(jobs::list_job_runs),
+        )
         .route("/projects/:project/schedule", put(api::set_schedule))
         .route("/projects/:project/settings", put(api::update_settings))
         .route(

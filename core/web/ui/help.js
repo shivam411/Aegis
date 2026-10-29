@@ -275,6 +275,18 @@ export const HELP = {
     roles: 'Admins, signed in.',
     docs: 'groups.md#the-group-page',
   },
+  'app.jobs': {
+    title: 'Jobs',
+    summary: 'Commands that run inside the app\'s live release on a cron schedule (UTC) or on demand: migrations, cleanups, reports. They get the app\'s variables and secrets, run with sh in the release folder, and are killed with everything they started after their timeout. The last 50 runs of each job keep their output.',
+    controls: [
+      ['Run now', 'Starts the job immediately (deployers and admins). A job that is still running is not started twice.'],
+      ['Pause / Resume', 'Stops or restarts the schedule.'],
+      ['Runs', 'The history with exit codes and the tail of each run\'s output.'],
+      ['Cron', 'Five fields: minute hour day-of-month month day-of-week, or @hourly, @daily, @weekly, @monthly. When both day fields are set, either may match.'],
+    ],
+    roles: 'Everyone reads; deployers run; admins create, change and delete (not API tokens).',
+    docs: 'jobs.md',
+  },
   'app.hide': {
     title: 'Hide this app',
     summary: 'A hidden app is left out of every list, search and event feed, and every request about it answers "not found", until a session enters its password. The unlock lasts until that session ends. Use it for apps that only some people should even know exist; to give an account only some apps, set the account\'s apps under Account → Users.',

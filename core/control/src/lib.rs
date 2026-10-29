@@ -7,12 +7,14 @@
 
 pub mod backup;
 mod config_file;
+mod cron;
 mod deploy;
 mod docker;
 mod domains;
 mod env;
 mod git;
 mod groups;
+mod jobs;
 mod lifecycle;
 pub mod ports;
 mod process;
@@ -41,11 +43,13 @@ use std::time::Duration;
 pub use aegis_docker::DockerStatus;
 pub use aegis_secrets::SecretInfo;
 pub use config_file::ConfigPreview;
+pub use cron::CronSchedule;
 pub use deploy::{DeployRequest, LiveCheck};
 pub use domains::DomainView;
 pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, ImportResult};
 pub use git::{path_matches, touches};
 pub use groups::{GroupSpec, MemberRollback, MemberSpec};
+pub use jobs::{Job, JobRun, JobSpec, JobUpdate};
 pub use lifecycle::{DeletedApp, SourceChange};
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
@@ -220,6 +224,8 @@ struct Inner {
     standby: Mutex<HashMap<ProjectId, rollout::Standby>>,
     /// Latest CPU (cores) and memory (bytes) of each process.
     process_usage: Mutex<HashMap<ProcessId, (f64, u64)>>,
+    /// Jobs with a run in progress.
+    running_jobs: Mutex<HashSet<String>>,
     /// Serializes domain changes so uniqueness checks can't race.
     domain_lock: tokio::sync::Mutex<()>,
     secrets: aegis_secrets::SecretStore,
@@ -298,6 +304,7 @@ impl ControlPlane {
                 artifact_store: ArtifactStore::new(settings.data_dir.join("artifacts")),
                 settings,
                 project_locks: Mutex::new(HashMap::new()),
+                running_jobs: Mutex::new(HashSet::new()),
                 process_release: Mutex::new(HashMap::new()),
                 shutting_down: AtomicBool::new(false),
                 resources,
@@ -357,6 +364,7 @@ impl ControlPlane {
         self.spawn_sampler();
         self.spawn_docker_janitor();
         self.spawn_update_checker();
+        self.spawn_job_scheduler();
     }
 
     pub fn store(&self) -> &EventStore {

@@ -25,6 +25,7 @@ Sign in as `admin`. The first password is in `<data_dir>/initial-admin-password`
 | ↳ [Logs tab](logs.md) | Live, searchable logs. |
 | ↳ [Resources tab](resources.md) | CPU and memory charts, and live limits. |
 | ↳ [Settings tab](settings.md) | Build and run settings, domains, secrets, daily deploy, webhook. |
+| ↳ [Jobs](jobs.md) | Scheduled and on-demand commands in the live release (Settings tab). |
 | ↳ [Activity tab](activity.md) | The app's own audit log. |
 | [Deployments](deployments.md) | Every deployment of every app, with details. |
 | [Events](events.md) | The audit log for the whole server. |
