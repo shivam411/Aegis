@@ -1,0 +1,10 @@
+# Scrape Aegis (turn metrics on first: Account → Monitoring (Prometheus & Grafana)).
+# Create a read-scope API token under Account → API tokens and put it below.
+scrape_configs:
+  - job_name: aegis
+    metrics_path: /metrics
+    scrape_interval: 15s
+    authorization:
+      credentials: aegis_REPLACE_WITH_A_READ_TOKEN
+    static_configs:
+      - targets: ["127.0.0.1:8420"]   # the daemon's [web] host:port; add the name you use to [web] allowed_hosts

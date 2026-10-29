@@ -3651,6 +3651,80 @@
         }
       }
     },
+    "/api/v1/system/grafana-dashboard": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "grafana_dashboard",
+        "responses": {
+          "200": {
+            "description": "A Grafana dashboard (import it in Grafana: Dashboards → New → Import) for the metrics at /metrics",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/prometheus": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "prometheus_status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrometheusDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "set_prometheus",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPrometheusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrometheusDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/update": {
       "get": {
         "tags": [
@@ -6756,6 +6830,18 @@
         },
         "additionalProperties": false
       },
+      "PrometheusDto": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether `GET /metrics` answers."
+          }
+        }
+      },
       "ProxyRouteDto": {
         "type": "object",
         "required": [
@@ -7478,6 +7564,18 @@
             "description": "\"read\" or \"deploy\" (tokens only)."
           }
         }
+      },
+      "SetPrometheusRequest": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "SetResourcesRequest": {
         "type": "object",

@@ -158,6 +158,7 @@ Every event recorded because of an API call carries `actor`: `user:<name>`, `tok
 | `PasswordChanged` / `PasswordReset` | Password changed by its owner / reset by an admin or on the server; that user's sessions end | `username` |
 | `UserCreated` | An admin (or `aegis-daemon admin create-user`) added an account | `username`, `role`, `actor` |
 | `UserRoleChanged` | An account's role changed; open sessions use the new role at once | `username`, `from`, `to`, `actor` |
+| `PrometheusToggled` | An admin turned the Prometheus `/metrics` endpoint on or off | `enabled`, `actor` |
 | `UserAppsChanged` | An account's list of visible apps changed (`apps` is `"all"` or a list of project ids); `UserCreated` also carries `apps` | `username`, `apps`, `actor` |
 | `AppHidden` / `AppUnhidden` | An admin put an app behind a password / removed it | `project_id`, `name`, `actor` |
 | `AppUnlocked` / `AppUnlockFailed` | A session entered an app's hide password (correctly / wrongly; the app name tried is never recorded) | `project_id` (success), `ip`, `actor` |

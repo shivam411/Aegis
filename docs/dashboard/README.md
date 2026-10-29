@@ -29,6 +29,7 @@ Sign in as `admin`. The first password is in `<data_dir>/initial-admin-password`
 | [Deployments](deployments.md) | Every deployment of every app, with details. |
 | [Events](events.md) | The audit log for the whole server. |
 | [Account](account.md) | Password, theme, and for admins: users, API tokens, backups. |
+| [Monitoring](monitoring.md) | Optional Prometheus metrics and a Grafana dashboard (Account, admins). |
 | [Aegis updates](updates.md) | The "new version available" notice and upgrading. |
 | [Docker apps and instances](docker-and-instances.md) | How container apps and apps with several instances look. |
 | [Keyboard shortcuts](shortcuts.md) | Every shortcut. |

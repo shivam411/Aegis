@@ -921,6 +921,28 @@ impl AuthStore {
         Ok(())
     }
 
+    /// A run-time switch or value set by an admin (see the `settings` table).
+    pub async fn setting(&self, key: &str) -> Result<Option<String>, anyhow::Error> {
+        Ok(sqlx::query("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.try_get(0))
+            .transpose()?)
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), anyhow::Error> {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Forgets everything about a deleted app: its hide password, unlocks
     /// and places in users' app lists.
     pub async fn forget_project(&self, project_id: &str) -> Result<(), anyhow::Error> {

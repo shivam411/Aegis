@@ -84,7 +84,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     st: &AppState,
     headers: &HeaderMap,
 ) -> Result<Option<(Principal, Credential)>, ApiError> {
@@ -139,6 +139,7 @@ fn user_only(path: &str) -> bool {
         || path.starts_with("/api/v1/backups/")
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
+        || path == "/api/v1/system/prometheus"
         || matches!(
             section,
             Some("webhook" | "secrets" | "deploy-key" | "hide" | "unlock" | "lock")

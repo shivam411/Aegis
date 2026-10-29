@@ -48,3 +48,19 @@ test('the live URL check settings are saved', async ({ page }) => {
     await expect(page.locator('.toast', { hasText: 'Settings saved' }).last()).toBeVisible();
   });
 });
+
+test('turn Prometheus metrics on and download the Grafana dashboard', async ({ page }) => {
+  await login(page);
+  await page.goto('/#/account');
+  const card = page.locator('[data-card="monitoring"]');
+  await expect(card).toBeVisible();
+  await card.locator('[data-action="toggle-prometheus"]').click();
+  await expect(card.locator('[data-scrape-url]')).toContainText('/metrics');
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    card.locator('[data-action="download-grafana"]').click(),
+  ]);
+  expect(download.suggestedFilename()).toBe('aegis-grafana-dashboard.json');
+  await card.locator('[data-action="toggle-prometheus"]').click();
+  await expect(card.locator('[data-scrape-url]')).toHaveCount(0);
+});

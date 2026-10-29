@@ -388,6 +388,16 @@ export const HELP = {
     roles: 'Admins.',
     docs: 'account.md#users',
   },
+  'account.monitoring': {
+    title: 'Monitoring (Prometheus & Grafana)',
+    summary: 'An optional /metrics endpoint in the Prometheus format, off until you turn it on, and a ready-made Grafana dashboard for it. Nothing is sent anywhere: Prometheus comes and fetches it.',
+    controls: [
+      ['Turn metrics on / off', 'Switches the /metrics endpoint. Off answers "not found".'],
+      ['Download Grafana dashboard', 'A JSON file to import in Grafana (Dashboards → New → Import) once Prometheus is added as a data source.'],
+    ],
+    roles: 'Admins. Scraping needs an API token (any scope) or a session.',
+    docs: 'monitoring.md',
+  },
   'account.tokens': {
     title: 'API tokens',
     summary: 'Tokens for the CLI, scripts and CI, sent as an Authorization: Bearer header. The token is shown once when created.',

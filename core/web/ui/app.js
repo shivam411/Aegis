@@ -4997,8 +4997,52 @@ async function accountPage(main, ctx) {
       admin ? usersCard(ctx, session.name) : null,
       admin ? tokenCard : null,
       admin ? backupCard : null,
+      admin ? monitoringCard(ctx) : null,
       h('div', { class: 'grid two' }, pwForm, prefs)));
   if (admin) await Promise.all([loadTokens(), loadBackups()]);
+}
+
+/** Admins: switch the Prometheus endpoint on or off and fetch the Grafana dashboard. */
+function monitoringCard(ctx) {
+  const body = h('div', { class: 'card-body' });
+  const scrape = `${location.origin}/metrics`;
+  const draw = (enabled) => {
+    const toggle = h('button', { class: `btn ${enabled ? 'danger' : 'primary'}`, type: 'button', 'data-action': 'toggle-prometheus' },
+      enabled ? 'Turn metrics off' : 'Turn metrics on');
+    toggle.addEventListener('click', async () => {
+      const res = await run(toggle, () => api('PUT', '/system/prometheus', { enabled: !enabled }),
+        (r) => (r.enabled ? 'Prometheus metrics are on' : 'Prometheus metrics are off'));
+      if (res && ctx.alive()) draw(res.enabled);
+    });
+    const dash = h('button', { class: 'btn', type: 'button', 'data-action': 'download-grafana' }, 'Download Grafana dashboard');
+    dash.addEventListener('click', async () => {
+      const res = await run(dash, async () => {
+        const r = await fetch('/api/v1/system/grafana-dashboard', { credentials: 'same-origin' });
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.blob();
+      });
+      if (!res) return;
+      const url = URL.createObjectURL(res);
+      const a = h('a', { href: url, download: 'aegis-grafana-dashboard.json' });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    replace(body,
+      h('p', { class: 'muted small' }, 'Off until you turn it on. Prometheus scrapes the metrics (apps up, CPU, memory, restarts, deployments, host load and disk); Grafana charts them with the dashboard below.'),
+      enabled
+        ? h('div', { class: 'grid' },
+          h('p', { class: 'small' }, 'Scrape URL: ', h('code', { 'data-scrape-url': '' }, scrape)),
+          h('p', { class: 'small muted' }, 'Create a read token under API tokens and give it to Prometheus as a bearer token. If the daemon is reached through another host name, add it to [web] allowed_hosts. Sessions see only the apps they may see; tokens see all apps.'),
+          secretBox(`scrape_configs:\n  - job_name: aegis\n    metrics_path: /metrics\n    authorization:\n      credentials: <your read token>\n    static_configs:\n      - targets: ['${location.host}']`, 'prometheus.yml'))
+        : null,
+      h('div', { class: 'form-actions' }, toggle, ' ', dash));
+  };
+  api('GET', '/system/prometheus').then((r) => ctx.alive() && draw(r.enabled)).catch((err) => ctx.alive() && replace(body, errorBox(err)));
+  return h('section', { class: 'card', id: 'monitoring', 'data-card': 'monitoring' },
+    cardHeader('Monitoring (Prometheus & Grafana)', 'account.monitoring'),
+    body);
 }
 
 const ROLE_HELP = {

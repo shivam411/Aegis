@@ -51,6 +51,8 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /projects/{project}/resources` | The app's limits and its latest usage sample |
 | `PUT /projects/{project}/resources` | Set limits, applied at once without a restart: `{"cpu_cores"?, "memory_bytes"?, "pids_max"?, "force"?}` (omitted = unlimited). A memory limit below current use, or more memory promised than the host has, returns 409 `confirmation_required` unless `force` is true |
 | `GET /projects/{project}/metrics?range=&points=` | CPU and memory history with the limits in effect (`range`: e.g. `5m`, `1h`, `24h`, `7d`; up to an hour at 2 s resolution, longer from per-minute rollups) |
+| `GET /system/prometheus` · `PUT /system/prometheus` | Whether `GET /metrics` answers / turn it on or off: `{"enabled"}` (admins, signed in). Off by default |
+| `GET /system/grafana-dashboard` | A Grafana dashboard (JSON file) for the metrics. See [monitoring](dashboard/monitoring.md) |
 | `GET /host/metrics?range=&points=` | The same for the whole host |
 | `GET /metrics/stream?project=&host=` | **SSE**: a `sample` message per app (and the host) every sample interval |
 | `GET /host` | Host CPU %, memory, swap, disk (the data directory's filesystem) and load average, sampled every 5 s |
@@ -119,6 +121,7 @@ Outside `/api/v1`:
 | Method & path | Does |
 | :--- | :--- |
 | `GET /healthz` | `ok` (public; for load balancers and proxies) |
+| `GET /metrics` | Prometheus text metrics (apps, resources, deployments, host). **404 until an admin turns it on**; then needs an API token (any scope) or a session. See [monitoring](dashboard/monitoring.md) |
 | `GET /` · `GET /assets/{file}` | The web dashboard's static files (public; they contain no data, and every API call they make needs a session) |
 | `POST /hooks/github/{project-id}` | GitHub push webhook, authenticated by `X-Hub-Signature-256`. Pushes are ignored while the app is in a group |
 | `POST /hooks/github/groups/{group-id}` | A group's GitHub push webhook: a push to its branch deploys the group's changed apps at the pushed commit |

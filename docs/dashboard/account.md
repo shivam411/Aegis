@@ -25,6 +25,10 @@ Admins only. Tokens are for the CLI, scripts and CI. Send one as `Authorization:
 - Copy the token from the box that appears. It is shown only once.
 - The table shows each token's scope, when it was created and when it was last used. **Revoke** cuts it off immediately.
 
+## Monitoring
+
+Admins only. Optional Prometheus metrics and a Grafana dashboard, off by default. See [Monitoring](monitoring.md).
+
 ## Backups
 
 Admins only. A backup is a `.tar.gz` archive with the database, the secrets key (without it, app secrets can't be decrypted), the certificates and, optionally, the release directories.

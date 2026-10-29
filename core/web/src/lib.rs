@@ -15,6 +15,7 @@ mod domains;
 pub mod dto;
 mod groups;
 mod guard;
+mod metrics;
 mod resources;
 mod sources;
 pub mod tls;
@@ -280,7 +281,8 @@ impl Modify for SecuritySchemes {
         updates::check_group_updates,
         backup::list_backups, backup::create_backup, backup::download_backup,
         backup::delete_backup,
-        update::update_status, update::check_update, update::apply_update
+        update::update_status, update::check_update, update::apply_update,
+        metrics::prometheus_status, metrics::set_prometheus, metrics::grafana_dashboard
     ),
     components(schemas(
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, InstanceDto, StandbyDto, ReleaseDto,
@@ -301,7 +303,7 @@ impl Modify for SecuritySchemes {
         SetSecretRequest, SecretSaved, DiffLineDto, ConfigPreviewDto, WebhookDeliveryDto,
         WebhookStatusDto, backup::BackupDto, backup::CreateBackupRequest,
         update::UpdateStatusDto, update::LatestReleaseDto, update::LastUpdateDto,
-        update::ApplyUpdateRequest, sources::DeployKeyDto, sources::CreateDeployKeyRequest,
+        update::ApplyUpdateRequest, metrics::PrometheusDto, metrics::SetPrometheusRequest, sources::DeployKeyDto, sources::CreateDeployKeyRequest,
         sources::AccessCheckDto, sources::CheckAccessRequest, sources::ScanInfoDto,
         sources::ScanRequest, sources::ScanWarningDto, sources::StartHintDto,
         sources::ScanCandidateDto, sources::ScanResultDto, sources::ImportAppRequest,
@@ -350,6 +352,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/status", get(api::status))
         .route("/host", get(api::host))
+        .route(
+            "/system/prometheus",
+            get(metrics::prometheus_status).put(metrics::set_prometheus),
+        )
+        .route("/system/grafana-dashboard", get(metrics::grafana_dashboard))
         .route("/system/update", get(update::update_status))
         .route("/system/update/check", post(update::check_update))
         .route("/system/update/apply", post(update::apply_update))
@@ -494,6 +501,7 @@ pub fn router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(5 * 1024 * 1024));
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics::prometheus_metrics))
         .route("/", get(ui::index))
         .route("/assets/:file", get(ui::asset))
         .nest("/api/v1", api)
