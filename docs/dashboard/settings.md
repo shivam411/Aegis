@@ -17,6 +17,7 @@ The **Build & run** card holds the app's dashboard settings. A blank field means
 | **Default strategy** | Used when a deployment doesn't choose one. Rolling and Blue-green need a domain on the built-in proxy. See [strategies](deploy.md#strategies). |
 | **Instances** | How many copies of the app to run (1–16). More than one needs a domain on the built-in proxy. Resource limits apply to each instance. |
 | **Health check timeout (seconds)** | How long a new release may take to become healthy (1–3600; `aegis.toml` `[deploy] health_check_timeout_secs`, default 30). If it isn't healthy by then, the deployment fails and the previous release keeps serving. Raise it for apps that start slowly (e.g. 90 for an app that needs 75 s). |
+| **Live URL check** | After a new release goes live Aegis requests this URL (for example your public domain). If it is not up within the timeout (**Timeout**, default 30 s) the deployment is rolled back to the previous release and fails showing the HTTP status or error seen (for example *HTTP 502*). **Accepted statuses** is `200` or a range like `200-399` (default `100-499`, anything but a server error). **Check the URL now** requests it once; **Check, and roll back if down** also puts the previous release back when it is not up. The first deployment of an app has no earlier release, so it stays live and fails the check. |
 | **Drain timeout (seconds)** | How long a stopping release gets to finish in-flight requests and exit after SIGTERM before it is killed (0–3600; `[deploy] drain_timeout_secs`, default 10). It applies to releases built after the change. |
 | **Environment variables** | `NAME = value` rows, merged over `[env]` in `aegis.toml` (and over the [env file](#env-file)) and written into each release. **Add variable** adds a row, **Remove** deletes one. Use [Secrets](#secrets) for passwords and keys. |
 
@@ -80,6 +81,8 @@ Values are never shown again, logged or recorded in events (except Variables, wh
 Serve the app on your own domain through the built-in reverse proxy.
 
 ![The Domains card with one domain](../images/dashboard/app-domains.png)
+
+**Quick add a subdomain:** type just the label (for example `api`), pick the base domain (the list is built from the domains Aegis already serves, or choose **Other domain…** and type one) and click **Add subdomain**. The preview shows the full name (`api.example.com`) and the TLS choice below is used. Create the DNS record (an A record to this server's IP, or a CNAME) before or right after; automatic HTTPS needs it to resolve.
 
 1. Point the domain's DNS at the server.
 2. Enter it under **Domain** and pick **TLS**:

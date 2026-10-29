@@ -41,7 +41,7 @@ use std::time::Duration;
 pub use aegis_docker::DockerStatus;
 pub use aegis_secrets::SecretInfo;
 pub use config_file::ConfigPreview;
-pub use deploy::DeployRequest;
+pub use deploy::{DeployRequest, LiveCheck};
 pub use domains::DomainView;
 pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, ImportResult};
 pub use git::{path_matches, touches};
@@ -877,6 +877,9 @@ pub(crate) fn validate_settings(
         instances: settings.instances,
         health_check_timeout_secs: settings.health_check_timeout_secs,
         drain_timeout_secs: settings.drain_timeout_secs,
+        verify_url: clean(settings.verify_url),
+        verify_timeout_secs: settings.verify_timeout_secs,
+        verify_expect: clean(settings.verify_expect),
         env: settings
             .env
             .into_iter()
@@ -903,6 +906,24 @@ pub(crate) fn validate_settings(
     }
     if let Some(secs) = settings.drain_timeout_secs {
         aegis_config::validate_drain_timeout(secs).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(secs) = settings.verify_timeout_secs {
+        aegis_config::validate_health_check_timeout(secs).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(expect) = settings.verify_expect.as_deref().filter(|v| !v.is_empty()) {
+        aegis_config::parse_verify_expect(expect).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(url) = settings.verify_url.as_deref().filter(|u| !u.is_empty()) {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(ControlError::InvalidArgument(
+                "The verify URL must start with http:// or https://".into(),
+            ));
+        }
+        if url.contains(char::is_whitespace) {
+            return Err(ControlError::InvalidArgument(
+                "The verify URL must not contain spaces".into(),
+            ));
+        }
     }
     if let Some(url) = settings
         .health_check_url

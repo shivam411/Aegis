@@ -201,7 +201,7 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Entering a hide password (or hiding the app again) changes nothing
         // but what this session sees.
         ["projects", _, "unlock" | "lock"] => Role::Viewer,
-        ["projects", _, "deploy" | "rollback"] => Role::Deployer,
+        ["projects", _, "deploy" | "rollback" | "verify"] => Role::Deployer,
         ["groups", _, "deploy" | "rollback"] => Role::Deployer,
         // "Check now" for new commits: reads the git server, changes nothing.
         ["projects" | "groups", _, "updates", "check"] => Role::Deployer,

@@ -122,6 +122,51 @@ pub struct ProjectDto {
     pub protected: bool,
 }
 
+/// Request for `POST /projects/{project}/verify`.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct VerifyRequest {
+    /// http:// or https:// URL to request; the app's verify URL when omitted.
+    pub url: Option<String>,
+    /// Roll back to the previous release when the URL isn't up.
+    pub rollback: bool,
+}
+
+/// What requesting a live URL showed.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct LiveCheckDto {
+    pub url: String,
+    pub ok: bool,
+    /// HTTP status, when there was an answer.
+    pub status: Option<u16>,
+    /// Why there was no answer (connection failed, timeout, TLS error...).
+    pub error: Option<String>,
+    /// `http_<status>`, `connection_failed`, `timeout`, `tls_error` or
+    /// `no_response`, when not ok.
+    pub error_code: Option<String>,
+    pub elapsed_ms: u64,
+    /// The statuses that count as up, e.g. `100-499`.
+    pub expected: String,
+    pub rolled_back_to: Option<String>,
+    pub rollback_error: Option<String>,
+}
+
+impl From<aegis_control::LiveCheck> for LiveCheckDto {
+    fn from(c: aegis_control::LiveCheck) -> Self {
+        Self {
+            url: c.url,
+            ok: c.ok,
+            status: c.status,
+            error: c.error,
+            error_code: c.error_code,
+            elapsed_ms: c.elapsed_ms,
+            expected: c.expected,
+            rolled_back_to: c.rolled_back_to,
+            rollback_error: c.rollback_error,
+        }
+    }
+}
+
 /// The group an app belongs to.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ProjectGroupDto {
@@ -515,6 +560,16 @@ pub struct ProjectSettingsDto {
     /// exit after SIGTERM (0-3600; aegis.toml `[deploy] drain_timeout_secs`,
     /// default 10).
     pub drain_timeout_secs: Option<u64>,
+    /// After the new release is live, request this http:// or https:// URL
+    /// (e.g. the public domain). If it isn't up within `verify_timeout_secs`
+    /// the deployment is rolled back to the previous release and fails with
+    /// the HTTP status or error seen (`[deploy] verify_url`).
+    pub verify_url: Option<String>,
+    /// Seconds the verify URL may take to come up (1-3600, default 30).
+    pub verify_timeout_secs: Option<u64>,
+    /// Statuses that count as up: `200` or a range like `200-399` (default
+    /// `100-499`, anything but a server error).
+    pub verify_expect: Option<String>,
     /// Plain environment variables, merged over aegis.toml's `[env]` and
     /// written into each release. Use secrets for sensitive values.
     pub env: std::collections::BTreeMap<String, String>,
@@ -539,6 +594,9 @@ impl From<aegis_config::ProjectOverrides> for ProjectSettingsDto {
             instances: o.instances,
             health_check_timeout_secs: o.health_check_timeout_secs,
             drain_timeout_secs: o.drain_timeout_secs,
+            verify_url: o.verify_url,
+            verify_timeout_secs: o.verify_timeout_secs,
+            verify_expect: o.verify_expect,
             env: o.env,
             env_file: o.env_file,
         }
@@ -558,6 +616,9 @@ impl From<ProjectSettingsDto> for aegis_config::ProjectOverrides {
             instances: d.instances,
             health_check_timeout_secs: d.health_check_timeout_secs,
             drain_timeout_secs: d.drain_timeout_secs,
+            verify_url: d.verify_url,
+            verify_timeout_secs: d.verify_timeout_secs,
+            verify_expect: d.verify_expect,
             env: d.env,
             env_file: d.env_file,
         }

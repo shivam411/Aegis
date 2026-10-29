@@ -741,6 +741,46 @@ pub struct DeploySection {
     /// an instant rollback target) after traffic switched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blue_green_keep_secs: Option<u64>,
+    /// After the new release is live, request this URL (http:// or https://,
+    /// e.g. the public domain). If it is not up, the deployment is rolled
+    /// back to the previous release and fails with the status or error seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_url: Option<String>,
+    /// How long the URL may take to come up (default 30 seconds, 1-3600).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_timeout_secs: Option<u64>,
+    /// HTTP statuses that count as up: `200`, or a range like `200-399`
+    /// (default `100-499`: anything but a server error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_expect: Option<String>,
+}
+
+/// Parses `[deploy] verify_expect`: one status or a `lo-hi` range.
+pub fn parse_verify_expect(value: &str) -> Result<(u16, u16), String> {
+    let bad = || {
+        format!(
+            "'{}' is not an HTTP status or range like 200 or 200-399",
+            value
+        )
+    };
+    let status = |s: &str| {
+        s.trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|c| (100..=599).contains(c))
+            .ok_or_else(bad)
+    };
+    match value.split_once('-') {
+        Some((lo, hi)) => {
+            let (lo, hi) = (status(lo)?, status(hi)?);
+            if lo <= hi {
+                Ok((lo, hi))
+            } else {
+                Err(bad())
+            }
+        }
+        None => status(value).map(|c| (c, c)),
+    }
 }
 
 /// Upper bound for `[run] instances`.
@@ -1177,6 +1217,15 @@ pub struct ProjectOverrides {
     /// release stops (`[deploy] drain_timeout_secs`), 0-3600.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drain_timeout_secs: Option<u64>,
+    /// URL requested after the release is live (`[deploy] verify_url`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_url: Option<String>,
+    /// Seconds that URL may take to come up (`[deploy] verify_timeout_secs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_timeout_secs: Option<u64>,
+    /// Statuses that count as up (`[deploy] verify_expect`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_expect: Option<String>,
     /// Plain (non-secret) environment variables, merged over `[env]`.
     /// Secrets are kept elsewhere, encrypted, and never written to a release.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -1223,6 +1272,11 @@ impl ProjectOverrides {
         }
         if let Some(secs) = self.drain_timeout_secs {
             file.deploy.drain_timeout_secs = Some(secs);
+        }
+        set(&mut file.deploy.verify_url, &self.verify_url);
+        set(&mut file.deploy.verify_expect, &self.verify_expect);
+        if let Some(secs) = self.verify_timeout_secs {
+            file.deploy.verify_timeout_secs = Some(secs);
         }
         file.env
             .extend(self.env.iter().map(|(k, v)| (k.clone(), v.clone())));

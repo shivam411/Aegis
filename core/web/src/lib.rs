@@ -253,7 +253,7 @@ impl Modify for SecuritySchemes {
     paths(
         api::status, api::list_projects, api::create_project, api::get_project,
         api::delete_project, api::change_source, api::deploy,
-        api::rollback, api::set_schedule, api::list_releases, api::list_deployments,
+        api::rollback, api::verify_project, api::set_schedule, api::list_releases, api::list_deployments,
         api::get_deployment, api::list_processes, api::process_action, api::get_logs,
         api::stream_logs, api::list_events, api::stream_events, api::host,
         api::update_settings, api::detect, api::deployment_log, api::deployment_events,
@@ -286,7 +286,7 @@ impl Modify for SecuritySchemes {
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, InstanceDto, StandbyDto, ReleaseDto,
         DeploymentDto, EventDto,
         LogLineDto, LogsDto, CreateProjectRequest, DeployRequest, DeployAccepted,
-        RollbackRequest, RollbackResult, ScheduleRequest, ErrorBody, ErrorDetail,
+        RollbackRequest, RollbackResult, VerifyRequest, LiveCheckDto, ScheduleRequest, ErrorBody, ErrorDetail,
         ChangeSourceRequest, DeletedProjectDto,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
         NewTokenDto, users::UserDto, users::CreateUserRequest, users::UpdateUserRequest,
@@ -382,6 +382,7 @@ pub fn router(state: AppState) -> Router {
         .route("/projects/:project/source", put(api::change_source))
         .route("/projects/:project/deploy", post(api::deploy))
         .route("/projects/:project/rollback", post(api::rollback))
+        .route("/projects/:project/verify", post(api::verify_project))
         .route("/projects/:project/schedule", put(api::set_schedule))
         .route("/projects/:project/settings", put(api::update_settings))
         .route(

@@ -309,6 +309,26 @@ pub(crate) async fn rollback(
     Ok(Json(RollbackResult { version }))
 }
 
+#[utoipa::path(post, path = "/api/v1/projects/{project}/verify", tag = "deployments",
+    params(("project" = String, Path, description = "Project id or name")),
+    request_body = VerifyRequest,
+    responses(
+        (status = 200, description = "The URL was requested once. `ok` says whether the answer was accepted; when not, `status` or `error` and `error_code` say why, and `rolled_back_to` names the release put back when `rollback` was set", body = LiveCheckDto),
+        (status = 400, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 409, description = "The app has no live release", body = ErrorBody)))]
+pub(crate) async fn verify_project(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+    ApiJson(req): ApiJson<VerifyRequest>,
+) -> ApiResult<Json<LiveCheckDto>> {
+    let project = st.control.resolve_project(&key)?;
+    let report = st
+        .control
+        .check_live_url(project.id, non_empty(req.url), req.rollback)
+        .await?;
+    Ok(Json(report.into()))
+}
+
 #[utoipa::path(put, path = "/api/v1/projects/{project}/schedule", tag = "projects",
     params(("project" = String, Path, description = "Project id or name")),
     request_body = ScheduleRequest,

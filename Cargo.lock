@@ -283,8 +283,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "rustls",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

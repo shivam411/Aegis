@@ -3397,6 +3397,77 @@
         }
       }
     },
+    "/api/v1/projects/{project}/verify": {
+      "post": {
+        "tags": [
+          "deployments"
+        ],
+        "operationId": "verify_project",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The URL was requested once. `ok` says whether the answer was accepted; when not, `status` or `error` and `error_code` say why, and `rolled_back_to` names the release put back when `rollback` was set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveCheckDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The app has no live release",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project}/webhook": {
       "get": {
         "tags": [
@@ -5952,6 +6023,68 @@
           }
         }
       },
+      "LiveCheckDto": {
+        "type": "object",
+        "description": "What requesting a live URL showed.",
+        "required": [
+          "url",
+          "ok",
+          "elapsed_ms",
+          "expected"
+        ],
+        "properties": {
+          "elapsed_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there was no answer (connection failed, timeout, TLS error...)."
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`http_<status>`, `connection_failed`, `timeout`, `tls_error` or\n`no_response`, when not ok."
+          },
+          "expected": {
+            "type": "string",
+            "description": "The statuses that count as up, e.g. `100-499`."
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "rollback_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rolled_back_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "HTTP status, when there was an answer.",
+            "minimum": 0
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
       "LogLineDto": {
         "type": "object",
         "required": [
@@ -6592,6 +6725,32 @@
               "string",
               "null"
             ],
+            "default": null
+          },
+          "verify_expect": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Statuses that count as up: `200` or a range like `200-399` (default\n`100-499`, anything but a server error).",
+            "default": null
+          },
+          "verify_timeout_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds the verify URL may take to come up (1-3600, default 30).",
+            "default": null,
+            "minimum": 0
+          },
+          "verify_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "After the new release is live, request this http:// or https:// URL\n(e.g. the public domain). If it isn't up within `verify_timeout_secs`\nthe deployment is rolled back to the previous release and fails with\nthe HTTP status or error seen (`[deploy] verify_url`).",
             "default": null
           }
         },
@@ -7850,6 +8009,26 @@
             "type": "string"
           }
         }
+      },
+      "VerifyRequest": {
+        "type": "object",
+        "description": "Request for `POST /projects/{project}/verify`.",
+        "properties": {
+          "rollback": {
+            "type": "boolean",
+            "description": "Roll back to the previous release when the URL isn't up.",
+            "default": false
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "http:// or https:// URL to request; the app's verify URL when omitted.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
       },
       "WebhookDeliveryDto": {
         "type": "object",

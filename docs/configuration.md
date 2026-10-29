@@ -56,6 +56,9 @@ NODE_ENV = "production"
 | `deploy.port` | Detected | Exported as `PORT` unless `[env]` sets `PORT`. Behind the built-in proxy each release gets its own `PORT` instead. |
 | `deploy.health_check_url` | `http://127.0.0.1:<port>/health` | Any HTTP response below 500 counts as healthy. Use `tcp://host:port` for a TCP-only check. With an empty string, the release counts as healthy if its process stays up for 3 seconds. |
 | `deploy.health_check_timeout_secs` | `30` | How long a new release may take to become healthy before it is rolled back. Also settable in the dashboard (Settings → Build & run, 1-3600), which overrides this file. |
+| `deploy.verify_url` | none | After the new release is live, Aegis requests this `http://` or `https://` URL (typically the public domain). If it is not up within `verify_timeout_secs`, the previous release is put back and the deployment fails as `RolledBack` with the HTTP status or error that was seen (`http_status`, `error_code`). The first deployment has nothing to go back to and stays live. Settable in the dashboard (Settings → Live URL check). |
+| `deploy.verify_timeout_secs` | `30` | How long the verify URL may take to come up (1-3600). |
+| `deploy.verify_expect` | `100-499` | HTTP statuses that count as up: `200` or a range like `200-399`. The default accepts anything but a server error. |
 | `deploy.drain_timeout_secs` | `10` | Grace period between SIGTERM and SIGKILL when stopping the app (and, behind the proxy, for in-flight requests to finish). Also settable in the dashboard (0-3600), which overrides this file. |
 | `deploy.max_retained_versions` | `2` | Release directories kept on disk for rollback, including the live one. |
 | `deploy.restart_policy` | `always` | What the supervisor does when the app exits. A crash loop (more than 5 restarts within 2 minutes) stops restarting and marks the process `Failed`. |

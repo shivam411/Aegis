@@ -96,7 +96,8 @@ Apps deployed together from one repository and branch; see [groups.md](groups.md
 | `DeploymentQueued` | A deployment was requested (CLI, schedule or webhook) | `deployment_id`, `project_id`, `strategy`, `branch`, `source_dir` or `repository_url`, `commit_sha`, `version`, `trigger_source` |
 | `DeploymentStarted` | The daemon began building | `deployment_id`, `project_id`, `version`, `strategy` |
 | `DeploymentCompleted` | The new release is live and healthy | `deployment_id`, `project_id`, `release_id`, `version` |
-| `DeploymentFailed` | A build stage or the health check failed | `deployment_id`, `project_id`, `stage`, `reason`, `log_tail`, `rolled_back_to` |
+| `DeploymentFailed` | A build stage, the health check or the live URL check failed. For `stage` = `LiveCheck` it also has `verify_url`, `http_status` (or `error` when there was no answer), `error_code` (`http_503`, `connection_failed`, `timeout`, `tls_error`, `no_response`) and `rollback_error` | `deployment_id`, `project_id`, `stage`, `reason`, `log_tail`, `rolled_back_to` |
+| `LiveCheckRun` | Someone requested the app's live URL on demand (`POST /projects/{p}/verify`) | `project_id`, `url`, `ok`, `http_status`, `error_code`, `rolled_back_to` |
 | `DeploymentRolledBack` | After a failed health check, the previous release was started again | `deployment_id`, `project_id`, `target_version`, `reason` |
 | `RollbackRequested` | An operator asked to switch to an earlier release | `project_id`, `from_version`, `target_version` |
 | `RollbackCompleted` | The earlier release is live | `project_id`, `from_version`, `to_version`, `instant` (switched back to a BlueGreen standby without starting anything) |

@@ -1404,7 +1404,7 @@ function appsToolbar(apps, selected, view, setView, redraw, reload) {
     if (selected.size) {
       const chosen = apps.filter((p) => selected.has(p.name));
       parts.push(h('span', { class: 'muted small', 'data-selected-count': String(chosen.length) }, `${chosen.length} selected`));
-      for (const [action, label, danger] of [['deploy', 'Deploy', false], ['restart', 'Restart', false], ['start', 'Start', false], ['stop', 'Stop', true]]) {
+      for (const [action, label, danger] of [['deploy', 'Deploy', false], ['restart', 'Restart', false], ['start', 'Start', false], ['stop', 'Stop', true], ['rollback', 'Roll back', true]]) {
         parts.push(h('button', {
           class: `btn small${danger ? ' danger' : ''}${action === 'deploy' ? ' primary' : ''}`,
           type: 'button',
@@ -1427,12 +1427,12 @@ async function bulkAction(action, apps, btn, reload) {
     toast('None of the selected apps has a release to run yet', 'bad');
     return;
   }
-  const verb = { deploy: 'Deploy', restart: 'Restart', start: 'Start', stop: 'Stop' }[action];
+  const verb = { deploy: 'Deploy', restart: 'Restart', start: 'Start', stop: 'Stop', rollback: 'Roll back' }[action];
   const ok = await confirmDialog({
     title: `${verb} ${doable.length} app${doable.length === 1 ? '' : 's'}?`,
     message: `${doable.map((p) => p.name).join(', ')}${skipped ? ` (${skipped} without a release skipped)` : ''}. They are handled one after another.`,
     confirmLabel: verb,
-    danger: action === 'stop',
+    danger: action === 'stop' || action === 'rollback',
   });
   if (!ok) return;
   btn.disabled = true;
@@ -1440,6 +1440,7 @@ async function bulkAction(action, apps, btn, reload) {
   for (const p of doable) {
     try {
       if (action === 'deploy') await api('POST', `/projects/${enc(p.name)}/deploy`, {});
+      else if (action === 'rollback') await api('POST', `/projects/${enc(p.name)}/rollback`, {});
       else await api('POST', `/processes/${enc(p.name)}/${action}`);
     } catch (err) {
       if (err.status === 401) return;
@@ -1448,7 +1449,7 @@ async function bulkAction(action, apps, btn, reload) {
   }
   btn.disabled = false;
   const done = doable.length - failed.length;
-  const past = { deploy: 'queued for deployment', restart: 'restarted', start: 'started', stop: 'stopped' }[action];
+  const past = { deploy: 'queued for deployment', restart: 'restarted', start: 'started', stop: 'stopped', rollback: 'rolled back to the previous release' }[action];
   toast(`${done} app${done === 1 ? '' : 's'} ${past}${failed.length ? `; ${failed.length} failed: ${failed.join('; ')}` : ''}`, failed.length ? 'bad' : '');
   reload().catch(() => {});
 }
@@ -2068,7 +2069,8 @@ function instancesCard(ctx) {
 
 // --- Pipeline view (deploy tab and deployment detail) -------------------
 
-const STAGES = ['Clone', 'Install', 'Build', 'Test', 'Package', 'Verify', 'Promote'];
+const STAGES = ['Clone', 'Install', 'Build', 'Test', 'Package', 'Verify', 'Promote', 'LiveCheck'];
+const STAGE_LABELS = { LiveCheck: 'Live URL check' };
 
 const instanceList = (list) => (list || []).map((i) => `#${i.instance}${i.port ? ` (:${i.port})` : ''}`).join(', ');
 
@@ -2170,7 +2172,7 @@ function pipelineCard(ctx, id, { link = false } = {}) {
         link ? h('a', { class: 'btn small ghost', href: `#/deployments/${deployment.id}` }, 'Details') : null),
       h('div', { class: 'card-body' },
         h('ol', { class: 'pipeline', 'aria-label': 'Pipeline stages' },
-          STAGES.map((name) => {
+          STAGES.filter((name) => name !== 'LiveCheck' || stages[name].status !== 'pending').map((name) => {
             const s = stages[name];
             const took = s.start && s.end ? fmtDuration(durationBetween(s.start, s.end)) : s.status === 'running' ? 'running' : '';
             return h('li', { class: `stage ${s.status}`, 'data-stage': name, 'data-state': s.status, title: s.detail || '' },
@@ -3006,6 +3008,27 @@ async function settingsTab(body, ctx) {
   strategyIn.value = s.strategy || '';
   const instancesIn = h('input', { id: 'set-instances', name: 'instances', type: 'number', min: 1, max: 16, value: s.instances ?? '', placeholder: '1' });
   const healthTimeoutIn = h('input', { id: 'set-health-timeout', name: 'health_check_timeout_secs', type: 'number', min: 1, max: 3600, step: 1, value: s.health_check_timeout_secs ?? '', placeholder: '30' });
+  const verifyUrlIn = h('input', { id: 'set-verify-url', name: 'verify_url', class: 'mono', value: s.verify_url ?? '', placeholder: 'https://app.example.com/', autocomplete: 'off', spellcheck: 'false' });
+  const verifyTimeoutIn = h('input', { id: 'set-verify-timeout', name: 'verify_timeout_secs', type: 'number', min: 1, max: 3600, step: 1, value: s.verify_timeout_secs ?? '', placeholder: '30' });
+  const verifyExpectIn = h('input', { id: 'set-verify-expect', name: 'verify_expect', class: 'mono', value: s.verify_expect ?? '', placeholder: '100-499', autocomplete: 'off' });
+  const checkNowBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'check-url' }, 'Check the URL now');
+  const rollbackNowBtn = h('button', { class: 'btn danger', type: 'button', 'data-action': 'check-url-rollback' }, 'Check, and roll back if down');
+  const checkUrl = async (btn, rollback) => {
+    const url = verifyUrlIn.value.trim() || undefined;
+    if (rollback && !(await confirmDialog({
+      title: 'Roll back if the URL is down?',
+      message: 'The URL is requested once. If it is not up, the app is rolled back to its previous release.',
+      confirmLabel: 'Check and roll back',
+      danger: true,
+    }))) return;
+    const r = await run(btn, () => api('POST', `/projects/${enc(project.id)}/verify`, { url, rollback }));
+    if (!r) return;
+    const seen = r.status != null ? `HTTP ${r.status}` : r.error;
+    if (r.ok) toast(`${r.url} is up (${seen}, ${r.elapsed_ms} ms)`);
+    else toast(`${r.url} is down: ${seen}${r.rolled_back_to ? `; rolled back to ${r.rolled_back_to}` : ''}${r.rollback_error ? `; rollback failed: ${r.rollback_error}` : ''}`, 'bad');
+  };
+  checkNowBtn.addEventListener('click', () => checkUrl(checkNowBtn, false));
+  rollbackNowBtn.addEventListener('click', () => checkUrl(rollbackNowBtn, true));
   const drainTimeoutIn = h('input', { id: 'set-drain-timeout', name: 'drain_timeout_secs', type: 'number', min: 0, max: 3600, step: 1, value: s.drain_timeout_secs ?? '', placeholder: '10' });
   const env = envEditor(s.env, 'env');
   const processOnly = h('input', { type: 'checkbox', id: 'set-process-only', checked: s.health_check_url === '' });
@@ -3045,6 +3068,7 @@ async function settingsTab(body, ctx) {
       for (const [input, key, min, label] of [
         [healthTimeoutIn, 'health_check_timeout_secs', 1, 'Health check timeout'],
         [drainTimeoutIn, 'drain_timeout_secs', 0, 'Drain timeout'],
+        [verifyTimeoutIn, 'verify_timeout_secs', 1, 'Live URL check timeout'],
       ]) {
         const raw = input.value.trim();
         if (!raw) continue;
@@ -3056,6 +3080,8 @@ async function settingsTab(body, ctx) {
         }
         req[key] = n;
       }
+      if (verifyUrlIn.value.trim()) req.verify_url = verifyUrlIn.value.trim();
+      if (verifyExpectIn.value.trim()) req.verify_expect = verifyExpectIn.value.trim();
       if (processOnly.checked) req.health_check_url = '';
       else if (inputs.health_check_url.value.trim()) req.health_check_url = inputs.health_check_url.value.trim();
       try {
@@ -3093,6 +3119,15 @@ async function settingsTab(body, ctx) {
         h('span', { class: 'hint' }, 'How long a new release may take to become healthy before the deployment fails (1-3600; default 30). Raise it for apps that start slowly.')),
       h('div', { class: 'field' }, h('label', { for: 'set-drain-timeout' }, 'Drain timeout (seconds)'), drainTimeoutIn,
         h('span', { class: 'hint' }, 'How long a stopping release gets to finish requests and exit before it is killed (0-3600; default 10).'))),
+    h('fieldset', { class: 'field verify', 'data-card': 'live-check' },
+      h('legend', {}, 'Live URL check'),
+      h('span', { class: 'hint' }, 'After a new release goes live, Aegis requests this URL (for example your public domain). If it is not up within the timeout, the deployment is rolled back to the previous release and fails with the HTTP status or error that was seen.'),
+      h('div', { class: 'row' },
+        h('div', { class: 'field' }, h('label', { for: 'set-verify-url' }, 'URL to check'), verifyUrlIn),
+        h('div', { class: 'field' }, h('label', { for: 'set-verify-timeout' }, 'Timeout (seconds)'), verifyTimeoutIn),
+        h('div', { class: 'field' }, h('label', { for: 'set-verify-expect' }, 'Accepted statuses'), verifyExpectIn,
+          h('span', { class: 'hint' }, '200 or a range like 200-399. Default 100-499: anything but a server error.'))),
+      h('div', { class: 'form-actions' }, checkNowBtn, ' ', rollbackNowBtn)),
     h('fieldset', { class: 'field env' },
       h('legend', {}, 'Environment variables'),
       h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and over the env file, and written into each release. Use Secrets for passwords and keys.'),
@@ -3688,21 +3723,70 @@ function domainsCard(ctx) {
     }
   };
 
+  const addDomain = async (domain, btn) => {
+    const req = { domain, tls: tlsSelect.value };
+    if (!req.domain) return false;
+    if (req.tls === 'files') {
+      req.cert_path = certInput.value.trim();
+      req.key_path = keyInput.value.trim();
+    }
+    const added = await run(btn, () => api('POST', base, req), (d) => `${d.domain} added`);
+    if (!added) return false;
+    load();
+    return true;
+  };
+
+  // Subdomain shortcut: a label in front of a domain Aegis already serves.
+  const subLabel = h('input', { id: 'subdomain-label', class: 'mono', placeholder: 'api', autocomplete: 'off', spellcheck: 'false', pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*', 'aria-label': 'Subdomain' });
+  const subBase = h('select', { id: 'subdomain-base', 'aria-label': 'Base domain' });
+  const subCustom = h('input', { id: 'subdomain-custom', class: 'mono', placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false', hidden: true, 'aria-label': 'Other base domain' });
+  const subPreview = h('span', { class: 'mono small', 'data-subdomain-preview': '' });
+  const subBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'add-subdomain' }, 'Add subdomain');
+  const subValue = () => {
+    const base = (subBase.value === '__other' ? subCustom.value : subBase.value).trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+    const label = subLabel.value.trim().toLowerCase().replace(/\.+$/g, '');
+    return label && base ? `${label}.${base}` : '';
+  };
+  const syncSub = () => {
+    subCustom.hidden = subBase.value !== '__other';
+    subPreview.textContent = subValue() ? `→ ${subValue()}` : '';
+  };
+  for (const el of [subLabel, subBase, subCustom]) el.addEventListener('input', syncSub);
+  subBase.addEventListener('change', syncSub);
+  subBtn.addEventListener('click', async () => {
+    if (await addDomain(subValue(), subBtn)) {
+      subLabel.value = '';
+      syncSub();
+    }
+  });
+  // Base domains: what every route already uses, minus its first label.
+  const loadBases = async () => {
+    let bases = [];
+    try {
+      const proxy = await api('GET', '/proxy');
+      const names = (proxy.routes || []).map((r) => r.domain).filter((d) => d && !d.startsWith('*'));
+      bases = [...new Set(names.map((d) => (d.split('.').length > 2 ? d.split('.').slice(1).join('.') : d)))].sort();
+    } catch {
+      /* the custom field still works */
+    }
+    if (!ctx.alive()) return;
+    replace(subBase, bases.map((b) => h('option', { value: b }, b)), h('option', { value: '__other' }, 'Other domain…'));
+    syncSub();
+  };
+  loadBases();
+  const subRow = h('div', { class: 'field', 'data-card': 'subdomain' },
+    h('label', { for: 'subdomain-label' }, 'Quick add a subdomain'),
+    h('div', { class: 'row' }, subLabel, subBase, subCustom, subBtn),
+    subPreview,
+    h('p', { class: 'muted small' }, 'Create a DNS record for it (an A record to this server\'s IP, or a CNAME to a name that already points here) before or right after adding it; automatic HTTPS needs the record to resolve. Uses the TLS choice below.'));
+
   const form = h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
-      const req = { domain: domainInput.value.trim(), tls: tlsSelect.value };
-      if (!req.domain) return;
-      if (req.tls === 'files') {
-        req.cert_path = certInput.value.trim();
-        req.key_path = keyInput.value.trim();
-      }
-      const added = await run(addBtn, () => api('POST', base, req), (d) => `${d.domain} added`);
-      if (!added) return;
-      domainInput.value = '';
-      load();
+      if (await addDomain(domainInput.value.trim(), addBtn)) domainInput.value = '';
     },
   },
+  subRow,
   h('div', { class: 'row' },
     h('div', { class: 'field' }, h('label', { for: 'domain-name' }, 'Domain'), domainInput),
     h('div', { class: 'field' }, h('label', { for: 'domain-tls' }, 'TLS'), tlsSelect)),

@@ -98,6 +98,45 @@ pub(crate) fn drain_for(strategy: &str, config: &ResolvedProjectConfig) -> Durat
     }
 }
 
+/// The result of [`ControlPlane::check_live_url`].
+#[derive(Debug, Clone)]
+pub struct LiveCheck {
+    pub url: String,
+    pub ok: bool,
+    /// The HTTP status, when there was an answer.
+    pub status: Option<u16>,
+    /// Why there was no answer (refused, timeout, TLS...).
+    pub error: Option<String>,
+    /// `http_503`, `connection_failed`, `timeout`, ... when not ok.
+    pub error_code: Option<String>,
+    pub elapsed_ms: u64,
+    /// The accepted statuses, e.g. `100-499`.
+    pub expected: String,
+    pub rolled_back_to: Option<String>,
+    pub rollback_error: Option<String>,
+}
+
+/// What a failed live-URL check saw.
+pub(crate) struct VerifyFailure {
+    pub status: Option<u16>,
+    /// "HTTP 503" or the transport error, ready for a message.
+    pub describe: String,
+    pub error: Option<String>,
+}
+
+impl VerifyFailure {
+    /// A stable code: `http_503`, `connection_failed`, `timeout`, ...
+    pub fn code(&self) -> String {
+        match (self.status, self.error.as_deref()) {
+            (Some(s), _) => format!("http_{}", s),
+            (None, Some(e)) if e.starts_with("no answer") => "timeout".into(),
+            (None, Some(e)) if e.starts_with("TLS") => "tls_error".into(),
+            (None, Some(e)) if e.starts_with("connection failed") => "connection_failed".into(),
+            _ => "no_response".into(),
+        }
+    }
+}
+
 struct StageRecorder<'a> {
     control: &'a ControlPlane,
     project_id: ProjectId,
@@ -433,6 +472,65 @@ impl ControlPlane {
                 reporter
                     .report(PipelineStage::Promote, StageStatus::Success, None)
                     .await;
+                if let Some(url) = target.config.verify_url.clone() {
+                    reporter
+                        .report(
+                            PipelineStage::LiveCheck,
+                            StageStatus::Started,
+                            Some(url.clone()),
+                        )
+                        .await;
+                    if let Err(failed) = self.verify_live(&target.config, &url).await {
+                        reporter
+                            .report(
+                                PipelineStage::LiveCheck,
+                                StageStatus::Failed,
+                                Some(failed.describe.clone()),
+                            )
+                            .await;
+                        // Back to the release that was serving, keeping what the URL said.
+                        let rolled_back = self.rollback_locked(project_id, None).await;
+                        let (rolled_back_to, rollback_error) = match rolled_back {
+                            Ok(version) => (Some(version), None),
+                            Err(e) => (None, Some(e.to_string())),
+                        };
+                        self.fail_deployment(
+                            deployment_id,
+                            project_id,
+                            json!({
+                                "stage": "LiveCheck",
+                                "reason": format!(
+                                    "{} did not come up after the release went live: {}",
+                                    url, failed.describe
+                                ),
+                                "verify_url": url,
+                                "http_status": failed.status,
+                                "error_code": failed.code(),
+                                "error": failed.error,
+                                "rolled_back_to": rolled_back_to,
+                                "rollback_error": rollback_error,
+                            }),
+                        )
+                        .await;
+                        if let Some(restored) = rolled_back_to {
+                            let _ = self
+                                .record(
+                                    "DeploymentRolledBack",
+                                    json!({
+                                        "deployment_id": deployment_id.to_string(),
+                                        "project_id": project_id.to_string(),
+                                        "target_version": restored,
+                                        "reason": format!("Live URL check failed ({})", failed.describe),
+                                    }),
+                                )
+                                .await;
+                        }
+                        return;
+                    }
+                    reporter
+                        .report(PipelineStage::LiveCheck, StageStatus::Success, None)
+                        .await;
+                }
                 let _ = self
                     .record(
                         "DeploymentCompleted",
@@ -893,6 +991,41 @@ impl ControlPlane {
 
     /// Waits until the process answers its health check (or, without a
     /// health URL, stays up for the liveness window).
+    /// Requests `url` until it answers with an accepted status or the
+    /// verify timeout runs out; the last answer (or error) is what fails.
+    pub(crate) async fn verify_live(
+        &self,
+        config: &ResolvedProjectConfig,
+        url: &str,
+    ) -> Result<(), VerifyFailure> {
+        let (lo, hi) = config.verify_expect;
+        let deadline = Instant::now() + config.verify_timeout;
+        loop {
+            let probe = aegis_health::probe_url(url, Duration::from_secs(5)).await;
+            if probe.status_in(lo, hi) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(VerifyFailure {
+                    status: probe.status,
+                    describe: if probe.status.is_some() && (lo, hi) != (100, 499) {
+                        format!("{} (expected {}-{})", probe.describe(), lo, hi)
+                    } else {
+                        probe.describe()
+                    },
+                    error: probe.error,
+                });
+            }
+            tokio::time::sleep(
+                self.inner
+                    .settings
+                    .health_poll_interval
+                    .max(Duration::from_millis(500)),
+            )
+            .await;
+        }
+    }
+
     pub(crate) async fn wait_healthy(
         &self,
         id: &ProcessId,
@@ -924,6 +1057,7 @@ impl ControlPlane {
                     ),
                 });
         let window = settings.liveness_window.min(config.health_check_timeout);
+        let mut last_answer: Option<String> = None;
 
         loop {
             let Some(info) = self.inner.supervisor.get(id) else {
@@ -941,8 +1075,26 @@ impl ControlPlane {
                     ));
                 }
             }
+            // What the last probe saw, so a failure keeps the HTTP status.
+            let healthy = match &checker {
+                Some((checker, target)) if checker.name() == "HTTP" => {
+                    match aegis_health::HttpHealthChecker::new(2000)
+                        .probe(target)
+                        .await
+                    {
+                        Ok(probe) => {
+                            let ok = probe.status_in(0, 499);
+                            last_answer = Some(probe.describe());
+                            Ok(ok)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                Some((checker, target)) => checker.check_health(target).await,
+                None => Ok(false),
+            };
             match &checker {
-                Some((checker, target)) => match checker.check_health(target).await {
+                Some((_, _)) => match healthy {
                     Ok(true) => {
                         let url = health_url.as_deref().unwrap_or_default();
                         return self
@@ -964,9 +1116,13 @@ impl ControlPlane {
             if Instant::now() >= deadline {
                 return Err(match &health_url {
                     Some(url) => format!(
-                        "Not healthy after {}s: no successful response from {}",
+                        "Not healthy after {}s: no successful response from {}{}",
                         config.health_check_timeout.as_secs(),
-                        url
+                        url,
+                        last_answer
+                            .as_deref()
+                            .map(|a| format!(" (last answer: {})", a))
+                            .unwrap_or_default()
                     ),
                     None => "Process did not stay up".to_string(),
                 });
@@ -1088,6 +1244,15 @@ impl ControlPlane {
     ) -> ControlResult<String> {
         let lock = self.project_lock(project_id);
         let _guard = lock.lock().await;
+        self.rollback_locked(project_id, version).await
+    }
+
+    /// [`ControlPlane::rollback`] for callers that already hold the project's lock.
+    pub(crate) async fn rollback_locked(
+        &self,
+        project_id: ProjectId,
+        version: Option<String>,
+    ) -> ControlResult<String> {
         let project = self
             .inner
             .projection
@@ -1202,6 +1367,85 @@ impl ControlPlane {
                 )))
             }
         }
+    }
+
+    /// Requests a live URL once (the app's `verify_url` unless `url` is
+    /// given) and, with `rollback_on_failure`, rolls the app back to its
+    /// previous release when the answer isn't accepted.
+    pub async fn check_live_url(
+        &self,
+        project_id: ProjectId,
+        url: Option<String>,
+        rollback_on_failure: bool,
+    ) -> ControlResult<LiveCheck> {
+        let project = self
+            .inner
+            .projection
+            .get_project(&project_id)
+            .ok_or_else(|| ControlError::NotFound(format!("Unknown project {}", project_id)))?;
+        let release = project.current_release.clone().ok_or_else(|| {
+            ControlError::FailedPrecondition(format!("'{}' has no live release", project.name))
+        })?;
+        let config =
+            ResolvedProjectConfig::load(&self.switcher(project_id).get_version_dir(&release))
+                .map_err(|e| {
+                    ControlError::FailedPrecondition(format!("Invalid aegis.toml: {}", e))
+                })?;
+        let url = url
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .or(config.verify_url.clone())
+            .ok_or_else(|| {
+                ControlError::InvalidArgument(
+                    "No URL to check: pass `url` or set the app's verify URL".into(),
+                )
+            })?;
+        if !(url.starts_with("http://") || url.starts_with("https://"))
+            || url.contains(char::is_whitespace)
+        {
+            return Err(ControlError::InvalidArgument(
+                "The URL must start with http:// or https:// and contain no spaces".into(),
+            ));
+        }
+        let (lo, hi) = config.verify_expect;
+        let probe = aegis_health::probe_url(&url, Duration::from_secs(10)).await;
+        let ok = probe.status_in(lo, hi);
+        let failure = VerifyFailure {
+            status: probe.status,
+            describe: probe.describe(),
+            error: probe.error.clone(),
+        };
+        let (mut rolled_back_to, mut rollback_error) = (None, None);
+        if !ok && rollback_on_failure {
+            match self.rollback(project_id, None).await {
+                Ok(version) => rolled_back_to = Some(version),
+                Err(e) => rollback_error = Some(e.to_string()),
+            }
+        }
+        let report = LiveCheck {
+            url,
+            ok,
+            status: probe.status,
+            error: probe.error,
+            error_code: (!ok).then(|| failure.code()),
+            elapsed_ms: probe.elapsed_ms,
+            expected: format!("{}-{}", lo, hi),
+            rolled_back_to,
+            rollback_error,
+        };
+        self.record(
+            "LiveCheckRun",
+            json!({
+                "project_id": project_id.to_string(),
+                "url": report.url,
+                "ok": report.ok,
+                "http_status": report.status,
+                "error_code": report.error_code,
+                "rolled_back_to": report.rolled_back_to,
+            }),
+        )
+        .await?;
+        Ok(report)
     }
 
     fn current_is_running(&self, project: &ProjectState) -> bool {

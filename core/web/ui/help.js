@@ -176,6 +176,7 @@ export const HELP = {
       ['Port / Health check URL', 'Where the app listens, and the URL that must answer (below 500) before a release goes live.'],
       ['No HTTP health check', 'Treat the release as healthy while its process stays up.'],
       ['Default strategy / Instances', 'The strategy used when a deployment does not pick one, and how many copies to run (more than one needs a domain).'],
+      ['Live URL check', 'A URL (e.g. your public domain) requested after the new release goes live. If it is not up within its timeout, the app is rolled back to the previous release and the deployment fails with the HTTP status or error seen. "Check the URL now" tests it on demand, optionally rolling back.'],
       ['Health check timeout', 'Seconds a new release may take to become healthy before the deployment fails and the previous release keeps serving (1-3600, default 30; [deploy] health_check_timeout_secs). Raise it for apps that start slowly.'],
       ['Drain timeout', 'Seconds a stopping release gets to finish in-flight requests and exit after SIGTERM before it is killed (0-3600, default 10; [deploy] drain_timeout_secs).'],
       ['Environment variables', 'Plain settings written into each release. Use Secrets for passwords and keys.'],
