@@ -24,7 +24,7 @@ concurrency:
 jobs:
   screenshots:
     name: Capture dashboard screenshots
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright does not support Ubuntu 26.04 (ubuntu-latest) yet
     steps:
       - uses: actions/checkout@v4
 

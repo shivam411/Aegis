@@ -128,7 +128,7 @@ jobs:
     name: Automated Deployment Validation
     needs: [check-and-test, cross-platform-build]
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
