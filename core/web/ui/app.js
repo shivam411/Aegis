@@ -626,6 +626,8 @@ const ROUTES = [
   [/^\/deployments\/([^/]+)$/, deploymentPage, 'deployments'],
   [/^\/events$/, eventsPage, 'events'],
   [/^\/account$/, accountPage, 'account'],
+  [/^\/system$/, systemPage, 'system'],
+  [/^\/docker$/, dockerPage, 'docker'],
 ];
 
 function currentPath() {
@@ -686,6 +688,8 @@ function shell(section) {
       h('a', { href: '#/', 'data-nav': 'overview' }, 'Overview'),
       h('a', { href: '#/deployments', 'data-nav': 'deployments' }, 'Deployments'),
       h('a', { href: '#/events', 'data-nav': 'events' }, 'Events'),
+      h('a', { href: '#/docker', 'data-nav': 'docker', hidden: true }, 'Docker'),
+      h('a', { href: '#/system', 'data-nav': 'system', hidden: true }, 'System'),
       h('a', { href: '#/account', 'data-nav': 'account' }, 'Account'));
     const main = h('main', { id: 'main' });
     const banner = h('div', { id: 'update-banner', class: 'update-banner', 'aria-live': 'polite' });
@@ -705,6 +709,8 @@ function shell(section) {
     refreshUpdate();
   }
   for (const a of state.shell.root.querySelectorAll('[data-nav]')) {
+    if (a.dataset.nav === 'docker') a.hidden = !state.session?.docker_access;
+    if (a.dataset.nav === 'system') a.hidden = !can('admin');
     if (a.dataset.nav === section) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   }
@@ -2290,48 +2296,123 @@ async function logsTab(body, ctx) {
 
 const MAX_LOG_LINES = 5000;
 
-function logViewer(ctx, target) {
+/** error / warn / info / debug / sys for one log line (by wording first, then stream). */
+function logLevel(l) {
+  if (l.stream === 'sys') return 'sys';
+  const t = l.line;
+  if (/\b(fatal|panic|critical|crit)\b|\bERR(OR)?\b|\berror\b|exception|traceback|\bfailed\b|unhandled/i.test(t)) return 'error';
+  if (/\bwarn(ing)?\b|deprecated/i.test(t)) return 'warn';
+  if (/\b(debug|trace|verbose)\b/i.test(t)) return 'debug';
+  if (/\binfo\b|\bnotice\b/i.test(t)) return 'info';
+  return l.stream === 'err' ? 'error' : 'info';
+}
+
+const LOG_LEVELS = [['error', 'Errors'], ['warn', 'Warnings'], ['info', 'Info'], ['debug', 'Debug']];
+const LOG_RANGES = [['all', 'All time'], ['300', 'Last 5 min'], ['900', 'Last 15 min'], ['3600', 'Last hour'], ['21600', 'Last 6 hours'], ['86400', 'Last 24 hours'], ['custom', 'Custom range…']];
+
+/**
+ * A log pane with search (text or regex), level chips, a time range and
+ * colored lines. `opts.stream` is a URL for a live Server-Sent Events feed;
+ * `opts.poll` is an async function returning the latest lines instead.
+ */
+function logViewer(ctx, target, opts = {}) {
   const lines = [];
   let pending = [];
   let paused = false;
   let query = '';
+  let matcher = null;
   let streamFilter = 'all';
+  const levelOn = { error: true, warn: true, info: true, debug: true };
+  let rangeSecs = 0;
+  let from = null;
+  let to = null;
   let source = null;
   let retry = null;
+  let pollTimer = null;
 
   const status = h('span', { class: 'pill warn live', 'data-log-status': '' }, 'Connecting');
-  const view = h('div', { class: 'log', role: 'log', 'aria-label': 'Process output', tabindex: '0', 'data-log': '' });
+  const view = h('div', { class: 'log', role: 'log', 'aria-label': 'Output', tabindex: '0', 'data-log': '' });
   const follow = h('input', { type: 'checkbox', id: 'log-follow', checked: true });
   const pauseBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'pause' }, 'Pause');
   const search = h('input', { type: 'search', placeholder: 'Search logs  /', 'data-search': '', 'aria-label': 'Search logs' });
+  const regexBox = h('input', { type: 'checkbox', id: 'log-regex' });
   const filter = h('select', { 'aria-label': 'Stream' },
     h('option', { value: 'all' }, 'All output'),
     h('option', { value: 'out' }, 'stdout'),
     h('option', { value: 'err' }, 'stderr'),
-    h('option', { value: 'sys' }, 'Supervisor'));
-  const counter = h('span', { class: 'muted small' });
+    opts.poll ? null : h('option', { value: 'sys' }, 'Supervisor'));
+  const range = h('select', { 'aria-label': 'Time range', 'data-log-range': '' },
+    LOG_RANGES.map(([v, l]) => h('option', { value: v }, l)));
+  const fromIn = h('input', { type: 'datetime-local', 'aria-label': 'From', 'data-log-from': '' });
+  const toIn = h('input', { type: 'datetime-local', 'aria-label': 'To', 'data-log-to': '' });
+  const custom = h('span', { class: 'log-custom', hidden: true }, fromIn, ' to ', toIn);
+  const counter = h('span', { class: 'muted small', 'data-log-count': '' });
+  const chipCounts = {};
+  const chips = LOG_LEVELS.map(([key, label]) => {
+    const n = h('span', { class: 'n' }, '0');
+    chipCounts[key] = n;
+    const b = h('button', { class: `chip lvl-${key} on`, type: 'button', 'aria-pressed': 'true', 'data-level': key }, label, ' ', n);
+    b.addEventListener('click', () => {
+      levelOn[key] = !levelOn[key];
+      b.classList.toggle('on', levelOn[key]);
+      b.setAttribute('aria-pressed', String(levelOn[key]));
+      redraw();
+    });
+    return b;
+  });
 
-  const visible = (l) => (streamFilter === 'all' || l.stream === streamFilter) && (!query || l.line.toLowerCase().includes(query));
+  const stamp = (l) => {
+    const t = Date.parse(l.timestamp);
+    return Number.isNaN(t) ? null : t;
+  };
+
+  const visible = (l) => {
+    if (streamFilter !== 'all' && l.stream !== streamFilter) return false;
+    const lvl = l._lvl || (l._lvl = logLevel(l));
+    if (lvl !== 'sys' && !levelOn[lvl]) return false;
+    if (matcher ? !matcher(l.line) : query && !l.line.toLowerCase().includes(query)) return false;
+    const t = stamp(l);
+    if (t !== null) {
+      if (rangeSecs && t < Date.now() - rangeSecs * 1000) return false;
+      if (from !== null && t < from) return false;
+      if (to !== null && t > to) return false;
+    }
+    return true;
+  };
 
   const lineEl = (l) => {
-    const text = h('span', { class: l.stream === 'err' ? 'err' : l.stream === 'sys' ? 'sys' : '' });
-    if (query) {
+    const text = h('span', { class: `msg lvl-${l._lvl || (l._lvl = logLevel(l))}` });
+    const parts = [];
+    if (matcher) {
+      const re = new RegExp(matcher.source, matcher.flags.includes('g') ? matcher.flags : `${matcher.flags}g`);
+      let at = 0;
+      for (const m of l.line.matchAll(re)) {
+        if (!m[0]) continue;
+        parts.push(l.line.slice(at, m.index), h('mark', {}, m[0]));
+        at = m.index + m[0].length;
+      }
+      parts.push(l.line.slice(at));
+    } else if (query) {
       const lower = l.line.toLowerCase();
       let at = 0;
       for (let i = lower.indexOf(query); i !== -1; i = lower.indexOf(query, at)) {
-        append(text, [l.line.slice(at, i), h('mark', {}, l.line.slice(i, i + query.length))]);
+        parts.push(l.line.slice(at, i), h('mark', {}, l.line.slice(i, i + query.length)));
         at = i + query.length;
       }
-      append(text, [l.line.slice(at)]);
+      parts.push(l.line.slice(at));
     } else {
-      text.textContent = l.line;
+      parts.push(l.line);
     }
+    append(text, parts);
     const t = new Date(l.timestamp);
-    return h('div', { class: 'line' }, h('span', { class: 'ts' }, Number.isNaN(t.getTime()) ? '' : t.toLocaleTimeString([], { hour12: false })), text);
+    const ok = !Number.isNaN(t.getTime());
+    return h('div', { class: `line lvl-${l._lvl}` },
+      h('span', { class: 'ts', title: ok ? t.toLocaleString() : '' }, ok ? t.toLocaleTimeString([], { hour12: false }) : ''), text);
   };
 
   const updateCounter = () => {
-    counter.textContent = paused && pending.length ? `${pending.length} new lines while paused` : `${lines.length} lines`;
+    if (paused && pending.length) counter.textContent = `${pending.length} new lines while paused`;
+    else counter.textContent = `${lines.filter(visible).length} of ${lines.length} lines`;
   };
 
   const scroll = () => {
@@ -2339,6 +2420,12 @@ function logViewer(ctx, target) {
   };
 
   const redraw = () => {
+    const counts = { error: 0, warn: 0, info: 0, debug: 0 };
+    for (const l of lines) {
+      const lvl = l._lvl || (l._lvl = logLevel(l));
+      if (counts[lvl] !== undefined) counts[lvl] += 1;
+    }
+    for (const [k, n] of Object.entries(chipCounts)) n.textContent = String(counts[k]);
     const shown = lines.filter(visible);
     replace(view, shown.length ? shown.map(lineEl) : h('div', { class: 'notice' }, lines.length ? 'No lines match.' : 'Waiting for output…'));
     updateCounter();
@@ -2358,6 +2445,7 @@ function logViewer(ctx, target) {
       if (view.firstChild && view.firstChild.classList?.contains('notice')) view.replaceChildren();
       append(view, shown.map(lineEl));
     }
+    for (const l of batch) if (chipCounts[l._lvl || (l._lvl = logLevel(l))]) chipCounts[l._lvl].textContent = String(Number(chipCounts[l._lvl].textContent) + 1);
     updateCounter();
     scroll();
   };
@@ -2394,7 +2482,7 @@ function logViewer(ctx, target) {
     queued = [];
     redraw();
     setStatus('Connecting', 'warn live');
-    source = new EventSource(`/api/v1/processes/${enc(target)}/logs/stream?lines=500`);
+    source = new EventSource(opts.stream || `/api/v1/processes/${enc(target)}/logs/stream?lines=500`);
     source.addEventListener('open', () => setStatus('Live', 'ok live'));
     source.addEventListener('log', (m) => {
       try {
@@ -2419,6 +2507,23 @@ function logViewer(ctx, target) {
     });
   };
 
+  // Polling feed (Docker): refetch the tail every few seconds.
+  const pollOnce = async () => {
+    try {
+      const fresh = await opts.poll();
+      if (!ctx.alive()) return;
+      if (!paused) {
+        lines.length = 0;
+        lines.push(...fresh);
+        redraw();
+        setStatus('Live', 'ok live');
+      }
+    } catch (err) {
+      setStatus(err.message || 'Error', 'bad');
+    }
+    if (ctx.alive()) pollTimer = setTimeout(pollOnce, 3000);
+  };
+
   pauseBtn.addEventListener('click', () => {
     paused = !paused;
     pauseBtn.textContent = paused ? 'Resume' : 'Pause';
@@ -2430,14 +2535,49 @@ function logViewer(ctx, target) {
     }
     updateCounter();
   });
-  search.addEventListener('input', debounce(() => {
-    query = search.value.trim().toLowerCase();
+  const applySearch = () => {
+    const raw = search.value.trim();
+    query = raw.toLowerCase();
+    matcher = null;
+    search.removeAttribute('aria-invalid');
+    if (raw && regexBox.checked) {
+      try {
+        const re = new RegExp(raw, 'i');
+        matcher = (s) => re.test(s);
+        matcher.source = re.source;
+        matcher.flags = re.flags;
+        query = '';
+      } catch {
+        search.setAttribute('aria-invalid', 'true');
+        query = '';
+      }
+    }
     redraw();
-  }, 120));
+  };
+  search.addEventListener('input', debounce(applySearch, 120));
+  regexBox.addEventListener('change', applySearch);
   filter.addEventListener('change', () => {
     streamFilter = filter.value;
     redraw();
   });
+  const readTimes = () => {
+    from = fromIn.value ? new Date(fromIn.value).getTime() : null;
+    to = toIn.value ? new Date(toIn.value).getTime() : null;
+    redraw();
+  };
+  range.addEventListener('change', () => {
+    custom.hidden = range.value !== 'custom';
+    rangeSecs = /^\d+$/.test(range.value) ? Number(range.value) : 0;
+    if (range.value !== 'custom') {
+      from = null;
+      to = null;
+      fromIn.value = '';
+      toIn.value = '';
+    }
+    redraw();
+  });
+  fromIn.addEventListener('change', readTimes);
+  toIn.addEventListener('change', readTimes);
   follow.addEventListener('change', scroll);
   // Scrolling up stops following; scrolling to the bottom resumes it.
   view.addEventListener('scroll', () => {
@@ -2445,7 +2585,7 @@ function logViewer(ctx, target) {
   });
 
   const download = () => {
-    const text = lines.map((l) => `${l.timestamp} [${l.stream}] ${l.line}`).join('\n');
+    const text = lines.filter(visible).map((l) => `${l.timestamp} [${l.stream}] ${l.line}`).join('\n');
     const url = URL.createObjectURL(new Blob([`${text}\n`], { type: 'text/plain' }));
     const a = h('a', { href: url, download: `${target}-${new Date().toISOString().replace(/[:.]/g, '-')}.log` });
     document.body.append(a);
@@ -2454,18 +2594,20 @@ function logViewer(ctx, target) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  connect();
+  if (opts.poll) pollOnce();
+  else connect();
   ctx.cleanup(() => {
     if (source) source.close();
     clearTimeout(retry);
+    clearTimeout(pollTimer);
     if (frame) cancelAnimationFrame(frame);
   });
 
-  return h('div', {},
+  return h('div', { class: 'logviewer' },
     h('div', { class: 'log-toolbar' },
       status,
       search,
-      filter,
+      h('label', { class: 'small', for: 'log-regex', title: 'Treat the search as a regular expression' }, regexBox, ' Regex'),
       h('label', { class: 'small', for: 'log-follow' }, follow, ' Follow'),
       pauseBtn,
       h('span', { class: 'spacer' }),
@@ -2473,6 +2615,7 @@ function logViewer(ctx, target) {
       h('button', { class: 'btn small', type: 'button', onclick: () => { lines.length = 0; pending = []; redraw(); } }, 'Clear'),
       h('button', { class: 'btn small', type: 'button', 'data-action': 'download', onclick: download }, 'Download'),
       helpButton('app.logs')),
+    h('div', { class: 'log-toolbar log-filters' }, h('span', { class: 'chips' }, chips), range, custom, filter),
     view);
 }
 
@@ -5275,10 +5418,17 @@ function usersCard(ctx, me) {
         const done = await run(appsBtn, () => api('PUT', `/users/${enc(u.username)}`, fields), `${u.username}: apps saved`);
         if (done !== undefined) load().catch(() => {});
       });
+      const dockerBox = h('input', { type: 'checkbox', checked: u.docker_access, disabled: u.owner, 'aria-label': `${u.username} can see Docker`, 'data-docker-access': u.username, title: u.owner ? 'The owner always has Docker access' : 'Can see Docker containers and their logs' });
+      dockerBox.addEventListener('change', async () => {
+        const done = await run(dockerBox, () => api('PUT', `/users/${enc(u.username)}`, { docker_access: dockerBox.checked }),
+          dockerBox.checked ? `${u.username} can see Docker` : `${u.username} can no longer see Docker`);
+        if (!done) dockerBox.checked = !dockerBox.checked;
+      });
       return h('tr', { 'data-user': u.username },
-        h('td', { 'data-label': 'User', class: 'mono' }, u.username, u.username === me ? h('span', { class: 'muted small' }, ' (you)') : null),
+        h('td', { 'data-label': 'User', class: 'mono' }, u.username, u.username === me ? h('span', { class: 'muted small' }, ' (you)') : null, u.owner ? [' ', pill('Owner', 'info')] : null),
         h('td', { 'data-label': 'Role' }, sel),
         h('td', { 'data-label': 'Apps', title: u.all_apps ? '' : u.apps.join(', ') }, appsBtn),
+        h('td', { 'data-label': 'Docker' }, dockerBox),
         h('td', { 'data-label': 'Created' }, timeEl(u.created_at)),
         h('td', { class: 'actions' }, resetBtn, ' ', deleteBtn));
     }));
@@ -5294,6 +5444,7 @@ function usersCard(ctx, me) {
     picker = appAccessPicker(apps, null);
     replace(accessSlot, picker.el);
   }).catch(() => {});
+  const dockerIn = h('input', { type: 'checkbox', id: 'user-docker' });
   roleIn.addEventListener('change', () => { accessSlot.hidden = roleIn.value === 'admin'; });
   const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create-user' }, 'Add user');
   const form = h('form', {
@@ -5303,7 +5454,7 @@ function usersCard(ctx, me) {
       const username = nameIn.value.trim();
       const password = randomPassword();
       const access = roleIn.value === 'admin' ? { all_apps: true } : picker.read();
-      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value, ...access }), `${username} added`);
+      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value, docker_access: dockerIn.checked, ...access }), `${username} added`);
       if (!created) return;
       nameIn.value = '';
       showPassword(username, password);
@@ -5315,17 +5466,233 @@ function usersCard(ctx, me) {
       h('span', { class: 'hint' }, 'Lowercase letters, digits, . _ -')),
     h('div', { class: 'field' }, h('label', { for: 'user-role' }, 'Role'), roleIn)),
   h('div', { class: 'field' }, h('label', {}, 'Apps they can see'), accessSlot),
+  h('div', { class: 'field' }, h('label', { for: 'user-docker', class: 'small' }, dockerIn, ' Can see Docker containers and logs (off by default)')),
   h('div', { class: 'form-actions' }, addBtn),
   shown);
 
-  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 5 }, errorBox(err)))));
+  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 6 }, errorBox(err)))));
   return h('section', { class: 'card', id: 'users' },
     cardHeader('Users', 'account.users'),
     h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Everyone signs in with their own account, so the audit log shows who did what. New users get a random password to pass on.')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
-      h('thead', {}, h('tr', {}, ['User', 'Role', 'Apps', 'Created', ''].map((t) => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['User', 'Role', 'Apps', 'Docker', 'Created', ''].map((t) => h('th', {}, t)))),
       tbody)),
     form);
+}
+
+// ----------------------------------------------------------------------
+// System: updates and storage (admins)
+// ----------------------------------------------------------------------
+
+async function systemPage(main, ctx) {
+  if (!can('admin')) {
+    append(main, pageHeader('System', 'system'), h('div', { class: 'card empty' }, h('h2', {}, 'Admins only'), h('p', {}, 'Ask an admin about updates and disk space.')));
+    return;
+  }
+  append(main, pageHeader('System', 'system'),
+    h('div', { class: 'grid' }, updatesSystemCard(ctx), storageCard(ctx)));
+}
+
+function updatesSystemCard(ctx) {
+  const body = h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Loading…'));
+  const draw = () => {
+    const s = update.status;
+    if (!s) return replace(body, h('p', { class: 'muted' }, 'Update status is not available.'));
+    const checkBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'check-update', disabled: !s.check_enabled }, 'Check now');
+    checkBtn.addEventListener('click', async () => {
+      const res = await run(checkBtn, () => api('POST', '/system/update/check'), (r) => (r.update_available ? `Aegis ${r.latest.version} is available` : 'You run the latest version'));
+      if (res) {
+        update.status = res;
+        renderUpdateBanner();
+        if (ctx.alive()) draw();
+      }
+    });
+    const busy = UPDATE_PHASES[s.phase];
+    const actions = [checkBtn];
+    if (s.update_available && s.latest) {
+      if (s.can_apply && !busy) {
+        actions.unshift(h('button', { class: 'btn primary', type: 'button', 'data-action': 'upgrade', onclick: (e) => upgradeNow(e.currentTarget) }, `Upgrade to ${s.latest.version}`));
+      }
+      if (s.latest.url) actions.push(h('a', { class: 'btn ghost', href: s.latest.url, target: '_blank', rel: 'noopener noreferrer' }, 'Release notes'));
+    }
+    replace(body,
+      h('dl', { class: 'kv' },
+        h('dt', {}, 'Running'), h('dd', {}, `v${s.current_version}`),
+        h('dt', {}, 'Latest'), h('dd', {}, s.latest ? [s.latest.version, ' ', s.update_available ? pill('New', 'info') : pill('Up to date', 'ok')] : (s.check_enabled ? 'Not checked yet' : 'Checks are off')),
+        h('dt', {}, 'Last check'), h('dd', {}, s.checked_at ? timeEl(s.checked_at) : '–'),
+        h('dt', {}, 'Installs by'), h('dd', {}, s.mode === 'in_place' ? 'Aegis replaces itself' : s.mode === 'helper' ? 'Root helper service' : s.mode === 'manual' ? 'A command you run' : 'Not available')),
+      s.check_error ? h('div', { class: 'alert warn' }, `Last check failed: ${s.check_error}`) : null,
+      busy ? h('div', { class: 'alert info' }, `${busy}…`) : null,
+      s.phase === 'failed' ? h('div', { class: 'alert' }, `The last update failed: ${s.phase_error || ''}`) : null,
+      s.update_available && !s.can_apply
+        ? h('div', { class: 'grid' },
+          h('p', { class: 'small muted' }, s.blocked_reason || s.mode_detail),
+          s.manual_command ? secretBox(s.manual_command, 'Run on the server') : null)
+        : null,
+      s.last_update ? h('p', { class: 'small muted' }, `Last update: v${s.last_update.from_version.replace(/^v/, '')} → v${s.last_update.to_version.replace(/^v/, '')}, `, timeEl(s.last_update.at)) : null,
+      h('div', { class: 'form-actions' }, actions));
+  };
+  (async () => {
+    try {
+      update.status = await api('GET', '/system/update');
+    } catch (err) {
+      if (ctx.alive()) replace(body, errorBox(err));
+      return;
+    }
+    if (ctx.alive()) draw();
+  })();
+  return h('section', { class: 'card', id: 'updates', 'data-card': 'updates' }, cardHeader('Updates', 'system.updates'), body);
+}
+
+const CLEAN_LABELS = {
+  old_builds: 'Old builds',
+  logs: 'Old logs',
+  backups: 'Extra backups',
+  temp: 'Temporary files',
+};
+
+function storageCard(ctx) {
+  const body = h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Measuring…'));
+  const load = async () => {
+    let r;
+    try {
+      r = await api('GET', '/system/storage');
+    } catch (err) {
+      if (ctx.alive()) replace(body, errorBox(err));
+      return;
+    }
+    if (!ctx.alive()) return;
+    const total = Math.max(1, r.categories.reduce((n, c) => n + c.bytes, 0));
+    const bar = h('div', { class: 'storage-bar', role: 'img', 'aria-label': 'Disk use by category' },
+      r.categories.map((c, i) => {
+        if (!c.bytes) return null;
+        const seg = h('span', { class: `cat-${i}`, title: `${c.label}: ${fmtBytes(c.bytes)}` });
+        seg.style.width = `${(c.bytes / total) * 100}%`;
+        return seg;
+      }));
+    const legend = h('ul', { class: 'storage-legend' }, r.categories.map((c, i) =>
+      h('li', { 'data-cat': c.key }, h('span', { class: `dot cat-${i}` }, ''), c.label,
+        h('span', { class: 'size' }, fmtBytes(c.bytes)),
+        c.reclaimable_bytes ? h('span', { class: 'muted small' }, ` (${fmtBytes(c.reclaimable_bytes)} can go)`) : null)));
+
+    const cleanBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'cleanup', disabled: !r.reclaimable_bytes },
+      r.reclaimable_bytes ? `Clean up ${fmtBytes(r.reclaimable_bytes)}` : 'Nothing to clean');
+    cleanBtn.addEventListener('click', async () => {
+      const boxes = r.categories.filter((c) => CLEAN_LABELS[c.key] && c.reclaimable_bytes).map((c) => ({
+        key: c.key,
+        box: h('input', { type: 'checkbox', checked: true, 'data-target': c.key }),
+        text: `${CLEAN_LABELS[c.key]} (${fmtBytes(c.reclaimable_bytes)})`,
+      }));
+      let chosen = null;
+      const answer = await modal(() => h('form', { method: 'dialog', onsubmit: () => { chosen = boxes.filter((b) => b.box.checked).map((b) => b.key); } },
+        h('div', { class: 'dialog-body' },
+          h('h2', {}, 'Clean up now?'),
+          h('p', { class: 'muted' }, 'Removes only what is not needed: builds outside the rollback window, logs older than ', String(r.log_days), ' days, backups beyond the number kept, and old temporary files. Live releases, rollback targets, the database and the secrets key stay.'),
+          h('div', { class: 'grid' }, boxes.map((b) => h('label', {}, b.box, ' ', b.text)))),
+        h('div', { class: 'form-actions' },
+          h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+          h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Clean up'))));
+      if (answer !== 'ok' || !chosen || !chosen.length) return;
+      const res = await run(cleanBtn, () => api('POST', '/system/storage/cleanup', { targets: chosen }), (d) => `Freed ${fmtBytes(d.freed_bytes)}`);
+      if (res) load();
+    });
+
+    const auto = h('input', { type: 'checkbox', id: 'auto-clean', checked: r.auto_cleanup });
+    const days = h('input', { type: 'number', id: 'log-days', min: 1, max: 3650, value: r.log_days, 'aria-label': 'Keep logs for days' });
+    const saveBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'save-auto' }, 'Save');
+    saveBtn.addEventListener('click', async () => {
+      const res = await run(saveBtn, () => api('PUT', '/system/storage/auto', { enabled: auto.checked, log_days: Number(days.value) }), 'Saved');
+      if (res) load();
+    });
+
+    const apps = r.apps.filter((a) => a.releases_bytes + a.old_builds_bytes + a.logs_bytes > 0);
+    replace(body,
+      h('div', { class: 'row' },
+        h('div', {}, h('div', { class: 'muted small' }, 'Used by Aegis'), h('div', { class: 'big', 'data-storage-total': '' }, fmtBytes(r.total_bytes)))),
+      bar, legend,
+      h('div', { class: 'form-actions' }, cleanBtn),
+      h('h3', {}, 'Automatic cleanup'),
+      h('p', { class: 'muted small' }, 'Once an hour: removes old builds, logs not written for the number of days below, backups beyond the number kept and temporary files. Off until you turn it on.'),
+      h('div', { class: 'row' },
+        h('label', { for: 'auto-clean' }, auto, ' Clean up automatically'),
+        h('label', { for: 'log-days', class: 'small' }, 'Keep logs for ', days, ' days'),
+        saveBtn),
+      apps.length
+        ? h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+          h('thead', {}, h('tr', {}, ['App', 'Releases in use', 'Old builds', 'Logs'].map((t) => h('th', {}, t)))),
+          h('tbody', {}, apps.map((a) => h('tr', { 'data-app': a.name },
+            h('td', { 'data-label': 'App' }, h('a', { href: `#/apps/${enc(a.name)}` }, a.name)),
+            h('td', { 'data-label': 'Releases in use' }, fmtBytes(a.releases_bytes)),
+            h('td', { 'data-label': 'Old builds' }, fmtBytes(a.old_builds_bytes)),
+            h('td', { 'data-label': 'Logs' }, fmtBytes(a.logs_bytes)))))))
+        : null);
+  };
+  load();
+  return h('section', { class: 'card', id: 'storage', 'data-card': 'storage' }, cardHeader('Storage and cleanup', 'system.storage'), body);
+}
+
+// ----------------------------------------------------------------------
+// Docker: containers on the server and their logs (shared separately)
+// ----------------------------------------------------------------------
+
+async function dockerPage(main, ctx) {
+  append(main, pageHeader('Docker', 'docker'));
+  if (!state.session.docker_access) {
+    append(main, h('div', { class: 'card empty', 'data-docker': 'denied' }, h('h2', {}, 'Docker is not shared with you'), h('p', {}, 'The owner can allow it in Account → Users.')));
+    return;
+  }
+  const listBody = h('div', {}, h('p', { class: 'muted card-body' }, 'Loading…'));
+  const logSlot = h('div', {});
+  let selected = null;
+  const open = (c) => {
+    selected = c.id;
+    for (const tr of listBody.querySelectorAll('tr[data-container]')) tr.setAttribute('aria-selected', String(tr.dataset.container === c.id));
+    state.routeToken += 0;
+    // A fresh viewer per container; the old one's timer ends with its own cleanup.
+    const sub = { alive: () => ctx.alive() && selected === c.id, cleanup: ctx.cleanup };
+    replace(logSlot, h('section', { class: 'card', 'data-docker-logs': c.name },
+      h('div', { class: 'card-header' }, h('h2', {}, c.name), pill(c.state, c.state === 'running' ? 'ok' : 'plain'), h('span', { class: 'muted small mono' }, c.image)),
+      h('div', { class: 'card-body' }, logViewer(sub, c.name, {
+        poll: () => api('GET', `/docker/containers/${enc(c.id)}/logs?lines=1500`),
+      }))));
+  };
+  const load = async () => {
+    let r;
+    try {
+      r = await api('GET', '/docker/containers');
+    } catch (err) {
+      if (ctx.alive()) replace(listBody, errorBox(err));
+      return;
+    }
+    if (!ctx.alive()) return;
+    if (!r.available) {
+      replace(listBody, h('div', { class: 'card-body' }, h('div', { class: 'alert warn' }, r.reason || 'Docker is not available on this server.')));
+      return;
+    }
+    if (!r.containers.length) {
+      replace(listBody, h('div', { class: 'empty' }, h('h2', {}, 'No containers'), h('p', {}, 'Nothing is running or stopped in Docker on this server.')));
+      return;
+    }
+    replace(listBody, h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['Name', 'Image', 'State', 'Ports', 'Created', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, r.containers.map((c) => {
+        const tr = h('tr', { class: 'container-row', 'data-container': c.id, tabindex: '0', 'aria-selected': String(selected === c.id) },
+          h('td', { 'data-label': 'Name', class: 'mono' }, c.name, c.managed ? [' ', pill('Aegis app', 'info')] : null),
+          h('td', { 'data-label': 'Image', class: 'mono small' }, c.image),
+          h('td', { 'data-label': 'State' }, pill(c.status || c.state, c.state === 'running' ? 'ok' : c.state === 'exited' ? 'plain' : 'warn')),
+          h('td', { 'data-label': 'Ports', class: 'small' }, c.ports || '–'),
+          h('td', { 'data-label': 'Created', class: 'small' }, c.created.split(' +')[0]),
+          h('td', { class: 'actions' }, h('button', { class: 'btn small', type: 'button', 'data-action': 'container-logs' }, 'Logs')));
+        tr.addEventListener('click', () => open(c));
+        tr.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(c); });
+        return tr;
+      })))));
+  };
+  const refresh = h('button', { class: 'btn small', type: 'button', onclick: () => load() }, 'Refresh');
+  append(main, h('div', { class: 'grid' },
+    h('section', { class: 'card', 'data-card': 'containers' }, h('div', { class: 'card-header' }, h('h2', {}, 'Containers'), h('div', { class: 'spacer' }), refresh), listBody),
+    logSlot));
+  await load();
 }
 
 // ----------------------------------------------------------------------
@@ -5337,6 +5704,8 @@ const SHORTCUTS = [
   ['g d', 'Deployments'],
   ['g e', 'Events'],
   ['g a', 'Account'],
+  ['g s', 'System (updates, storage)'],
+  ['g c', 'Docker containers'],
   ['n', 'New app'],
   ['1 – 6', 'Switch tabs on an app page'],
   ['/', 'Search (logs and events)'],
@@ -5358,7 +5727,7 @@ document.addEventListener('keydown', (e) => {
   if (pendingG) {
     clearTimeout(pendingG);
     pendingG = null;
-    const dest = { o: '/', d: '/deployments', e: '/events', a: '/account' }[e.key];
+    const dest = { o: '/', d: '/deployments', e: '/events', a: '/account', s: '/system', c: '/docker' }[e.key];
     if (dest) {
       e.preventDefault();
       go(dest);

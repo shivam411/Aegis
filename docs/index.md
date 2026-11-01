@@ -21,7 +21,7 @@ Aegis is pre-1.0 and early. What is tested in CI, and what isn't measured yet, i
 
 ## Quick Links
 
-- [Installation Guide](install.md) · [Upgrading](upgrading.md) · [Migrating from PM2/systemd](migration_guide.md)
+- [Installation Guide](install.md) · [Upgrading](upgrading.md) · [Migrate to Aegis](migrate.md) · [PM2/systemd details](migration_guide.md)
 - [`agent.md`](../agent.md) — copy-paste prompts that let an AI coding agent install, migrate and manage Aegis
 - [Quickstart Tutorial](quickstart.md)
 - [Dashboard Guide](dashboard/README.md) — every page of the web dashboard, with screenshots

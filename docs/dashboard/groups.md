@@ -1,45 +1,26 @@
 # Groups
 
-Apps deployed from the same repository and branch can form a **group**: they
-deploy together at one commit, from one clone, in order, and "Deploy changed
-only" (and the group's webhook) deploys just the apps whose files changed.
-How it works, and an example: [App groups](../groups.md).
+Apps from the same repository and branch can form a **group**: one commit, one clone, deployed in order. "Deploy changed only" (and the group webhook) deploys just apps whose files changed. Details and example: [App groups](../groups.md).
 
 ## On the Overview
 
-A group is one card with its apps inside: each app's status, live version
-and, once updates have been checked, how many new commits concern it. The
-buttons (deployers and admins):
+A group is one card with its apps, each showing status, live version and new commits concerning it. Buttons (deployers and admins):
 
 - **Deploy group**: every app at the branch's latest commit.
-- **Deploy changed only**: the apps whose watch paths changed since their
-  live commit (apps never deployed go too).
-- **Roll back group**: every app the latest group deployment switched goes
-  back to its previous release.
+- **Deploy changed only**: apps whose watch paths changed since their live commit (never-deployed apps go too).
+- **Roll back group**: apps switched by the latest group deployment return to their previous release.
 
-While a group deployment runs, the card shows *Deploying* and each app's
-progress (deploying, deployed, skipped, failed, rolled back). Apps outside
-any group are shown as usual below.
+During a run the card shows each app's progress (deploying, deployed, skipped, failed, rolled back). Ungrouped apps appear below.
 
-**+ New group** (admins) opens a form: name, repository URL, branch,
-whether to roll back on failure, and the apps already deployed from that
-repository and branch to put in it.
+**+ New group** (admins): name, repository URL, branch, roll back on failure, and the apps to include.
 
 ## The group page
 
 Click the group's name.
 
-- **Apps**: the deploy order (↑ ↓ to change it), each app's live release
-  and commit, its outcome in the last group deployment, and its **watch
-  paths** (comma-separated globs such as `frontend_v2/**, shared/**`;
-  **Save**). **Add app** adds another app from the same repository and
-  branch; **Remove** takes one out (it is deployed on its own again).
-- **Group deployments**: the latest runs with their commit and what each
-  app did.
-- **GitHub webhook** (admins): generate the group's secret, copy the
-  payload URL, send a test delivery, see recent deliveries. While an app is
-  in a group, its own webhook ignores pushes.
-- **Group settings** (admins): name, repository, branch, roll back on
-  failure, **Delete group** (the apps stay).
+- **Apps**: deploy order (↑ ↓), live release and commit, last outcome, and **watch paths** (comma-separated globs, e.g. `frontend_v2/**, shared/**`; **Save**). **Add app** (same repository and branch). **Remove** deploys it on its own again.
+- **Group deployments**: recent runs and what each app did.
+- **GitHub webhook** (admins): generate secret, copy payload URL, send test, see deliveries. Grouped apps' own webhooks ignore pushes.
+- **Group settings** (admins): name, repository, branch, roll back on failure, **Delete group** (apps stay).
 
 An app's page shows a **Group** link next to its status.

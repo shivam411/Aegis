@@ -51,6 +51,8 @@ All paths are under `/api/v1`. Wherever a path takes `{project}`, you can use th
 | `GET /projects/{project}/resources` | The app's limits and its latest usage sample |
 | `PUT /projects/{project}/resources` | Set limits, applied at once without a restart: `{"cpu_cores"?, "memory_bytes"?, "pids_max"?, "force"?}` (omitted = unlimited). A memory limit below current use, or more memory promised than the host has, returns 409 `confirmation_required` unless `force` is true |
 | `GET /projects/{project}/metrics?range=&points=` | CPU and memory history with the limits in effect (`range`: e.g. `5m`, `1h`, `24h`, `7d`; up to an hour at 2 s resolution, longer from per-minute rollups) |
+| `GET /system/storage` · `POST /system/storage/cleanup` · `PUT /system/storage/auto` | Disk use by category and app; remove `old_builds`, `logs`, `backups`, `temp` (empty list: all); hourly automatic cleanup `{enabled, log_days}`. Admins, signed in |
+| `GET /docker/containers` · `GET /docker/containers/{id}/logs?lines=&since=` | Host containers and their logs. Owner or users with `docker_access`; never tokens |
 | `GET /system/prometheus` · `PUT /system/prometheus` | Whether `GET /metrics` answers / turn it on or off: `{"enabled"}` (admins, signed in). Off by default |
 | `GET /system/grafana-dashboard` | A Grafana dashboard (JSON file) for the metrics. See [monitoring](dashboard/monitoring.md) |
 | `GET /host/metrics?range=&points=` | The same for the whole host |

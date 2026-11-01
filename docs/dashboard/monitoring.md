@@ -1,21 +1,21 @@
 # Monitoring (Prometheus and Grafana)
 
-**Account → Monitoring (Prometheus & Grafana)**, for admins. It is **off until you turn it on**, and Aegis never sends data anywhere: Prometheus fetches `/metrics` from Aegis when it wants it.
+**Account → Monitoring (Prometheus & Grafana)**, admins only. **Off until you turn it on.** Aegis sends nothing; Prometheus fetches `/metrics`.
 
 ## Turn it on
 
-1. Click **Turn metrics on**. The card then shows the scrape URL and a ready `prometheus.yml`.
-2. Under **API tokens** create a token (**read** scope is enough) and put it in `prometheus.yml` as the bearer token. A signed-in session can open `/metrics` too, but sees only the apps that user may see; tokens see every app.
-3. If Prometheus reaches the daemon under another host name, add that name to `[web] allowed_hosts` in the daemon configuration.
+1. Click **Turn metrics on**. The card shows the scrape URL and a ready `prometheus.yml`.
+2. Under **API tokens** create a token (**read** scope is enough) and use it as the bearer token in `prometheus.yml`. A signed-in session can open `/metrics` but sees only its apps; tokens see all.
+3. If Prometheus uses another host name, add it to `[web] allowed_hosts` in the daemon configuration.
 4. **Turn metrics off** any time: `/metrics` then answers "not found".
 
-The same switch over the API: `GET`/`PUT /api/v1/system/prometheus` (`{"enabled": true}`; admins, signed in).
+API: `GET`/`PUT /api/v1/system/prometheus` (`{"enabled": true}`; signed-in admins).
 
 ## Grafana
 
-1. Add your Prometheus as a data source in Grafana.
-2. **Download Grafana dashboard** (or `GET /api/v1/system/grafana-dashboard`), then in Grafana: **Dashboards → New → Import**, upload the file and choose the Prometheus data source.
-3. The **App** variable at the top limits the charts to some apps. Panels: apps and apps running, host CPU, memory and disk, per-app CPU against its limit, memory against its limit, up/down, restarts, CPU throttling, threads and open files, deployments by status, host load.
+1. Add Prometheus as a Grafana data source.
+2. **Download Grafana dashboard** (or `GET /api/v1/system/grafana-dashboard`), then **Dashboards → New → Import** and pick the data source.
+3. The **App** variable filters the charts. Panels: apps, host CPU/memory/disk/load, per-app CPU and memory against limits, up/down, restarts, throttling, threads, open files, deployments by status.
 
 ## Metrics
 
@@ -34,6 +34,6 @@ The same switch over the API: `GET`/`PUT /api/v1/system/prometheus` (`{"enabled"
 | `aegis_deployments` | `app`, `status` | Deployments by outcome. |
 | `aegis_host_cpu_percent`, `aegis_host_load` (`window`), `aegis_host_memory_*_bytes`, `aegis_host_disk_*_bytes`, `aegis_host_uptime_seconds` | | The server. |
 
-Request counts and latency per app are not exported yet (the built-in proxy does not count them).
+Per-app request counts and latency are not exported.
 
 Sample files: [`examples/grafana/prometheus.yml`](../../examples/grafana/prometheus.yml).

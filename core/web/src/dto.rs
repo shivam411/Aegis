@@ -462,6 +462,9 @@ pub struct SessionDto {
     pub scope: Option<String>,
     /// "viewer", "deployer" or "admin" (users only).
     pub role: Option<String>,
+    /// May see the server's Docker containers and logs (users only).
+    #[serde(default)]
+    pub docker_access: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]

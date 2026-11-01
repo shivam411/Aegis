@@ -425,6 +425,7 @@ pub(crate) async fn login(
     .await;
 
     let max_age = st.auth.config().session_absolute.as_secs();
+    let docker_access = st.auth.has_docker_access(&username).await.unwrap_or(false);
     let mut res = Json(SessionDto {
         kind: "user".into(),
         name: username,
@@ -432,6 +433,7 @@ pub(crate) async fn login(
         expires_at: Some(session.expires_at),
         scope: None,
         role: Some(role.as_str().to_string()),
+        docker_access,
     })
     .into_response();
     res.headers_mut().insert(
@@ -473,7 +475,16 @@ pub(crate) async fn logout(
 #[utoipa::path(get, path = "/api/v1/auth/session", tag = "auth",
     responses((status = 200, description = "Who is calling; includes the CSRF token for sessions", body = SessionDto),
               (status = 401, body = ErrorBody)))]
-pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> Json<SessionDto> {
+pub(crate) async fn session_info(
+    State(st): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Json<SessionDto> {
+    let docker_access = match &principal {
+        Principal::User { username, .. } => {
+            st.auth.has_docker_access(username).await.unwrap_or(false)
+        }
+        _ => false,
+    };
     Json(match principal {
         Principal::User {
             username,
@@ -487,6 +498,7 @@ pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> 
             expires_at: Some(expires_at),
             scope: None,
             role: Some(role.as_str().to_string()),
+            docker_access,
         },
         Principal::Token { name, scope } => SessionDto {
             kind: "token".into(),
@@ -495,6 +507,7 @@ pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> 
             expires_at: None,
             scope: Some(scope.as_str().to_string()),
             role: None,
+            docker_access: false,
         },
     })
 }

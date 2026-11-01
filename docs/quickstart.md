@@ -1,12 +1,12 @@
 # Quickstart Guide
 
-This guide walks you through deploying your first application with Aegis in under 5 minutes.
+Deploy your first app in under 5 minutes.
 
 ---
 
 ## 1. Start the Daemon
 
-Launch the Aegis daemon. It starts the gRPC service on port `50051` and auto-creates the SQLite database:
+Starts the gRPC service on port `50051` and creates the SQLite database:
 
 ```bash
 aegis-daemon
@@ -41,25 +41,23 @@ sudo systemctl enable --now aegis
 
 ## 2. Initialize a Project
 
-Inside your project directory, initialize Aegis. It auto-detects the runtime:
+In your project directory (the runtime is auto-detected):
 
 ```bash
 aegis init --name my-api --repo https://github.com/user/my-api
 ```
 
-Aegis scans for `package.json` (Node.js), `Cargo.toml` (Rust), `go.mod` (Go), `requirements.txt` (Python), or `bun.lockb` (Bun) and configures the build pipeline automatically.
+Detects `package.json` (Node.js), `Cargo.toml` (Rust), `go.mod` (Go), `requirements.txt` (Python) or `bun.lockb` (Bun).
 
 ---
 
 ## 3. Deploy
 
-Trigger a health-checked deployment:
+Health-checked deployment:
 
 ```bash
 aegis deploy my-api --branch main
 ```
-
-What happens behind the scenes:
 
 ```
 1. Clone     → Git clone into isolated build directory
@@ -71,19 +69,19 @@ What happens behind the scenes:
 7. Promote   → Atomically switch the active version pointer
 ```
 
-A failed build never touches the live version. For an app with a domain on the built-in proxy, the new release starts next to the old one and the proxy switches over once it is healthy (no downtime). An app without a domain has its old process stopped before the new one starts, so there is a short gap while it starts listening. If the new version fails its health check, the previous release is started again.
+A failed build never touches the live version. With a domain on the built-in proxy, the new release starts beside the old one and traffic switches once it is healthy (no downtime). Without a domain, the old process stops first, so there is a short gap. If the health check fails, the previous release is started again.
 
 ---
 
 ## 4. Check Status
 
-Query daemon status and active projects:
+Daemon status and projects:
 
 ```bash
 aegis status
 ```
 
-List running processes:
+Running processes:
 
 ```bash
 aegis list
@@ -93,7 +91,7 @@ aegis list
 
 ## 5. Configure Scheduled Deployments
 
-Set a daily automated deployment at 02:00 AM:
+Daily deployment at 02:00:
 
 ```bash
 aegis schedule my-api --hour 2 --branch main
@@ -103,25 +101,25 @@ aegis schedule my-api --hour 2 --branch main
 
 ## 6. Roll Back
 
-If something goes wrong, instantly roll back to a previous version:
+Roll back to a previous version:
 
 ```bash
 aegis rollback my-api --version v1.0.0
 ```
 
-No rebuild required — Aegis keeps previous release artifacts on disk (configurable via `max_retained_versions`).
+No rebuild: previous releases stay on disk (`max_retained_versions`).
 
 ---
 
 ## 7. Stream Logs
 
-Tail real-time process logs:
+Tail process logs:
 
 ```bash
 aegis logs my-api -f
 ```
 
-Stream all operational events:
+Stream all events:
 
 ```bash
 aegis stream-events
@@ -131,20 +129,20 @@ aegis stream-events
 
 ## 8. Launch the Terminal UI
 
-For a real-time interactive dashboard:
+Interactive terminal dashboard:
 
 ```bash
 aegis-tui                         # daemon address from ./aegis.toml [daemon]
 aegis-tui --addr 127.0.0.1:50051  # or point it at a daemon explicitly
 ```
 
-The TUI (experimental) shows your apps with status, live release, uptime, restarts and CPU/memory. Press `Enter` on an app for its releases, recent deployments and live log, `Tab` to switch panes or to the event stream, `/` to filter, `f` to follow or pause, and `?` for every key. `s`/`x`/`R` start, stop and restart, `d` deploys and `b` rolls back; each asks for confirmation. If the daemon stops, the TUI shows a banner and reconnects on its own.
+The TUI (experimental) lists apps with status, release, uptime, restarts, CPU/memory. `Enter` opens an app (releases, deployments, log), `Tab` switches panes or the event stream, `/` filters, `f` follows or pauses, `?` lists all keys. `s`/`x`/`R` start, stop, restart; `d` deploys; `b` rolls back; each asks first. It reconnects by itself if the daemon stops.
 
 ---
 
 ## Configuration
 
-Aegis reads configuration from `aegis.toml` in the working directory:
+Read from `aegis.toml` in the working directory:
 
 ```toml
 [daemon]

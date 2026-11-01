@@ -8414,6 +8414,10 @@
             ],
             "description": "Send as `X-CSRF-Token` on requests that change state (sessions only)."
           },
+          "docker_access": {
+            "type": "boolean",
+            "description": "May see the server's Docker containers and logs (users only)."
+          },
           "expires_at": {
             "type": [
               "integer",
