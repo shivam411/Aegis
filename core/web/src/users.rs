@@ -23,6 +23,11 @@ pub struct UserDto {
     pub all_apps: bool,
     /// With `all_apps` false, the names of the only apps the user sees.
     pub apps: Vec<String>,
+    /// May see the server's Docker containers and their logs. The owner
+    /// (the first admin) always can; everyone else only when granted.
+    pub docker_access: bool,
+    /// True for the owner account.
+    pub owner: bool,
 }
 
 fn user_dto(st: &AppState, u: UserInfo) -> UserDto {
@@ -40,6 +45,8 @@ fn user_dto(st: &AppState, u: UserInfo) -> UserDto {
                     .map(|p| p.project.name.clone())
             })
             .collect(),
+        docker_access: u.docker_access || u.owner,
+        owner: u.owner,
         username: u.username,
         role: u.role.as_str().to_string(),
         created_at: u.created_at,
@@ -98,6 +105,9 @@ pub struct CreateUserRequest {
     /// Apps added later are not included until you add them.
     #[serde(default)]
     pub apps: Option<Vec<String>>,
+    /// Let the user see the server's Docker containers and logs (off by default).
+    #[serde(default)]
+    pub docker_access: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]
@@ -111,6 +121,8 @@ pub struct UpdateUserRequest {
     pub all_apps: Option<bool>,
     /// Replaces the list of apps the user may see (empty: none).
     pub apps: Option<Vec<String>>,
+    /// Grants or removes access to Docker containers and logs.
+    pub docker_access: Option<bool>,
 }
 
 fn parse_role(value: &str) -> ApiResult<Role> {
@@ -166,6 +178,18 @@ pub(crate) async fn create_user(
             .set_user_apps(username, Some(ids))
             .await
             .map_err(ApiError::internal)?;
+    }
+    if req.docker_access == Some(true) {
+        st.auth
+            .set_docker_access(username, true)
+            .await
+            .map_err(ApiError::internal)?;
+        st.control
+            .record(
+                "UserDockerAccessChanged",
+                json!({"username": username, "docker_access": true}),
+            )
+            .await?;
     }
     st.control
         .record(
@@ -237,6 +261,18 @@ pub(crate) async fn update_user(
             .record(
                 "UserAppsChanged",
                 json!({"username": username, "apps": apps.as_ref().map_or(json!("all"), |ids| json!(ids))}),
+            )
+            .await?;
+    }
+    if let Some(allowed) = req.docker_access {
+        st.auth
+            .set_docker_access(&username, allowed)
+            .await
+            .map_err(ApiError::internal)?;
+        st.control
+            .record(
+                "UserDockerAccessChanged",
+                json!({"username": username, "docker_access": allowed}),
             )
             .await?;
     }

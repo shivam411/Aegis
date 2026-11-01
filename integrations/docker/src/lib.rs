@@ -13,5 +13,5 @@ pub mod args;
 mod cli;
 mod launcher;
 
-pub use cli::{docker_bin, probe, run_docker, ContainerState, Docker, DockerStatus};
+pub use cli::{docker_bin, probe, run_docker, ContainerState, Docker, DockerStatus, HostContainer};
 pub use launcher::{ContainerSettings, DockerLauncher, LimitsSource};

@@ -23,6 +23,7 @@ mod rollout;
 pub mod scan;
 mod secrets;
 mod sources;
+mod storage;
 mod updates;
 
 use aegis_artifact_store::ArtifactStore;
@@ -56,6 +57,9 @@ pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 pub use rollout::{InstanceView, StandbyView};
 pub use scan::{ImportApp, ImportedApp, ScanCandidate, ScanResult};
 pub use sources::{AccessCheck, DeployKeyInfo};
+pub use storage::{
+    AppStorage, CleanupResult, StorageCategory, StorageReport, CLEANUP_TARGETS, DEFAULT_LOG_DAYS,
+};
 pub use updates::{read_folder_head, CommitSummary, GroupUpdates, UpdateStatus};
 
 tokio::task_local! {

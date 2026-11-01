@@ -1164,6 +1164,7 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
             web_shutdown_rx.clone(),
         )
         .with_updates(updates.clone());
+        aegis_web::storage::spawn_storage_janitor(state.clone());
         let mut stop = web_shutdown_rx;
         let shutdown = async move {
             let _ = stop.wait_for(|stopping| *stopping).await;

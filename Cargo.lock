@@ -217,6 +217,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

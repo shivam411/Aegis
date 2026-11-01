@@ -707,6 +707,115 @@
         }
       }
     },
+    "/api/v1/docker/containers": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "operationId": "list_containers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainersDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No Docker access",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/docker/containers/{id}/logs": {
+      "get": {
+        "tags": [
+          "docker"
+        ],
+        "operationId": "container_logs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Container id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "path",
+            "description": "Lines to return, newest last (default 300, at most 5000).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "since",
+            "in": "path",
+            "description": "Only output since this time (RFC 3339) or age (for example 10m).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContainerLogLineDto"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No Docker access",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/events": {
       "get": {
         "tags": [
@@ -4039,6 +4148,136 @@
         }
       }
     },
+    "/api/v1/system/storage": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "storage",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/storage/auto": {
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "set_auto",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutoCleanupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/storage/cleanup": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "cleanup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleanupDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/update": {
       "get": {
         "tags": [
@@ -4656,6 +4895,39 @@
         },
         "additionalProperties": false
       },
+      "AppStorageDto": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "name",
+          "releases_bytes",
+          "old_builds_bytes",
+          "logs_bytes"
+        ],
+        "properties": {
+          "logs_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "old_builds_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "releases_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ApplyUpdateRequest": {
         "type": "object",
         "properties": {
@@ -4667,6 +4939,27 @@
             "description": "The version the operator confirmed (e.g. `v0.2.0`); refused if the\nlatest known release is a different one."
           }
         }
+      },
+      "AutoCleanupRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "log_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1 to 3650.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "BackupDto": {
         "type": "object",
@@ -4836,6 +5129,45 @@
         },
         "additionalProperties": false
       },
+      "CleanupDto": {
+        "type": "object",
+        "required": [
+          "freed_bytes",
+          "freed"
+        ],
+        "properties": {
+          "freed": {
+            "type": "object",
+            "description": "Bytes freed per target.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "freed_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "CleanupRequest": {
+        "type": "object",
+        "properties": {
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Any of old_builds, logs, backups, temp. Empty: all of them."
+          }
+        },
+        "additionalProperties": false
+      },
       "CommitDto": {
         "type": "object",
         "required": [
@@ -4889,6 +5221,93 @@
           },
           "proposed": {
             "type": "string"
+          }
+        }
+      },
+      "ContainerDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "image",
+          "state",
+          "status",
+          "ports",
+          "created",
+          "managed"
+        ],
+        "properties": {
+          "created": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "managed": {
+            "type": "boolean",
+            "description": "Started by this Aegis for one of its apps."
+          },
+          "name": {
+            "type": "string"
+          },
+          "ports": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "running, exited, paused, created, restarting, ..."
+          },
+          "status": {
+            "type": "string",
+            "description": "For example \"Up 3 hours\"."
+          }
+        }
+      },
+      "ContainerLogLineDto": {
+        "type": "object",
+        "required": [
+          "timestamp",
+          "stream",
+          "line"
+        ],
+        "properties": {
+          "line": {
+            "type": "string"
+          },
+          "stream": {
+            "type": "string",
+            "description": "\"out\" or \"err\"."
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "ContainersDto": {
+        "type": "object",
+        "required": [
+          "available",
+          "containers"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "False when Docker isn't installed or can't be reached; see `reason`."
+          },
+          "containers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContainerDto"
+            }
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -5050,6 +5469,13 @@
               "type": "string"
             },
             "description": "Names or ids of the only apps the user may see (not for admins).\nApps added later are not included until you add them."
+          },
+          "docker_access": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Let the user see the server's Docker containers and logs (off by default)."
           },
           "password": {
             "type": "string",
@@ -8162,6 +8588,80 @@
           }
         }
       },
+      "StorageCategoryDto": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "bytes",
+          "reclaimable_bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "key": {
+            "type": "string",
+            "description": "releases, old_builds, logs, backups, database or temp."
+          },
+          "label": {
+            "type": "string"
+          },
+          "reclaimable_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What \"Clean up now\" would free in this category.",
+            "minimum": 0
+          }
+        }
+      },
+      "StorageDto": {
+        "type": "object",
+        "required": [
+          "total_bytes",
+          "reclaimable_bytes",
+          "categories",
+          "apps",
+          "auto_cleanup",
+          "log_days"
+        ],
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppStorageDto"
+            }
+          },
+          "auto_cleanup": {
+            "type": "boolean",
+            "description": "Hourly automatic cleanup is on."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StorageCategoryDto"
+            }
+          },
+          "log_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Log files untouched for this many days are removed by a cleanup.",
+            "minimum": 0
+          },
+          "reclaimable_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "TokenDto": {
         "type": "object",
         "required": [
@@ -8450,6 +8950,14 @@
             "description": "Replaces the list of apps the user may see (empty: none).",
             "default": null
           },
+          "docker_access": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Grants or removes access to Docker containers and logs.",
+            "default": null
+          },
           "password": {
             "type": [
               "string",
@@ -8577,7 +9085,9 @@
           "created_at",
           "password_changed_at",
           "all_apps",
-          "apps"
+          "apps",
+          "docker_access",
+          "owner"
         ],
         "properties": {
           "all_apps": {
@@ -8593,6 +9103,14 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "docker_access": {
+            "type": "boolean",
+            "description": "May see the server's Docker containers and their logs. The owner\n(the first admin) always can; everyone else only when granted."
+          },
+          "owner": {
+            "type": "boolean",
+            "description": "True for the owner account."
           },
           "password_changed_at": {
             "type": "string"
@@ -8835,6 +9353,9 @@
     },
     {
       "name": "jobs"
+    },
+    {
+      "name": "docker"
     }
   ]
 }

@@ -124,6 +124,21 @@ pub struct ContainerState {
     pub exit_code: i32,
 }
 
+/// A container on the host, as `docker ps` lists it.
+#[derive(Debug, Clone)]
+pub struct HostContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    /// running, exited, paused, ...
+    pub state: String,
+    pub status: String,
+    pub ports: String,
+    pub created: String,
+    /// Started by this Aegis for one of its apps.
+    pub managed: bool,
+}
+
 /// One Aegis installation's view of Docker.
 pub struct Docker {
     bin: String,
@@ -318,6 +333,87 @@ impl Docker {
                 (!name.is_empty()).then(|| (name.to_string(), process.to_string()))
             })
             .collect())
+    }
+
+    /// Every container on the host (not only Aegis's), newest first.
+    pub async fn host_containers(&self) -> Result<Vec<HostContainer>, String> {
+        let args = [
+            "ps".to_string(),
+            "--all".to_string(),
+            "--no-trunc".to_string(),
+            "--format".to_string(),
+            "{{json .}}".to_string(),
+        ];
+        let out = self.run(&args, Duration::from_secs(30)).await?;
+        Ok(out
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .map(|v| {
+                let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                HostContainer {
+                    id: text("ID"),
+                    name: text("Names"),
+                    image: text("Image"),
+                    state: text("State"),
+                    status: text("Status"),
+                    ports: text("Ports"),
+                    created: text("CreatedAt"),
+                    managed: text("Labels").contains(args::LABEL_INSTANCE),
+                }
+            })
+            .collect())
+    }
+
+    /// The last `tail` lines of a container's output as (stdout, stderr),
+    /// each line with its Docker timestamp. `id` must be a container id or name.
+    pub async fn container_logs(
+        &self,
+        id: &str,
+        tail: usize,
+        since: Option<&str>,
+    ) -> Result<(String, String), String> {
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+            || id.starts_with('-')
+        {
+            return Err("Not a container id or name".into());
+        }
+        let mut args = vec![
+            "logs".to_string(),
+            "--timestamps".to_string(),
+            "--tail".to_string(),
+            tail.to_string(),
+        ];
+        if let Some(since) = since.filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '-' | '+'))
+        }) {
+            args.push("--since".into());
+            args.push(since.to_string());
+        }
+        args.push(id.to_string());
+        // `docker logs` writes the container's stderr to its own stderr.
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        cmd.args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+            .await
+            .map_err(|_| "docker logs timed out".to_string())?
+            .map_err(|e| format!("Could not run docker: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok((
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
     }
 
     /// Removes an image tag. Images still used by a container stay.

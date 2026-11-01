@@ -140,6 +140,9 @@ fn user_only(path: &str) -> bool {
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
         || path == "/api/v1/system/prometheus"
+        // Disk use and cleanup; the server's Docker containers.
+        || path.starts_with("/api/v1/system/storage")
+        || path.starts_with("/api/v1/docker/")
         || matches!(
             section,
             Some("webhook" | "secrets" | "deploy-key" | "hide" | "unlock" | "lock")
@@ -200,6 +203,9 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         ["projects", _, "env", "import", ..] => Role::Admin,
         // Variable names and their sources (never values).
         ["projects", _, "env"] if read => Role::Viewer,
+        // Disk use is for admins; Docker has its own per-user permission.
+        ["system", "storage", ..] => Role::Admin,
+        ["docker", ..] => Role::Viewer,
         _ if read => Role::Viewer,
         // Checking now and installing a new Aegis version.
         ["system", "update", ..] => Role::Admin,

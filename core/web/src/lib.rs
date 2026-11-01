@@ -11,6 +11,7 @@ mod api;
 mod appconfig;
 mod auth;
 mod backup;
+mod docker;
 mod domains;
 pub mod dto;
 mod groups;
@@ -19,6 +20,7 @@ mod jobs;
 mod metrics;
 mod resources;
 mod sources;
+pub mod storage;
 pub mod tls;
 mod ui;
 pub mod update;
@@ -256,7 +258,8 @@ impl Modify for SecuritySchemes {
         api::status, api::list_projects, api::create_project, api::get_project,
         api::delete_project, api::change_source, api::deploy,
         jobs::list_jobs, jobs::create_job, jobs::update_job, jobs::delete_job, jobs::run_job,
-        jobs::list_job_runs,
+        jobs::list_job_runs, storage::storage, storage::cleanup, storage::set_auto,
+        docker::list_containers, docker::container_logs,
         api::rollback, api::verify_project, api::set_schedule, api::list_releases, api::list_deployments,
         api::get_deployment, api::list_processes, api::process_action, api::get_logs,
         api::stream_logs, api::list_events, api::stream_events, api::host,
@@ -292,7 +295,7 @@ impl Modify for SecuritySchemes {
         DeploymentDto, EventDto,
         LogLineDto, LogsDto, CreateProjectRequest, DeployRequest, DeployAccepted,
         RollbackRequest, RollbackResult, VerifyRequest, LiveCheckDto,
-        jobs::JobDto, jobs::JobRunDto, jobs::CreateJobRequest, jobs::UpdateJobRequest, ScheduleRequest, ErrorBody, ErrorDetail,
+        storage::StorageDto, storage::StorageCategoryDto, storage::AppStorageDto, storage::CleanupDto, storage::CleanupRequest, storage::AutoCleanupRequest, docker::ContainerDto, docker::ContainersDto, docker::ContainerLogLineDto, jobs::JobDto, jobs::JobRunDto, jobs::CreateJobRequest, jobs::UpdateJobRequest, ScheduleRequest, ErrorBody, ErrorDetail,
         ChangeSourceRequest, DeletedProjectDto,
         LoginRequest, SessionDto, ChangePasswordRequest, CreateTokenRequest, TokenDto,
         NewTokenDto, users::UserDto, users::CreateUserRequest, users::UpdateUserRequest,
@@ -324,7 +327,7 @@ impl Modify for SecuritySchemes {
         (name = "auth"), (name = "users"), (name = "access"), (name = "system"), (name = "projects"), (name = "deployments"),
         (name = "processes"), (name = "events"), (name = "webhooks"), (name = "resources"),
         (name = "domains"), (name = "secrets"), (name = "backups"), (name = "sources"),
-        (name = "groups"), (name = "jobs")
+        (name = "groups"), (name = "jobs"), (name = "docker")
     )
 )]
 pub struct ApiDoc;
@@ -361,6 +364,11 @@ pub fn router(state: AppState) -> Router {
             get(metrics::prometheus_status).put(metrics::set_prometheus),
         )
         .route("/system/grafana-dashboard", get(metrics::grafana_dashboard))
+        .route("/system/storage", get(storage::storage))
+        .route("/system/storage/cleanup", post(storage::cleanup))
+        .route("/system/storage/auto", put(storage::set_auto))
+        .route("/docker/containers", get(docker::list_containers))
+        .route("/docker/containers/:id/logs", get(docker::container_logs))
         .route("/system/update", get(update::update_status))
         .route("/system/update/check", post(update::check_update))
         .route("/system/update/apply", post(update::apply_update))
