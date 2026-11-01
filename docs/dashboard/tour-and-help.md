@@ -2,25 +2,13 @@
 
 ## First-run tour
 
-The first time a user signs in, a short tour points out the main parts of the dashboard. It dims the page and highlights one thing at a time.
+On first sign-in, a short tour dims the page and highlights one thing at a time.
 
 ![The tour's welcome step](../images/dashboard/tour-welcome.png)
 
-The steps, in order:
+Steps: Welcome; Overview; Server health; Add an app (admins); Deploy (deployers, needs an app); Inside an app (tabs; opens the first app); Help on every section; Deployments, Events, Account; Live connection; Light or dark; Help and shortcuts.
 
-1. **Welcome.**
-2. **Overview** in the top bar.
-3. **Server health**: the host tiles.
-4. **Add an app**: the **+ New app** button (admins only).
-5. **Deploy**: the Deploy button on an app card (deployers and admins, once there is an app).
-6. **Inside an app**: the tabs of an app page. The tour opens the first app for this (once there is an app).
-7. **Help on every section**: a **?** button.
-8. **Deployments**, 9. **Events** and 10. **Account** in the top bar.
-11. **Live connection**: the Live pill.
-12. **Light or dark**: the theme button.
-13. **Help and shortcuts**: the **?** button in the top bar.
-
-Steps for controls your role doesn't have are left out, as are steps that need an app when there is none yet, so the count ("Step 3 of 11") varies.
+Steps your role or setup can't use are skipped, so the count varies.
 
 ![The tour highlighting the Deploy button](../images/dashboard/tour-deploy.png)
 
@@ -32,23 +20,20 @@ Steps for controls your role doesn't have are left out, as are steps that need a
 | **Back** | <kbd>←</kbd> |
 | **Skip tour** | <kbd>Esc</kbd> |
 
-Focus stays in the tour card while it is open, and returns to where it was afterwards. When the tour ends, you are taken back to the page you started on. It respects the system's reduced-motion setting and works on phones, where the card sits at the top or bottom of the screen, away from the highlighted control.
-
-Finishing or skipping the tour counts as seen. It is remembered per user in this browser, so it doesn't come back after a reload. A new browser (or cleared site data) shows it once more. To replay it any time, use **Take the tour** in the help dialog (**?**) or **Take the tour again** under [Account → Appearance & shortcuts](account.md#appearance-and-shortcuts).
+Finishing or skipping counts as seen, remembered per user in this browser (a new browser shows it once more). Replay it with **Take the tour** in the help dialog (**?**) or **Take the tour again** under [Account → Appearance & shortcuts](account.md#appearance-and-shortcuts).
 
 ## Help on every section
 
-Every page and card has a small **?** next to its title. Click it (or focus it and press Enter) for a short explanation:
+Every page and card has a **?** next to its title. Click it (or focus and press Enter):
 
 ![The help popover for the Apps section](../images/dashboard/help-popover.png)
 
-- what the section shows,
-- what each control does,
-- **Who can use it**: which roles,
-- **Read more in the dashboard guide**: the matching page of this guide.
+- What the section shows and what each control does.
+- **Who can use it**.
+- **Read more in the dashboard guide**: the matching page here.
 
-<kbd>Esc</kbd>, the ✕ button, a click elsewhere or the **?** again closes it. On a phone it opens as a sheet at the bottom of the screen:
+<kbd>Esc</kbd>, ✕, a click elsewhere or **?** again closes it. On phones it opens as a bottom sheet:
 
 ![Help on a phone](../images/dashboard/mobile-help.png)
 
-The help text lives in one file, `core/web/ui/help.js`, next to the tour steps. When you change a section of the dashboard, update its entry there and the matching page in `docs/dashboard/`.
+The text lives in `core/web/ui/help.js`. When you change a section, update its entry and the matching page in `docs/dashboard/`.

@@ -96,7 +96,8 @@ Apps deployed together from one repository and branch; see [groups.md](groups.md
 | `DeploymentQueued` | A deployment was requested (CLI, schedule or webhook) | `deployment_id`, `project_id`, `strategy`, `branch`, `source_dir` or `repository_url`, `commit_sha`, `version`, `trigger_source` |
 | `DeploymentStarted` | The daemon began building | `deployment_id`, `project_id`, `version`, `strategy` |
 | `DeploymentCompleted` | The new release is live and healthy | `deployment_id`, `project_id`, `release_id`, `version` |
-| `DeploymentFailed` | A build stage or the health check failed | `deployment_id`, `project_id`, `stage`, `reason`, `log_tail`, `rolled_back_to` |
+| `DeploymentFailed` | A build stage, the health check or the live URL check failed. For `stage` = `LiveCheck` it also has `verify_url`, `http_status` (or `error` when there was no answer), `error_code` (`http_503`, `connection_failed`, `timeout`, `tls_error`, `no_response`) and `rollback_error` | `deployment_id`, `project_id`, `stage`, `reason`, `log_tail`, `rolled_back_to` |
+| `LiveCheckRun` | Someone requested the app's live URL on demand (`POST /projects/{p}/verify`) | `project_id`, `url`, `ok`, `http_status`, `error_code`, `rolled_back_to` |
 | `DeploymentRolledBack` | After a failed health check, the previous release was started again | `deployment_id`, `project_id`, `target_version`, `reason` |
 | `RollbackRequested` | An operator asked to switch to an earlier release | `project_id`, `from_version`, `target_version` |
 | `RollbackCompleted` | The earlier release is live | `project_id`, `from_version`, `to_version`, `instant` (switched back to a BlueGreen standby without starting anything) |
@@ -157,6 +158,12 @@ Every event recorded because of an API call carries `actor`: `user:<name>`, `tok
 | `PasswordChanged` / `PasswordReset` | Password changed by its owner / reset by an admin or on the server; that user's sessions end | `username` |
 | `UserCreated` | An admin (or `aegis-daemon admin create-user`) added an account | `username`, `role`, `actor` |
 | `UserRoleChanged` | An account's role changed; open sessions use the new role at once | `username`, `from`, `to`, `actor` |
+| `JobCreated` / `JobUpdated` / `JobDeleted` | An app's job changed | `project_id`, `job_id`, `name`, `actor` |
+| `JobRunStarted` / `JobRunFinished` | A job run began / ended (`status`: success, failed, timeout; `exit_code`, `duration_ms`). The output is kept with the run, never in events | `project_id`, `job_id`, `run_id`, `name`, `trigger` |
+| `PrometheusToggled` | An admin turned the Prometheus `/metrics` endpoint on or off | `enabled`, `actor` |
+| `UserDockerAccessChanged` | An account was given or lost access to Docker containers and logs | `username`, `docker_access`, `actor` |
+| `StorageCleaned` | A cleanup removed old builds, logs, backups or temp files (`trigger` is `manual` or `auto`) | `trigger`, `targets`, `freed_bytes`, `removed`, `actor` |
+| `StorageAutoCleanupChanged` | Automatic cleanup was turned on/off or its log age changed | `enabled`, `log_days`, `actor` |
 | `UserAppsChanged` | An account's list of visible apps changed (`apps` is `"all"` or a list of project ids); `UserCreated` also carries `apps` | `username`, `apps`, `actor` |
 | `AppHidden` / `AppUnhidden` | An admin put an app behind a password / removed it | `project_id`, `name`, `actor` |
 | `AppUnlocked` / `AppUnlockFailed` | A session entered an app's hide password (correctly / wrongly; the app name tried is never recorded) | `project_id` (success), `ip`, `actor` |

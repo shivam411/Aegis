@@ -135,6 +135,10 @@ pub struct UserInfo {
     pub password_changed_at: String,
     /// The apps (project ids) the user may see; `None`: all of them.
     pub apps: Option<Vec<String>>,
+    /// Granted access to the server's Docker containers and logs.
+    pub docker_access: bool,
+    /// The owner (the first admin account) always has Docker access.
+    pub owner: bool,
 }
 
 /// What a request may see of the apps: those a user isn't given, and those
@@ -477,8 +481,9 @@ impl AuthStore {
                 .or_default()
                 .push(row.try_get(1)?);
         }
+        let owner = self.owner().await?;
         sqlx::query(
-            "SELECT username, role, created_at, password_changed_at, all_apps FROM users ORDER BY username",
+            "SELECT username, role, created_at, password_changed_at, all_apps, docker_access FROM users ORDER BY username",
         )
         .fetch_all(&self.pool)
         .await?
@@ -492,9 +497,56 @@ impl AuthStore {
                 role: Role::parse(row.try_get::<&str, _>(1)?).unwrap_or(Role::Viewer),
                 created_at: row.try_get(2)?,
                 password_changed_at: row.try_get(3)?,
+                docker_access: row.try_get::<i64, _>(5)? != 0,
+                owner: owner.as_deref() == Some(row.try_get::<&str, _>(0)?),
             })
         })
         .collect()
+    }
+
+    /// The owner: the first admin account created.
+    pub async fn owner(&self) -> Result<Option<String>, anyhow::Error> {
+        Ok(sqlx::query(
+            "SELECT username FROM users WHERE role = 'admin' ORDER BY created_at, rowid LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|r| r.try_get(0))
+        .transpose()?)
+    }
+
+    /// Whether the user may see Docker containers and their logs: the owner,
+    /// or anyone the owner (or another admin) granted it.
+    pub async fn has_docker_access(&self, username: &str) -> Result<bool, anyhow::Error> {
+        if self.owner().await?.as_deref() == Some(username) {
+            return Ok(true);
+        }
+        Ok(
+            sqlx::query("SELECT docker_access FROM users WHERE username = ?")
+                .bind(username)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|r| r.try_get::<i64, _>(0))
+                .transpose()?
+                .unwrap_or(0)
+                != 0,
+        )
+    }
+
+    pub async fn set_docker_access(
+        &self,
+        username: &str,
+        allowed: bool,
+    ) -> Result<bool, anyhow::Error> {
+        Ok(
+            sqlx::query("UPDATE users SET docker_access = ? WHERE username = ?")
+                .bind(i64::from(allowed))
+                .bind(username)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
     }
 
     pub async fn user(&self, username: &str) -> Result<Option<UserInfo>, anyhow::Error> {
@@ -545,6 +597,8 @@ impl AuthStore {
             created_at: now.clone(),
             password_changed_at: now,
             apps: None,
+            docker_access: false,
+            owner: false,
         }))
     }
 
@@ -918,6 +972,28 @@ impl AuthStore {
             .bind(project_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// A run-time switch or value set by an admin (see the `settings` table).
+    pub async fn setting(&self, key: &str) -> Result<Option<String>, anyhow::Error> {
+        Ok(sqlx::query("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.try_get(0))
+            .transpose()?)
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), anyhow::Error> {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

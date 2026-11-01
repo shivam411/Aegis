@@ -12,6 +12,7 @@ The table lists each user with their **Role**, the **Apps** they can see, when t
 
 - **Role** menu: change it and it is saved at once. *Viewer: read only*; *Deployer: also deploy, roll back, start and stop*; *Admin: everything, including settings, secrets and users*. See [roles](README.md#roles).
 - **Apps** button: opens a dialog to choose **All apps** (the default; includes apps added later) or **Only these apps** with a checkbox per app. Everything else is left out of that user's lists, events, metrics and search, and answers "not found". It applies to open sessions at once. Admins always see every app, so the button is disabled for them. Apps hidden behind a password only show to sessions that unlocked them.
+- **Docker** checkbox: lets the user see [Docker](docker.md) containers and logs. Off by default. The owner (first admin) always has it.
 - **Reset password**: after a confirmation, the user is signed out everywhere and a new random password is shown once. Give it to them; they can change it after signing in.
 - **Delete**: after a confirmation, the user is signed out and can't sign in again. Their past actions stay in the audit log. You can't delete yourself.
 
@@ -24,6 +25,10 @@ Admins only. Tokens are for the CLI, scripts and CI. Send one as `Authorization:
 - Enter a **Name** (for example `ci-deploy`) and choose a **Scope**: **deploy** (read and act: deploy, roll back, start, stop) or **read** (view only). Click **Create token**.
 - Copy the token from the box that appears. It is shown only once.
 - The table shows each token's scope, when it was created and when it was last used. **Revoke** cuts it off immediately.
+
+## Monitoring
+
+Admins only. Optional Prometheus metrics and a Grafana dashboard, off by default. See [Monitoring](monitoring.md).
 
 ## Backups
 

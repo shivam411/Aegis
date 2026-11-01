@@ -1,33 +1,29 @@
 # Events
 
-**Events** in the top bar (or <kbd>g</kbd> <kbd>e</kbd>) is the audit log of the whole server. Aegis records every change as an event: deployments and build stages, releases and rollbacks, process starts, stops and crashes, sign-ins (and failed ones), password changes, API tokens, settings, limits, domains, backups and Aegis updates. Events are never edited or deleted.
+**Events** in the top bar (or <kbd>g</kbd> <kbd>e</kbd>) is the server's audit log. Every change is an event: deployments, releases, rollbacks, process starts/stops/crashes, sign-ins (and failures), passwords, tokens, settings, limits, domains, backups, Aegis updates. Events are never edited or deleted.
 
 ![The Events page](../images/dashboard/events.png)
 
-Each entry shows the time, the event type, a summary, and who did it (`by user:<name>` or `by token:<name>`). Colours: green for successes, amber for warnings, red for failures. **Details** shows the event's data as JSON.
+Each entry shows time, type, summary and who (`by user:<name>` or `by token:<name>`). Green is success, amber warning, red failure. **Details** shows the JSON data.
 
 ## Paging
 
-Long lists are paged: **25, 50, 100 or 200 per page** (remembered in this browser) with **Previous** / **Next** and a "51–100 of 230" counter. Changing a filter goes back to the first page. The controls appear once there are more than 25 rows.
-
-Events about apps you may not see are left out, including in the live stream.
+**25, 50, 100 or 200 per page** (remembered in this browser), with **Previous** / **Next**. Shown above 25 rows. Events about apps you may not see are left out, live stream included.
 
 ## Filters
 
 | Control | What it does |
 | :--- | :--- |
-| **App** | Only events about one app. |
+| **App** | Events about one app. |
 | **Category** | **Deployments & builds**, **Processes**, **Access & security** (sign-ins, passwords, tokens, webhooks), **Resources & alerts**, **App configuration**, **Backups**, **Aegis updates**, or **All events**. |
 | **Last 100 / 500 / 1000** | How many recent events to load. |
-| **Filter by text** | Matches the event type and anything in its data, for example a username, a version or an error message. Press <kbd>/</kbd> to jump here. |
-| **Live** | While ticked, new events appear at the top as they happen. Untick it to read without the list moving. |
-
-The count in the page header says how many of the loaded events match.
+| **Filter by text** | Matches type and data (user, version, error). Press <kbd>/</kbd>. |
+| **Live** | New events appear on top. Untick to freeze the list. |
 
 Examples:
 
-- *Who stopped the shop app?* Category **Processes**, App **shop**: look for `ProcessStopRequested` and its "by user:…".
-- *Has anyone failed to sign in?* Category **Access & security**, then look for `UserLoginFailed`, which includes the IP address.
+- *Who stopped shop?* Category **Processes**, App **shop**, find `ProcessStopRequested`.
+- *Failed sign-ins?* Category **Access & security**, find `UserLoginFailed` (includes the IP).
 - *When did memory run out?* Category **Resources & alerts**.
 
-The meaning of each event type and its fields is in the [event catalog](../event_catalog.md). The same log is available from the CLI (`aegis-cli stream-events`) and the [HTTP API](../http_api.md).
+Event types and fields: [event catalog](../event_catalog.md). CLI: `aegis-cli stream-events`. Also the [HTTP API](../http_api.md).

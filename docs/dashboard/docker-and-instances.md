@@ -2,20 +2,20 @@
 
 ## Docker apps
 
-An app with `[run] runtime = "docker"` in its `aegis.toml` runs in a container instead of as a plain process (see [Docker runtime](../docker_runtime.md)). The dashboard works the same way for it, with a few differences:
+An app with `[run] runtime = "docker"` in `aegis.toml` runs in a container (see [Docker runtime](../docker_runtime.md)). The dashboard works the same, except:
 
 ![A Docker app: the Docker pill and the image in the header](../images/dashboard/docker-app.png)
 
-- The app page header shows a blue **Docker** pill (hover it for the image), and the subtitle shows `container pid` and `image aegis/<project id>:<release>`.
-- **Settings → About → Runs as** says *Docker container* with the image.
-- The **Build** stage runs `docker build` (or pulls the image); its output is in the build log.
-- **Logs**, **Start / Stop / Restart**, **Resources** and rollback work as for other apps. Limits are applied by Docker; the Resources tab says if Docker isn't usable.
+- Header: blue **Docker** pill (hover for the image); subtitle shows `container pid` and `image aegis/<project id>:<release>`.
+- **Settings → About → Runs as**: *Docker container* with the image.
+- **Build** runs `docker build` (or pulls the image); output is in the build log.
+- **Logs**, **Start / Stop / Restart**, **Resources** and rollback work as usual. Docker applies limits; Resources says if Docker is unusable.
 
-If Docker isn't installed or the daemon can't reach it, the deployment fails at the Build stage with the reason (for example "Docker is not installed").
+If Docker is missing or unreachable, the deployment fails at Build with the reason (e.g. "Docker is not installed").
 
 ## Instances
 
-An app can run several copies (instances) behind the built-in proxy. Set **Instances** in [Settings → Build & run](settings.md#build-and-run) and map a [domain](settings.md#domains); the proxy spreads requests over the running instances.
+An app can run several copies behind the built-in proxy. Set **Instances** in [Settings → Build & run](settings.md#build-and-run) and map a [domain](settings.md#domains). The proxy spreads requests over running instances.
 
 ![The Instances card](../images/dashboard/app-instances.png)
 
@@ -24,17 +24,12 @@ With more than one instance, the [Deploy tab](deploy.md) shows an **Instances** 
 | Column | Meaning |
 | :--- | :--- |
 | **Instance** | `#1`, `#2`, … |
-| **Status** | The instance's process state. |
-| **PID / Port** | Its process id and the port the proxy sends its requests to. |
-| **Release** | Which release it runs. During a Rolling deployment, old and new are mixed for a moment. |
-| **Restarts / CPU / Memory** | Per instance. Resource limits apply to each instance on its own. |
+| **Status** | Process state. |
+| **PID / Port** | Process id and the port the proxy uses. |
+| **Release** | Release it runs (mixed during Rolling). |
+| **Restarts / CPU / Memory** | Per instance; limits apply to each. |
 | **Logs** | That instance's log. |
 
-After a **Blue-green** deployment, a blue note says that the previous release is still running on its instances until a given time; [rolling back](releases.md) to it before then is instant.
+After **Blue-green**, a blue note says the previous release keeps running until a given time; [rolling back](releases.md) before then is instant.
 
-Elsewhere:
-
-- The header subtitle says how many instances there are, and **Restart** replaces them one at a time.
-- The pipeline shows the [rollout steps](deploy.md#deployment-progress).
-- The **Logs** tab has an **Instance** menu.
-- The **Resources** tab shows the total of all instances.
+Also: Restart goes one instance at a time; the pipeline shows [rollout steps](deploy.md#deployment-progress); **Logs** has an **Instance** menu; **Resources** shows the total.

@@ -25,10 +25,14 @@ Sign in as `admin`. The first password is in `<data_dir>/initial-admin-password`
 | ↳ [Logs tab](logs.md) | Live, searchable logs. |
 | ↳ [Resources tab](resources.md) | CPU and memory charts, and live limits. |
 | ↳ [Settings tab](settings.md) | Build and run settings, domains, secrets, daily deploy, webhook. |
+| ↳ [Jobs](jobs.md) | Scheduled and on-demand commands in the live release (Settings tab). |
 | ↳ [Activity tab](activity.md) | The app's own audit log. |
 | [Deployments](deployments.md) | Every deployment of every app, with details. |
 | [Events](events.md) | The audit log for the whole server. |
 | [Account](account.md) | Password, theme, and for admins: users, API tokens, backups. |
+| [System](system.md) | Updates and storage cleanup (admins). |
+| [Docker](docker.md) | Server containers and their logs; owner only unless shared. |
+| [Monitoring](monitoring.md) | Optional Prometheus metrics and a Grafana dashboard (Account, admins). |
 | [Aegis updates](updates.md) | The "new version available" notice and upgrading. |
 | [Docker apps and instances](docker-and-instances.md) | How container apps and apps with several instances look. |
 | [Keyboard shortcuts](shortcuts.md) | Every shortcut. |

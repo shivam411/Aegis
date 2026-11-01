@@ -1,38 +1,38 @@
 # Deployments
 
-**Deployments** in the top bar (or <kbd>g</kbd> <kbd>d</kbd>) lists every deployment of every app, newest first. It updates live.
+**Deployments** in the top bar (or <kbd>g</kbd> <kbd>d</kbd>) lists every deployment of every app, newest first, live.
 
 ![The Deployments page](../images/dashboard/deployments.png)
 
 | Column | Meaning |
 | :--- | :--- |
-| **Status** | **Queued**, **Deploying**, **Success**, **Failed** or **Rolled back** (the new release failed its checks and the previous one was kept or restored). |
+| **Status** | **Queued**, **Deploying**, **Success**, **Failed**, **Rolled back** (new release failed its checks; the previous one was kept or restored). |
 | **App** | The app. |
-| **Release** | The release name (empty if the build never got that far). |
-| **Trigger** | What started it: `http` for the dashboard, CLI and API, or the webhook or daily schedule. |
-| **Stage** | The last pipeline stage it reached; for a failure, where it stopped. |
-| **Started** | When it was queued. Hover for the exact time. |
-| **Duration** | How long it took, or has taken so far. |
+| **Release** | Release name (empty if the build never got that far). |
+| **Trigger** | `http` (dashboard, CLI, API), webhook or daily schedule. |
+| **Stage** | Last stage reached; for a failure, where it stopped. |
+| **Started** | When queued. Hover for exact time. |
+| **Duration** | Time taken so far. |
 
-Filter with the **App** and **Status** menus (**In progress**, **Succeeded**, **Failed**, **Rolled back**). Click a row, or focus it and press Enter, to open it.
+Filter by **App** and **Status**. Click a row (or focus it and press Enter) to open it.
 
 ## Paging
 
-Long lists are paged: **25, 50, 100 or 200 per page** (remembered in this browser) with **Previous** / **Next** and a "51–100 of 230" counter. Changing a filter goes back to the first page. The controls appear once there are more than 25 rows.
+**25, 50, 100 or 200 per page** (remembered in this browser), with **Previous** / **Next**. Shown above 25 rows. Changing a filter returns to page one.
 
 ## Who sees which apps
 
-Only the deployments and events of the apps you may see are listed (see [Account → Users → Apps](account.md#users)). Give someone just `api` and `dashboard` and the other apps, and their deployments and events, are not shown anywhere in their dashboard.
+Only apps you may see are listed (see [Account → Users → Apps](account.md#users)).
 
 ## Deployment details
 
-The deployment page (`#/deployments/<id>`) has the same pipeline card as the [Deploy tab](deploy.md#deployment-progress), with the stages, rollout steps, outcome and full build log, and an **Events** card listing everything that happened during the deployment, in order. **Open &lt;app&gt;** goes to the app page.
+`#/deployments/<id>`: the same pipeline card as the [Deploy tab](deploy.md#deployment-progress) (stages, rollout steps, outcome, build log) plus an **Events** card in order. **Open &lt;app&gt;** goes to the app.
 
 ![A failed deployment: the stage where it stopped, the error and the events](../images/dashboard/deployment-failed.png)
 
-To find out why a deployment failed, look at:
+To find out why one failed:
 
-1. The red error under the stages. It names the problem, such as a commit that doesn't exist, a failing test command or a health check that never answered.
-2. The stage marked ✕.
-3. The **Build log** for the full output of the commands.
-4. The events (for example `BuildStageTest` with status `Failed`, or `DeploymentFailed` with the reason).
+1. Read the red error under the stages (bad commit, failing test, health check never answered).
+2. Find the stage marked ✕.
+3. Open the **Build log**.
+4. Check events (`BuildStageTest` Failed, `DeploymentFailed` with reason).

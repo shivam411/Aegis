@@ -7,7 +7,7 @@
 //! rollback, restart policy, logs) is shared with process apps: the
 //! supervisor runs a container like a process (see `aegis_docker`).
 
-use crate::ControlPlane;
+use crate::{ControlError, ControlPlane, ControlResult};
 use aegis_config::ResourceLimits;
 use aegis_docker::{ContainerSettings, DockerLauncher, DockerStatus};
 use aegis_engine::ResolvedProjectConfig;
@@ -222,5 +222,30 @@ impl ControlPlane {
                 docker.remove_container(&name).await;
             }
         }
+    }
+}
+
+impl ControlPlane {
+    /// Every container on the host (for the dashboard's Docker page).
+    pub async fn host_containers(&self) -> ControlResult<Vec<aegis_docker::HostContainer>> {
+        self.inner
+            .docker
+            .host_containers()
+            .await
+            .map_err(ControlError::FailedPrecondition)
+    }
+
+    /// A container's recent output: (stdout, stderr).
+    pub async fn container_logs(
+        &self,
+        id: &str,
+        tail: usize,
+        since: Option<&str>,
+    ) -> ControlResult<(String, String)> {
+        self.inner
+            .docker
+            .container_logs(id, tail, since)
+            .await
+            .map_err(ControlError::FailedPrecondition)
     }
 }

@@ -84,7 +84,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     st: &AppState,
     headers: &HeaderMap,
 ) -> Result<Option<(Principal, Credential)>, ApiError> {
@@ -139,6 +139,10 @@ fn user_only(path: &str) -> bool {
         || path.starts_with("/api/v1/backups/")
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
+        || path == "/api/v1/system/prometheus"
+        // Disk use and cleanup; the server's Docker containers.
+        || path.starts_with("/api/v1/system/storage")
+        || path.starts_with("/api/v1/docker/")
         || matches!(
             section,
             Some("webhook" | "secrets" | "deploy-key" | "hide" | "unlock" | "lock")
@@ -160,6 +164,12 @@ fn deletes_project(method: &Method, path: &str) -> bool {
         && path
             .strip_prefix("/api/v1/projects/")
             .is_some_and(|rest| !rest.is_empty() && !rest.trim_end_matches('/').contains('/'))
+}
+
+/// A job is a command the server runs, so tokens may run jobs but not
+/// create, change or delete them.
+fn changes_jobs(path: &str) -> bool {
+    path.starts_with("/api/v1/projects/") && path.contains("/jobs") && !path.ends_with("/run")
 }
 
 /// Mapping a domain decides where public traffic (and certificates) go, so
@@ -193,6 +203,9 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         ["projects", _, "env", "import", ..] => Role::Admin,
         // Variable names and their sources (never values).
         ["projects", _, "env"] if read => Role::Viewer,
+        // Disk use is for admins; Docker has its own per-user permission.
+        ["system", "storage", ..] => Role::Admin,
+        ["docker", ..] => Role::Viewer,
         _ if read => Role::Viewer,
         // Checking now and installing a new Aegis version.
         ["system", "update", ..] => Role::Admin,
@@ -201,7 +214,8 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Entering a hide password (or hiding the app again) changes nothing
         // but what this session sees.
         ["projects", _, "unlock" | "lock"] => Role::Viewer,
-        ["projects", _, "deploy" | "rollback"] => Role::Deployer,
+        ["projects", _, "deploy" | "rollback" | "verify"] => Role::Deployer,
+        ["projects", _, "jobs", _, "run"] => Role::Deployer,
         ["groups", _, "deploy" | "rollback"] => Role::Deployer,
         // "Check now" for new commits: reads the git server, changes nothing.
         ["projects" | "groups", _, "updates", "check"] => Role::Deployer,
@@ -238,6 +252,12 @@ pub async fn require_auth(State(st): State<AppState>, mut req: Request, next: Ne
             if user_only(&path) || deletes_project(req.method(), &path) {
                 return ApiError::forbidden(
                     "This endpoint requires a signed-in user, not an API token",
+                )
+                .into_response();
+            }
+            if mutating && changes_jobs(&path) {
+                return ApiError::forbidden(
+                    "Only a signed-in user can create, change or delete jobs, not an API token",
                 )
                 .into_response();
             }
@@ -405,6 +425,7 @@ pub(crate) async fn login(
     .await;
 
     let max_age = st.auth.config().session_absolute.as_secs();
+    let docker_access = st.auth.has_docker_access(&username).await.unwrap_or(false);
     let mut res = Json(SessionDto {
         kind: "user".into(),
         name: username,
@@ -412,6 +433,7 @@ pub(crate) async fn login(
         expires_at: Some(session.expires_at),
         scope: None,
         role: Some(role.as_str().to_string()),
+        docker_access,
     })
     .into_response();
     res.headers_mut().insert(
@@ -453,7 +475,16 @@ pub(crate) async fn logout(
 #[utoipa::path(get, path = "/api/v1/auth/session", tag = "auth",
     responses((status = 200, description = "Who is calling; includes the CSRF token for sessions", body = SessionDto),
               (status = 401, body = ErrorBody)))]
-pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> Json<SessionDto> {
+pub(crate) async fn session_info(
+    State(st): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Json<SessionDto> {
+    let docker_access = match &principal {
+        Principal::User { username, .. } => {
+            st.auth.has_docker_access(username).await.unwrap_or(false)
+        }
+        _ => false,
+    };
     Json(match principal {
         Principal::User {
             username,
@@ -467,6 +498,7 @@ pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> 
             expires_at: Some(expires_at),
             scope: None,
             role: Some(role.as_str().to_string()),
+            docker_access,
         },
         Principal::Token { name, scope } => SessionDto {
             kind: "token".into(),
@@ -475,6 +507,7 @@ pub(crate) async fn session_info(Extension(principal): Extension<Principal>) -> 
             expires_at: None,
             scope: Some(scope.as_str().to_string()),
             role: None,
+            docker_access: false,
         },
     })
 }

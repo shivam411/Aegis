@@ -7,12 +7,14 @@
 
 pub mod backup;
 mod config_file;
+mod cron;
 mod deploy;
 mod docker;
 mod domains;
 mod env;
 mod git;
 mod groups;
+mod jobs;
 mod lifecycle;
 pub mod ports;
 mod process;
@@ -21,6 +23,7 @@ mod rollout;
 pub mod scan;
 mod secrets;
 mod sources;
+mod storage;
 mod updates;
 
 use aegis_artifact_store::ArtifactStore;
@@ -41,17 +44,22 @@ use std::time::Duration;
 pub use aegis_docker::DockerStatus;
 pub use aegis_secrets::SecretInfo;
 pub use config_file::ConfigPreview;
-pub use deploy::DeployRequest;
+pub use cron::CronSchedule;
+pub use deploy::{DeployRequest, LiveCheck};
 pub use domains::DomainView;
 pub use env::{EnvFileStatus, EnvOverview, EnvSource, ImportAs, ImportCandidate, ImportResult};
 pub use git::{path_matches, touches};
 pub use groups::{GroupSpec, MemberRollback, MemberSpec};
+pub use jobs::{Job, JobRun, JobSpec, JobUpdate};
 pub use lifecycle::{DeletedApp, SourceChange};
 pub use process::ProcessAction;
 pub use resources::{MetricsUpdate, ResourceOverview, HOST_SERIES};
 pub use rollout::{InstanceView, StandbyView};
 pub use scan::{ImportApp, ImportedApp, ScanCandidate, ScanResult};
 pub use sources::{AccessCheck, DeployKeyInfo};
+pub use storage::{
+    AppStorage, CleanupResult, StorageCategory, StorageReport, CLEANUP_TARGETS, DEFAULT_LOG_DAYS,
+};
 pub use updates::{read_folder_head, CommitSummary, GroupUpdates, UpdateStatus};
 
 tokio::task_local! {
@@ -115,6 +123,8 @@ pub struct ControlSettings {
     pub data_dir: PathBuf,
     /// Used when a project doesn't set `deploy.max_retained_versions`.
     pub max_retained_versions: usize,
+    /// Deployments that may run at once (at least 1); the rest stay queued.
+    pub max_parallel_deployments: usize,
     pub health_poll_interval: Duration,
     /// How long a health-URL-less release must stay up to count as healthy.
     pub liveness_window: Duration,
@@ -144,6 +154,7 @@ impl ControlSettings {
         Self {
             data_dir,
             max_retained_versions: 2,
+            max_parallel_deployments: 1,
             health_poll_interval: Duration::from_millis(500),
             liveness_window: Duration::from_secs(3),
             resources: aegis_resources::Mode::Auto,
@@ -199,6 +210,9 @@ struct Inner {
     artifact_store: ArtifactStore,
     settings: ControlSettings,
     project_locks: Mutex<HashMap<ProjectId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Limits how many deployments run at once (default 1); the rest wait
+    /// here in the order they were queued (the semaphore is first come, first served).
+    deploy_gate: tokio::sync::Semaphore,
     /// Release version each supervised process was started from.
     process_release: Mutex<HashMap<ProcessId, String>>,
     shutting_down: AtomicBool,
@@ -220,6 +234,8 @@ struct Inner {
     standby: Mutex<HashMap<ProjectId, rollout::Standby>>,
     /// Latest CPU (cores) and memory (bytes) of each process.
     process_usage: Mutex<HashMap<ProcessId, (f64, u64)>>,
+    /// Jobs with a run in progress.
+    running_jobs: Mutex<HashSet<String>>,
     /// Serializes domain changes so uniqueness checks can't race.
     domain_lock: tokio::sync::Mutex<()>,
     secrets: aegis_secrets::SecretStore,
@@ -290,6 +306,7 @@ impl ControlPlane {
             settings.data_dir.join("run").join("docker"),
             aegis_docker::Docker::instance_for(&settings.data_dir),
         ));
+        let parallel = settings.max_parallel_deployments.max(1);
         Ok(Self {
             inner: Arc::new(Inner {
                 store,
@@ -298,6 +315,8 @@ impl ControlPlane {
                 artifact_store: ArtifactStore::new(settings.data_dir.join("artifacts")),
                 settings,
                 project_locks: Mutex::new(HashMap::new()),
+                deploy_gate: tokio::sync::Semaphore::new(parallel),
+                running_jobs: Mutex::new(HashSet::new()),
                 process_release: Mutex::new(HashMap::new()),
                 shutting_down: AtomicBool::new(false),
                 resources,
@@ -357,6 +376,7 @@ impl ControlPlane {
         self.spawn_sampler();
         self.spawn_docker_janitor();
         self.spawn_update_checker();
+        self.spawn_job_scheduler();
     }
 
     pub fn store(&self) -> &EventStore {
@@ -877,6 +897,9 @@ pub(crate) fn validate_settings(
         instances: settings.instances,
         health_check_timeout_secs: settings.health_check_timeout_secs,
         drain_timeout_secs: settings.drain_timeout_secs,
+        verify_url: clean(settings.verify_url),
+        verify_timeout_secs: settings.verify_timeout_secs,
+        verify_expect: clean(settings.verify_expect),
         env: settings
             .env
             .into_iter()
@@ -903,6 +926,24 @@ pub(crate) fn validate_settings(
     }
     if let Some(secs) = settings.drain_timeout_secs {
         aegis_config::validate_drain_timeout(secs).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(secs) = settings.verify_timeout_secs {
+        aegis_config::validate_health_check_timeout(secs).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(expect) = settings.verify_expect.as_deref().filter(|v| !v.is_empty()) {
+        aegis_config::parse_verify_expect(expect).map_err(ControlError::InvalidArgument)?;
+    }
+    if let Some(url) = settings.verify_url.as_deref().filter(|u| !u.is_empty()) {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(ControlError::InvalidArgument(
+                "The verify URL must start with http:// or https://".into(),
+            ));
+        }
+        if url.contains(char::is_whitespace) {
+            return Err(ControlError::InvalidArgument(
+                "The verify URL must not contain spaces".into(),
+            ));
+        }
     }
     if let Some(url) = settings
         .health_check_url

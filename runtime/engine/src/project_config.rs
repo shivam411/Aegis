@@ -26,6 +26,11 @@ pub struct ResolvedProjectConfig {
     /// `None` means the release is healthy as long as its process stays up.
     pub health_check_url: Option<String>,
     pub health_check_timeout: Duration,
+    /// Checked after the release is live; a failure rolls it back.
+    pub verify_url: Option<String>,
+    pub verify_timeout: Duration,
+    /// Inclusive range of HTTP statuses that count as up.
+    pub verify_expect: (u16, u16),
     pub drain_timeout: Duration,
     pub max_retained_versions: usize,
     pub restart_policy: String,
@@ -123,6 +128,14 @@ impl ResolvedProjectConfig {
                     .health_check_timeout_secs
                     .unwrap_or(DEFAULT_HEALTH_TIMEOUT_SECS),
             ),
+            verify_url: non_empty(file.deploy.verify_url),
+            verify_timeout: Duration::from_secs(file.deploy.verify_timeout_secs.unwrap_or(30)),
+            verify_expect: file
+                .deploy
+                .verify_expect
+                .as_deref()
+                .and_then(|v| aegis_config::parse_verify_expect(v).ok())
+                .unwrap_or((100, 499)),
             drain_timeout: Duration::from_secs(
                 file.deploy
                     .drain_timeout_secs

@@ -44,6 +44,9 @@ pub enum PipelineStage {
     Package,
     Verify,
     Promote,
+    /// After promotion: the live URL (`[deploy] verify_url`) must be up, else
+    /// the release is rolled back.
+    LiveCheck,
 }
 
 impl PipelineStage {
@@ -56,6 +59,7 @@ impl PipelineStage {
             Self::Package => "Package",
             Self::Verify => "Verify",
             Self::Promote => "Promote",
+            Self::LiveCheck => "LiveCheck",
         }
     }
 }

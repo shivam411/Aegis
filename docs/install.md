@@ -2,37 +2,28 @@
 
 ## One-Line Installer (Recommended)
 
-The fastest way to install Aegis on Linux or macOS:
+Linux or macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/install.sh | bash
 ```
 
-This script automatically:
+It detects your OS and CPU (x86_64 / ARM64), downloads the latest release, installs `aegis-daemon`, `aegis-cli` and `aegis-tui` to `~/.local/bin/` with a link `aegis -> aegis-cli`, and checks your `PATH`.
 
-1. Detects your operating system (Linux / macOS)
-2. Detects your CPU architecture (x86_64 / ARM64)
-3. Queries the latest stable release from GitHub
-4. Downloads the correct binary archive
-5. Installs `aegis-daemon`, `aegis-cli`, and `aegis-tui` to `~/.local/bin/`, plus a link `aegis -> aegis-cli`
-6. Verifies your `PATH` includes `~/.local/bin`
-
-After installation, verify:
+Verify:
 
 ```bash
 aegis --version
 ```
 
-**`aegis` and `aegis-cli`.** The CLI binary is `aegis-cli`. The installer (both the user install and `--server`, which uses `/usr/local/bin`) adds a symbolic link named `aegis` next to it, and the documentation uses `aegis ...` throughout. Upgrades (`aegis upgrade`, the dashboard, `aegis-daemon self-update`) replace `aegis-cli` in place, so the link keeps working. If something else named `aegis` is already in that directory, the installer leaves it alone and you run `aegis-cli` instead. With a manual install or a source build, either create the link yourself (`ln -s aegis-cli ~/.local/bin/aegis`) or type `aegis-cli` wherever the docs say `aegis`.
+**`aegis` and `aegis-cli`.** The binary is `aegis-cli`; the installer (user install and `--server`, which uses `/usr/local/bin`) adds an `aegis` link, and the docs use `aegis ...`. Upgrades keep the link working. If another `aegis` exists there, the installer leaves it and you run `aegis-cli`. For manual or source installs, create the link (`ln -s aegis-cli ~/.local/bin/aegis`) or type `aegis-cli`.
 
 ---
 
 ## Manual Binary Download
 
-If you prefer to download manually:
-
-1. Visit the [GitHub Releases](https://github.com/shivam411/Aegis/releases/latest) page.
-2. Download the archive matching your platform:
+1. Open [GitHub Releases](https://github.com/shivam411/Aegis/releases/latest).
+2. Download your archive:
 
 | Platform | Archive |
 | :--- | :--- |
@@ -42,7 +33,7 @@ If you prefer to download manually:
 | macOS ARM64 (Apple Silicon) | `aegis-darwin-arm64.tar.gz` |
 | Windows x86_64 | `aegis-windows-amd64.zip` |
 
-3. Extract and move binaries to your PATH:
+3. Extract to your PATH:
 
 ```bash
 tar -xzf aegis-linux-amd64.tar.gz
@@ -67,7 +58,7 @@ cd Aegis
 cargo build --release
 ```
 
-Binaries will be at:
+Binaries:
 
 ```
 target/release/aegis-daemon
@@ -75,7 +66,7 @@ target/release/aegis-cli
 target/release/aegis-tui
 ```
 
-Copy them to a directory on your `PATH`:
+Copy to your `PATH`:
 
 ```bash
 cp target/release/aegis-daemon target/release/aegis-cli target/release/aegis-tui ~/.local/bin/
@@ -85,8 +76,6 @@ ln -sfn aegis-cli ~/.local/bin/aegis    # optional: the name the docs use
 ---
 
 ## Uninstall
-
-To remove Aegis:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shivam411/Aegis/main/scripts/uninstall.sh | bash
@@ -105,4 +94,4 @@ The uninstaller removes `~/.local/bin/aegis` only when it is the link to `aegis-
 
 ## Next Steps
 
-Once installed, follow the [Quickstart Guide](quickstart.md) to deploy your first application.
+Follow the [Quickstart Guide](quickstart.md) to deploy your first app.

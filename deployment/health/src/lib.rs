@@ -36,6 +36,137 @@ impl HealthChecker for TcpHealthChecker {
     }
 }
 
+/// What one request to a URL showed: the HTTP status, or why there was none
+/// (connection refused, timeout, TLS error, no valid response).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeResult {
+    pub status: Option<u16>,
+    pub error: Option<String>,
+    pub elapsed_ms: u64,
+}
+
+impl ProbeResult {
+    /// "HTTP 503", or the transport error.
+    pub fn describe(&self) -> String {
+        match (self.status, &self.error) {
+            (Some(code), _) => format!("HTTP {}", code),
+            (None, Some(e)) => e.clone(),
+            (None, None) => "no response".to_string(),
+        }
+    }
+
+    /// Whether the status is within `lo..=hi`.
+    pub fn status_in(&self, lo: u16, hi: u16) -> bool {
+        self.status.is_some_and(|s| (lo..=hi).contains(&s))
+    }
+}
+
+struct UrlParts {
+    tls: bool,
+    host: String,
+    port: u16,
+    path: String,
+}
+
+fn parse_url(url: &str) -> Result<UrlParts, anyhow::Error> {
+    let (tls, rest) = match url.strip_prefix("https://") {
+        Some(rest) => (true, rest),
+        None => (false, url.strip_prefix("http://").unwrap_or(url)),
+    };
+    let (authority, path) = match rest.find(['/', '?']) {
+        Some(i) if rest.as_bytes()[i] == b'/' => (&rest[..i], rest[i..].to_string()),
+        Some(i) => (&rest[..i], format!("/{}", &rest[i..])),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() || authority.contains('@') || authority.contains(' ') {
+        anyhow::bail!("'{}' is not a valid URL", url);
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => {
+            let port = p
+                .parse::<u16>()
+                .map_err(|_| anyhow::anyhow!("'{}' has an invalid port", url))?;
+            (h.trim_matches(['[', ']']).to_string(), port)
+        }
+        _ => (authority.to_string(), if tls { 443 } else { 80 }),
+    };
+    Ok(UrlParts {
+        tls,
+        host,
+        port,
+        path,
+    })
+}
+
+/// One `GET` of an `http://` or `https://` URL (certificates are checked
+/// against the Mozilla roots), returning the status line's code or the reason
+/// there was none. Never follows redirects: a 301/302 is a status like any other.
+pub async fn probe_url(url: &str, timeout: Duration) -> ProbeResult {
+    let started = std::time::Instant::now();
+    let finish = |status: Option<u16>, error: Option<String>| ProbeResult {
+        status,
+        error,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    };
+    let parts = match parse_url(url) {
+        Ok(p) => p,
+        Err(e) => return finish(None, Some(e.to_string())),
+    };
+    let run = async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tcp = TcpStream::connect((parts.host.as_str(), parts.port))
+            .await
+            .map_err(|e| format!("connection failed: {}", e))?;
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: AegisUrlCheck/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+            parts.path, parts.host
+        );
+        let mut buf = [0u8; 512];
+        let n = if parts.tls {
+            let roots =
+                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("TLS setup failed: {}", e))?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+            let name = rustls::pki_types::ServerName::try_from(parts.host.clone())
+                .map_err(|_| format!("'{}' is not a valid host name", parts.host))?;
+            let mut stream = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+                .connect(name, tcp)
+                .await
+                .map_err(|e| format!("TLS handshake failed: {}", e))?;
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .map_err(|e| format!("request failed: {}", e))?;
+            stream.read(&mut buf).await.unwrap_or(0)
+        } else {
+            let mut stream = tcp;
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .map_err(|e| format!("request failed: {}", e))?;
+            stream.read(&mut buf).await.unwrap_or(0)
+        };
+        let head = String::from_utf8_lossy(&buf[..n]);
+        head.strip_prefix("HTTP/")
+            .and_then(|r| r.split_whitespace().nth(1))
+            .and_then(|code| code.parse::<u16>().ok())
+            .ok_or_else(|| "no valid HTTP response".to_string())
+    };
+    match tokio::time::timeout(timeout, run).await {
+        Ok(Ok(code)) => finish(Some(code), None),
+        Ok(Err(e)) => finish(None, Some(e)),
+        Err(_) => finish(
+            None,
+            Some(format!("no answer within {}s", timeout.as_secs().max(1))),
+        ),
+    }
+}
+
 pub struct HttpHealthChecker {
     pub timeout: Duration,
 }
@@ -45,6 +176,14 @@ impl HttpHealthChecker {
         Self {
             timeout: Duration::from_millis(timeout_ms),
         }
+    }
+}
+
+impl HttpHealthChecker {
+    /// Like [`HealthChecker::check_health`], but says what came back.
+    pub async fn probe(&self, target: &str) -> Result<ProbeResult, anyhow::Error> {
+        let (host_port, path) = parse_http_target(target)?;
+        Ok(probe_url(&format!("http://{}{}", host_port, path), self.timeout).await)
     }
 }
 
@@ -81,36 +220,7 @@ impl HealthChecker for HttpHealthChecker {
     /// Healthy when the app answers the request with any non-5xx status: the
     /// probe checks that the server is up and serving, not the route itself.
     async fn check_health(&self, target: &str) -> Result<bool, anyhow::Error> {
-        let (host_port, path) = parse_http_target(target)?;
-        let probe = async {
-            let mut stream = match TcpStream::connect(&host_port).await {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-            let req = format!(
-                "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: AegisHealthChecker/1.0\r\nConnection: close\r\n\r\n",
-                path, host_port
-            );
-            if stream.write_all(req.as_bytes()).await.is_err() {
-                return false;
-            }
-
-            let mut buf = [0u8; 512];
-            let n = stream.read(&mut buf).await.unwrap_or(0);
-            let resp_str = String::from_utf8_lossy(&buf[..n]);
-            resp_str
-                .strip_prefix("HTTP/")
-                .and_then(|r| r.split_whitespace().nth(1))
-                .and_then(|code| code.parse::<u16>().ok())
-                .map(|code| code < 500)
-                .unwrap_or(false)
-        };
-
-        Ok(tokio::time::timeout(self.timeout, probe)
-            .await
-            .unwrap_or(false))
+        Ok(self.probe(target).await?.status_in(0, 499))
     }
 }
 

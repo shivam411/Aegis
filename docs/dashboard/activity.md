@@ -1,16 +1,16 @@
 # Activity tab
 
-The sixth tab of the [app page](app.md) (<kbd>6</kbd>). It is the [Events](events.md) log filtered to this app: the latest 200 events, newest first, with new ones added live.
+Tab 6 of the [app page](app.md) (<kbd>6</kbd>): the [Events](events.md) log for this app. Latest 200 events, newest first, live.
 
 ![The Activity tab](../images/dashboard/app-activity.png)
 
-Each entry shows when it happened, the event type, a one-line summary and who did it (`by user:alice`, `by token:ci-deploy`, or nothing for things Aegis did by itself, such as an automatic restart). Green types are successes, amber warnings (a rollback, a failed sign-in) and red failures (a failed deployment, a crash, resource pressure). **Details** expands the event's full data as JSON.
+Each entry shows time, event type, summary and who did it (`by user:alice`, `by token:ci-deploy`; blank when Aegis acted itself, e.g. an automatic restart). Green is success, amber a warning (rollback, failed sign-in), red a failure (failed deployment, crash). **Details** shows the data as JSON.
 
-Typical entries for an app:
+Typical entries:
 
-- `DeploymentQueued`, the `BuildStage…` events, `ReleaseCreated`, `ReleasePromoted` and `DeploymentSucceeded` (or `DeploymentFailed`, `DeploymentRolledBack`).
-- `RolloutStepCompleted`, `TrafficSwitched` and `StandbyKept` for Rolling and Blue-green deployments.
-- `ProcessStarted`, `ProcessCrashed`, `ProcessStopped`, and the matching `…Requested` events when someone used Start, Stop or Restart.
-- `ProjectSettingsUpdated`, `ResourceLimitsChanged`, `DomainMapped`, `ScheduleConfigured`, `WebhookSecretRotated`.
+- Deployments: `DeploymentQueued`, `BuildStage…`, `ReleaseCreated`, `ReleasePromoted`, `DeploymentSucceeded` / `DeploymentFailed` / `DeploymentRolledBack`.
+- Rolling and Blue-green: `RolloutStepCompleted`, `TrafficSwitched`, `StandbyKept`.
+- Processes: `ProcessStarted`, `ProcessCrashed`, `ProcessStopped`, and `…Requested` for manual Start, Stop, Restart.
+- Config: `ProjectSettingsUpdated`, `ResourceLimitsChanged`, `DomainMapped`, `ScheduleConfigured`, `WebhookSecretRotated`.
 
-The full list is in the [event catalog](../event_catalog.md).
+Full list: [event catalog](../event_catalog.md).

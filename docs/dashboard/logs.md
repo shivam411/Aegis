@@ -1,29 +1,29 @@
 # Logs tab
 
-The third tab of the [app page](app.md) (<kbd>3</kbd>), also reached with **Logs** on an app card. It shows the app's output live: the last 500 lines first, then every new line as it is written.
+The third tab of the [app page](app.md) (<kbd>3</kbd>). Live output: the last 500 lines first, then new lines as they are written.
 
 ![The Logs tab following the shop app](../images/dashboard/app-logs.png)
 
-Each line has the time it was written. stderr lines are red; lines from the Aegis supervisor (starts, stops, crashes, restarts) are blue and in italics.
+Lines are colored by level: errors red, warnings amber, debug dim, Aegis supervisor messages blue. The level comes from the wording (`error`, `warn`, `debug`, …); plain stderr counts as an error.
 
-## Toolbar
+## Filters
 
 | Control | What it does |
 | :--- | :--- |
-| Status pill | **Live** while connected, **Connecting** or **Reconnecting** while (re)connecting, **Not running** when the process has ended. |
-| **Search logs** | Shows only lines containing the text (case-insensitive) and highlights the match. Press <kbd>/</kbd> to jump here. |
-| Stream menu | **All output**, **stdout**, **stderr** or **Supervisor** messages only. |
-| **Follow** | Keeps the newest line in view. Scrolling up turns it off; scrolling back to the bottom turns it on again. |
-| **Pause / Resume** | Freezes the view. New lines are counted ("12 new lines while paused") and added when you resume. |
-| Line count | How many lines are loaded (the view keeps the latest 5,000). |
-| **Clear** | Empties the view. It doesn't delete anything on the server. |
-| **Download** | Saves the loaded lines as `<app>-<time>.log`, with timestamps and stream names. |
-| **?** | Help for this tab. |
+| **Search** | Text, case-insensitive, highlighted. Tick **Regex** for a regular expression. Press <kbd>/</kbd> to jump here. |
+| Level chips | **Errors**, **Warnings**, **Info**, **Debug**. Click to hide or show, with a count on each. |
+| Time range | Last 5 min, 15 min, hour, 6 hours, 24 hours, or **Custom range** with from/to. |
+| Stream menu | All output, stdout, stderr, or Supervisor only. |
 
-## Apps with several instances
+The line count shows `shown of loaded`. The view keeps the latest 5,000 lines.
 
-An **Instance** menu above the log picks whose output to show. Each instance writes its own log. The **Logs** buttons in the [Instances card](docker-and-instances.md#instances) open the same view for one instance (`#/apps/<name>/logs?process=<id>`).
+## Other controls
 
-## No logs yet
+- **Follow** keeps the newest line in view. Scrolling up turns it off.
+- **Pause / Resume** freezes the view. New lines are counted and added on resume.
+- **Clear** empties the view only; nothing is deleted on the server.
+- **Download** saves the lines you see (after filters) as `<app>-<time>.log`.
 
-Before the first deployment the tab says so. Logs of the build itself are on the [Deploy tab](deploy.md#deployment-progress) and the [deployment page](deployments.md#deployment-details), not here.
+## Several instances
+
+An **Instance** menu picks whose output to show. Logs of the build itself are on the [Deploy tab](deploy.md#deployment-progress).

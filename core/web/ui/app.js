@@ -626,6 +626,8 @@ const ROUTES = [
   [/^\/deployments\/([^/]+)$/, deploymentPage, 'deployments'],
   [/^\/events$/, eventsPage, 'events'],
   [/^\/account$/, accountPage, 'account'],
+  [/^\/system$/, systemPage, 'system'],
+  [/^\/docker$/, dockerPage, 'docker'],
 ];
 
 function currentPath() {
@@ -686,6 +688,8 @@ function shell(section) {
       h('a', { href: '#/', 'data-nav': 'overview' }, 'Overview'),
       h('a', { href: '#/deployments', 'data-nav': 'deployments' }, 'Deployments'),
       h('a', { href: '#/events', 'data-nav': 'events' }, 'Events'),
+      h('a', { href: '#/docker', 'data-nav': 'docker', hidden: true }, 'Docker'),
+      h('a', { href: '#/system', 'data-nav': 'system', hidden: true }, 'System'),
       h('a', { href: '#/account', 'data-nav': 'account' }, 'Account'));
     const main = h('main', { id: 'main' });
     const banner = h('div', { id: 'update-banner', class: 'update-banner', 'aria-live': 'polite' });
@@ -705,6 +709,8 @@ function shell(section) {
     refreshUpdate();
   }
   for (const a of state.shell.root.querySelectorAll('[data-nav]')) {
+    if (a.dataset.nav === 'docker') a.hidden = !state.session?.docker_access;
+    if (a.dataset.nav === 'system') a.hidden = !can('admin');
     if (a.dataset.nav === section) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   }
@@ -1404,7 +1410,7 @@ function appsToolbar(apps, selected, view, setView, redraw, reload) {
     if (selected.size) {
       const chosen = apps.filter((p) => selected.has(p.name));
       parts.push(h('span', { class: 'muted small', 'data-selected-count': String(chosen.length) }, `${chosen.length} selected`));
-      for (const [action, label, danger] of [['deploy', 'Deploy', false], ['restart', 'Restart', false], ['start', 'Start', false], ['stop', 'Stop', true]]) {
+      for (const [action, label, danger] of [['deploy', 'Deploy', false], ['restart', 'Restart', false], ['start', 'Start', false], ['stop', 'Stop', true], ['rollback', 'Roll back', true]]) {
         parts.push(h('button', {
           class: `btn small${danger ? ' danger' : ''}${action === 'deploy' ? ' primary' : ''}`,
           type: 'button',
@@ -1427,12 +1433,12 @@ async function bulkAction(action, apps, btn, reload) {
     toast('None of the selected apps has a release to run yet', 'bad');
     return;
   }
-  const verb = { deploy: 'Deploy', restart: 'Restart', start: 'Start', stop: 'Stop' }[action];
+  const verb = { deploy: 'Deploy', restart: 'Restart', start: 'Start', stop: 'Stop', rollback: 'Roll back' }[action];
   const ok = await confirmDialog({
     title: `${verb} ${doable.length} app${doable.length === 1 ? '' : 's'}?`,
     message: `${doable.map((p) => p.name).join(', ')}${skipped ? ` (${skipped} without a release skipped)` : ''}. They are handled one after another.`,
     confirmLabel: verb,
-    danger: action === 'stop',
+    danger: action === 'stop' || action === 'rollback',
   });
   if (!ok) return;
   btn.disabled = true;
@@ -1440,6 +1446,7 @@ async function bulkAction(action, apps, btn, reload) {
   for (const p of doable) {
     try {
       if (action === 'deploy') await api('POST', `/projects/${enc(p.name)}/deploy`, {});
+      else if (action === 'rollback') await api('POST', `/projects/${enc(p.name)}/rollback`, {});
       else await api('POST', `/processes/${enc(p.name)}/${action}`);
     } catch (err) {
       if (err.status === 401) return;
@@ -1448,7 +1455,7 @@ async function bulkAction(action, apps, btn, reload) {
   }
   btn.disabled = false;
   const done = doable.length - failed.length;
-  const past = { deploy: 'queued for deployment', restart: 'restarted', start: 'started', stop: 'stopped' }[action];
+  const past = { deploy: 'queued for deployment', restart: 'restarted', start: 'started', stop: 'stopped', rollback: 'rolled back to the previous release' }[action];
   toast(`${done} app${done === 1 ? '' : 's'} ${past}${failed.length ? `; ${failed.length} failed: ${failed.join('; ')}` : ''}`, failed.length ? 'bad' : '');
   reload().catch(() => {});
 }
@@ -2068,7 +2075,8 @@ function instancesCard(ctx) {
 
 // --- Pipeline view (deploy tab and deployment detail) -------------------
 
-const STAGES = ['Clone', 'Install', 'Build', 'Test', 'Package', 'Verify', 'Promote'];
+const STAGES = ['Clone', 'Install', 'Build', 'Test', 'Package', 'Verify', 'Promote', 'LiveCheck'];
+const STAGE_LABELS = { LiveCheck: 'Live URL check' };
 
 const instanceList = (list) => (list || []).map((i) => `#${i.instance}${i.port ? ` (:${i.port})` : ''}`).join(', ');
 
@@ -2170,7 +2178,7 @@ function pipelineCard(ctx, id, { link = false } = {}) {
         link ? h('a', { class: 'btn small ghost', href: `#/deployments/${deployment.id}` }, 'Details') : null),
       h('div', { class: 'card-body' },
         h('ol', { class: 'pipeline', 'aria-label': 'Pipeline stages' },
-          STAGES.map((name) => {
+          STAGES.filter((name) => name !== 'LiveCheck' || stages[name].status !== 'pending').map((name) => {
             const s = stages[name];
             const took = s.start && s.end ? fmtDuration(durationBetween(s.start, s.end)) : s.status === 'running' ? 'running' : '';
             return h('li', { class: `stage ${s.status}`, 'data-stage': name, 'data-state': s.status, title: s.detail || '' },
@@ -2288,48 +2296,123 @@ async function logsTab(body, ctx) {
 
 const MAX_LOG_LINES = 5000;
 
-function logViewer(ctx, target) {
+/** error / warn / info / debug / sys for one log line (by wording first, then stream). */
+function logLevel(l) {
+  if (l.stream === 'sys') return 'sys';
+  const t = l.line;
+  if (/\b(fatal|panic|critical|crit)\b|\bERR(OR)?\b|\berror\b|exception|traceback|\bfailed\b|unhandled/i.test(t)) return 'error';
+  if (/\bwarn(ing)?\b|deprecated/i.test(t)) return 'warn';
+  if (/\b(debug|trace|verbose)\b/i.test(t)) return 'debug';
+  if (/\binfo\b|\bnotice\b/i.test(t)) return 'info';
+  return l.stream === 'err' ? 'error' : 'info';
+}
+
+const LOG_LEVELS = [['error', 'Errors'], ['warn', 'Warnings'], ['info', 'Info'], ['debug', 'Debug']];
+const LOG_RANGES = [['all', 'All time'], ['300', 'Last 5 min'], ['900', 'Last 15 min'], ['3600', 'Last hour'], ['21600', 'Last 6 hours'], ['86400', 'Last 24 hours'], ['custom', 'Custom range…']];
+
+/**
+ * A log pane with search (text or regex), level chips, a time range and
+ * colored lines. `opts.stream` is a URL for a live Server-Sent Events feed;
+ * `opts.poll` is an async function returning the latest lines instead.
+ */
+function logViewer(ctx, target, opts = {}) {
   const lines = [];
   let pending = [];
   let paused = false;
   let query = '';
+  let matcher = null;
   let streamFilter = 'all';
+  const levelOn = { error: true, warn: true, info: true, debug: true };
+  let rangeSecs = 0;
+  let from = null;
+  let to = null;
   let source = null;
   let retry = null;
+  let pollTimer = null;
 
   const status = h('span', { class: 'pill warn live', 'data-log-status': '' }, 'Connecting');
-  const view = h('div', { class: 'log', role: 'log', 'aria-label': 'Process output', tabindex: '0', 'data-log': '' });
+  const view = h('div', { class: 'log', role: 'log', 'aria-label': 'Output', tabindex: '0', 'data-log': '' });
   const follow = h('input', { type: 'checkbox', id: 'log-follow', checked: true });
   const pauseBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'pause' }, 'Pause');
   const search = h('input', { type: 'search', placeholder: 'Search logs  /', 'data-search': '', 'aria-label': 'Search logs' });
+  const regexBox = h('input', { type: 'checkbox', id: 'log-regex' });
   const filter = h('select', { 'aria-label': 'Stream' },
     h('option', { value: 'all' }, 'All output'),
     h('option', { value: 'out' }, 'stdout'),
     h('option', { value: 'err' }, 'stderr'),
-    h('option', { value: 'sys' }, 'Supervisor'));
-  const counter = h('span', { class: 'muted small' });
+    opts.poll ? null : h('option', { value: 'sys' }, 'Supervisor'));
+  const range = h('select', { 'aria-label': 'Time range', 'data-log-range': '' },
+    LOG_RANGES.map(([v, l]) => h('option', { value: v }, l)));
+  const fromIn = h('input', { type: 'datetime-local', 'aria-label': 'From', 'data-log-from': '' });
+  const toIn = h('input', { type: 'datetime-local', 'aria-label': 'To', 'data-log-to': '' });
+  const custom = h('span', { class: 'log-custom', hidden: true }, fromIn, ' to ', toIn);
+  const counter = h('span', { class: 'muted small', 'data-log-count': '' });
+  const chipCounts = {};
+  const chips = LOG_LEVELS.map(([key, label]) => {
+    const n = h('span', { class: 'n' }, '0');
+    chipCounts[key] = n;
+    const b = h('button', { class: `chip lvl-${key} on`, type: 'button', 'aria-pressed': 'true', 'data-level': key }, label, ' ', n);
+    b.addEventListener('click', () => {
+      levelOn[key] = !levelOn[key];
+      b.classList.toggle('on', levelOn[key]);
+      b.setAttribute('aria-pressed', String(levelOn[key]));
+      redraw();
+    });
+    return b;
+  });
 
-  const visible = (l) => (streamFilter === 'all' || l.stream === streamFilter) && (!query || l.line.toLowerCase().includes(query));
+  const stamp = (l) => {
+    const t = Date.parse(l.timestamp);
+    return Number.isNaN(t) ? null : t;
+  };
+
+  const visible = (l) => {
+    if (streamFilter !== 'all' && l.stream !== streamFilter) return false;
+    const lvl = l._lvl || (l._lvl = logLevel(l));
+    if (lvl !== 'sys' && !levelOn[lvl]) return false;
+    if (matcher ? !matcher(l.line) : query && !l.line.toLowerCase().includes(query)) return false;
+    const t = stamp(l);
+    if (t !== null) {
+      if (rangeSecs && t < Date.now() - rangeSecs * 1000) return false;
+      if (from !== null && t < from) return false;
+      if (to !== null && t > to) return false;
+    }
+    return true;
+  };
 
   const lineEl = (l) => {
-    const text = h('span', { class: l.stream === 'err' ? 'err' : l.stream === 'sys' ? 'sys' : '' });
-    if (query) {
+    const text = h('span', { class: `msg lvl-${l._lvl || (l._lvl = logLevel(l))}` });
+    const parts = [];
+    if (matcher) {
+      const re = new RegExp(matcher.source, matcher.flags.includes('g') ? matcher.flags : `${matcher.flags}g`);
+      let at = 0;
+      for (const m of l.line.matchAll(re)) {
+        if (!m[0]) continue;
+        parts.push(l.line.slice(at, m.index), h('mark', {}, m[0]));
+        at = m.index + m[0].length;
+      }
+      parts.push(l.line.slice(at));
+    } else if (query) {
       const lower = l.line.toLowerCase();
       let at = 0;
       for (let i = lower.indexOf(query); i !== -1; i = lower.indexOf(query, at)) {
-        append(text, [l.line.slice(at, i), h('mark', {}, l.line.slice(i, i + query.length))]);
+        parts.push(l.line.slice(at, i), h('mark', {}, l.line.slice(i, i + query.length)));
         at = i + query.length;
       }
-      append(text, [l.line.slice(at)]);
+      parts.push(l.line.slice(at));
     } else {
-      text.textContent = l.line;
+      parts.push(l.line);
     }
+    append(text, parts);
     const t = new Date(l.timestamp);
-    return h('div', { class: 'line' }, h('span', { class: 'ts' }, Number.isNaN(t.getTime()) ? '' : t.toLocaleTimeString([], { hour12: false })), text);
+    const ok = !Number.isNaN(t.getTime());
+    return h('div', { class: `line lvl-${l._lvl}` },
+      h('span', { class: 'ts', title: ok ? t.toLocaleString() : '' }, ok ? t.toLocaleTimeString([], { hour12: false }) : ''), text);
   };
 
   const updateCounter = () => {
-    counter.textContent = paused && pending.length ? `${pending.length} new lines while paused` : `${lines.length} lines`;
+    if (paused && pending.length) counter.textContent = `${pending.length} new lines while paused`;
+    else counter.textContent = `${lines.filter(visible).length} of ${lines.length} lines`;
   };
 
   const scroll = () => {
@@ -2337,6 +2420,12 @@ function logViewer(ctx, target) {
   };
 
   const redraw = () => {
+    const counts = { error: 0, warn: 0, info: 0, debug: 0 };
+    for (const l of lines) {
+      const lvl = l._lvl || (l._lvl = logLevel(l));
+      if (counts[lvl] !== undefined) counts[lvl] += 1;
+    }
+    for (const [k, n] of Object.entries(chipCounts)) n.textContent = String(counts[k]);
     const shown = lines.filter(visible);
     replace(view, shown.length ? shown.map(lineEl) : h('div', { class: 'notice' }, lines.length ? 'No lines match.' : 'Waiting for output…'));
     updateCounter();
@@ -2356,6 +2445,7 @@ function logViewer(ctx, target) {
       if (view.firstChild && view.firstChild.classList?.contains('notice')) view.replaceChildren();
       append(view, shown.map(lineEl));
     }
+    for (const l of batch) if (chipCounts[l._lvl || (l._lvl = logLevel(l))]) chipCounts[l._lvl].textContent = String(Number(chipCounts[l._lvl].textContent) + 1);
     updateCounter();
     scroll();
   };
@@ -2392,7 +2482,7 @@ function logViewer(ctx, target) {
     queued = [];
     redraw();
     setStatus('Connecting', 'warn live');
-    source = new EventSource(`/api/v1/processes/${enc(target)}/logs/stream?lines=500`);
+    source = new EventSource(opts.stream || `/api/v1/processes/${enc(target)}/logs/stream?lines=500`);
     source.addEventListener('open', () => setStatus('Live', 'ok live'));
     source.addEventListener('log', (m) => {
       try {
@@ -2417,6 +2507,23 @@ function logViewer(ctx, target) {
     });
   };
 
+  // Polling feed (Docker): refetch the tail every few seconds.
+  const pollOnce = async () => {
+    try {
+      const fresh = await opts.poll();
+      if (!ctx.alive()) return;
+      if (!paused) {
+        lines.length = 0;
+        lines.push(...fresh);
+        redraw();
+        setStatus('Live', 'ok live');
+      }
+    } catch (err) {
+      setStatus(err.message || 'Error', 'bad');
+    }
+    if (ctx.alive()) pollTimer = setTimeout(pollOnce, 3000);
+  };
+
   pauseBtn.addEventListener('click', () => {
     paused = !paused;
     pauseBtn.textContent = paused ? 'Resume' : 'Pause';
@@ -2428,14 +2535,49 @@ function logViewer(ctx, target) {
     }
     updateCounter();
   });
-  search.addEventListener('input', debounce(() => {
-    query = search.value.trim().toLowerCase();
+  const applySearch = () => {
+    const raw = search.value.trim();
+    query = raw.toLowerCase();
+    matcher = null;
+    search.removeAttribute('aria-invalid');
+    if (raw && regexBox.checked) {
+      try {
+        const re = new RegExp(raw, 'i');
+        matcher = (s) => re.test(s);
+        matcher.source = re.source;
+        matcher.flags = re.flags;
+        query = '';
+      } catch {
+        search.setAttribute('aria-invalid', 'true');
+        query = '';
+      }
+    }
     redraw();
-  }, 120));
+  };
+  search.addEventListener('input', debounce(applySearch, 120));
+  regexBox.addEventListener('change', applySearch);
   filter.addEventListener('change', () => {
     streamFilter = filter.value;
     redraw();
   });
+  const readTimes = () => {
+    from = fromIn.value ? new Date(fromIn.value).getTime() : null;
+    to = toIn.value ? new Date(toIn.value).getTime() : null;
+    redraw();
+  };
+  range.addEventListener('change', () => {
+    custom.hidden = range.value !== 'custom';
+    rangeSecs = /^\d+$/.test(range.value) ? Number(range.value) : 0;
+    if (range.value !== 'custom') {
+      from = null;
+      to = null;
+      fromIn.value = '';
+      toIn.value = '';
+    }
+    redraw();
+  });
+  fromIn.addEventListener('change', readTimes);
+  toIn.addEventListener('change', readTimes);
   follow.addEventListener('change', scroll);
   // Scrolling up stops following; scrolling to the bottom resumes it.
   view.addEventListener('scroll', () => {
@@ -2443,7 +2585,8 @@ function logViewer(ctx, target) {
   });
 
   const download = () => {
-    const text = lines.map((l) => `${l.timestamp} [${l.stream}] ${l.line}`).join('\n');
+    applySearch(); // the search box may have changed within the debounce delay
+    const text = lines.filter(visible).map((l) => `${l.timestamp} [${l.stream}] ${l.line}`).join('\n');
     const url = URL.createObjectURL(new Blob([`${text}\n`], { type: 'text/plain' }));
     const a = h('a', { href: url, download: `${target}-${new Date().toISOString().replace(/[:.]/g, '-')}.log` });
     document.body.append(a);
@@ -2452,18 +2595,20 @@ function logViewer(ctx, target) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  connect();
+  if (opts.poll) pollOnce();
+  else connect();
   ctx.cleanup(() => {
     if (source) source.close();
     clearTimeout(retry);
+    clearTimeout(pollTimer);
     if (frame) cancelAnimationFrame(frame);
   });
 
-  return h('div', {},
+  return h('div', { class: 'logviewer' },
     h('div', { class: 'log-toolbar' },
       status,
       search,
-      filter,
+      h('label', { class: 'small', for: 'log-regex', title: 'Treat the search as a regular expression' }, regexBox, ' Regex'),
       h('label', { class: 'small', for: 'log-follow' }, follow, ' Follow'),
       pauseBtn,
       h('span', { class: 'spacer' }),
@@ -2471,6 +2616,7 @@ function logViewer(ctx, target) {
       h('button', { class: 'btn small', type: 'button', onclick: () => { lines.length = 0; pending = []; redraw(); } }, 'Clear'),
       h('button', { class: 'btn small', type: 'button', 'data-action': 'download', onclick: download }, 'Download'),
       helpButton('app.logs')),
+    h('div', { class: 'log-toolbar log-filters' }, h('span', { class: 'chips' }, chips), range, custom, filter),
     view);
 }
 
@@ -3006,6 +3152,27 @@ async function settingsTab(body, ctx) {
   strategyIn.value = s.strategy || '';
   const instancesIn = h('input', { id: 'set-instances', name: 'instances', type: 'number', min: 1, max: 16, value: s.instances ?? '', placeholder: '1' });
   const healthTimeoutIn = h('input', { id: 'set-health-timeout', name: 'health_check_timeout_secs', type: 'number', min: 1, max: 3600, step: 1, value: s.health_check_timeout_secs ?? '', placeholder: '30' });
+  const verifyUrlIn = h('input', { id: 'set-verify-url', name: 'verify_url', class: 'mono', value: s.verify_url ?? '', placeholder: 'https://app.example.com/', autocomplete: 'off', spellcheck: 'false' });
+  const verifyTimeoutIn = h('input', { id: 'set-verify-timeout', name: 'verify_timeout_secs', type: 'number', min: 1, max: 3600, step: 1, value: s.verify_timeout_secs ?? '', placeholder: '30' });
+  const verifyExpectIn = h('input', { id: 'set-verify-expect', name: 'verify_expect', class: 'mono', value: s.verify_expect ?? '', placeholder: '100-499', autocomplete: 'off' });
+  const checkNowBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'check-url' }, 'Check the URL now');
+  const rollbackNowBtn = h('button', { class: 'btn danger', type: 'button', 'data-action': 'check-url-rollback' }, 'Check, and roll back if down');
+  const checkUrl = async (btn, rollback) => {
+    const url = verifyUrlIn.value.trim() || undefined;
+    if (rollback && !(await confirmDialog({
+      title: 'Roll back if the URL is down?',
+      message: 'The URL is requested once. If it is not up, the app is rolled back to its previous release.',
+      confirmLabel: 'Check and roll back',
+      danger: true,
+    }))) return;
+    const r = await run(btn, () => api('POST', `/projects/${enc(project.id)}/verify`, { url, rollback }));
+    if (!r) return;
+    const seen = r.status != null ? `HTTP ${r.status}` : r.error;
+    if (r.ok) toast(`${r.url} is up (${seen}, ${r.elapsed_ms} ms)`);
+    else toast(`${r.url} is down: ${seen}${r.rolled_back_to ? `; rolled back to ${r.rolled_back_to}` : ''}${r.rollback_error ? `; rollback failed: ${r.rollback_error}` : ''}`, 'bad');
+  };
+  checkNowBtn.addEventListener('click', () => checkUrl(checkNowBtn, false));
+  rollbackNowBtn.addEventListener('click', () => checkUrl(rollbackNowBtn, true));
   const drainTimeoutIn = h('input', { id: 'set-drain-timeout', name: 'drain_timeout_secs', type: 'number', min: 0, max: 3600, step: 1, value: s.drain_timeout_secs ?? '', placeholder: '10' });
   const env = envEditor(s.env, 'env');
   const processOnly = h('input', { type: 'checkbox', id: 'set-process-only', checked: s.health_check_url === '' });
@@ -3045,6 +3212,7 @@ async function settingsTab(body, ctx) {
       for (const [input, key, min, label] of [
         [healthTimeoutIn, 'health_check_timeout_secs', 1, 'Health check timeout'],
         [drainTimeoutIn, 'drain_timeout_secs', 0, 'Drain timeout'],
+        [verifyTimeoutIn, 'verify_timeout_secs', 1, 'Live URL check timeout'],
       ]) {
         const raw = input.value.trim();
         if (!raw) continue;
@@ -3056,6 +3224,8 @@ async function settingsTab(body, ctx) {
         }
         req[key] = n;
       }
+      if (verifyUrlIn.value.trim()) req.verify_url = verifyUrlIn.value.trim();
+      if (verifyExpectIn.value.trim()) req.verify_expect = verifyExpectIn.value.trim();
       if (processOnly.checked) req.health_check_url = '';
       else if (inputs.health_check_url.value.trim()) req.health_check_url = inputs.health_check_url.value.trim();
       try {
@@ -3093,6 +3263,15 @@ async function settingsTab(body, ctx) {
         h('span', { class: 'hint' }, 'How long a new release may take to become healthy before the deployment fails (1-3600; default 30). Raise it for apps that start slowly.')),
       h('div', { class: 'field' }, h('label', { for: 'set-drain-timeout' }, 'Drain timeout (seconds)'), drainTimeoutIn,
         h('span', { class: 'hint' }, 'How long a stopping release gets to finish requests and exit before it is killed (0-3600; default 10).'))),
+    h('fieldset', { class: 'field verify', 'data-card': 'live-check' },
+      h('legend', {}, 'Live URL check'),
+      h('span', { class: 'hint' }, 'After a new release goes live, Aegis requests this URL (for example your public domain). If it is not up within the timeout, the deployment is rolled back to the previous release and fails with the HTTP status or error that was seen.'),
+      h('div', { class: 'row' },
+        h('div', { class: 'field' }, h('label', { for: 'set-verify-url' }, 'URL to check'), verifyUrlIn),
+        h('div', { class: 'field' }, h('label', { for: 'set-verify-timeout' }, 'Timeout (seconds)'), verifyTimeoutIn),
+        h('div', { class: 'field' }, h('label', { for: 'set-verify-expect' }, 'Accepted statuses'), verifyExpectIn,
+          h('span', { class: 'hint' }, '200 or a range like 200-399. Default 100-499: anything but a server error.'))),
+      h('div', { class: 'form-actions' }, checkNowBtn, ' ', rollbackNowBtn)),
     h('fieldset', { class: 'field env' },
       h('legend', {}, 'Environment variables'),
       h('span', { class: 'hint' }, 'Merged over [env] in aegis.toml and over the env file, and written into each release. Use Secrets for passwords and keys.'),
@@ -3140,7 +3319,126 @@ async function settingsTab(body, ctx) {
         h('div', {}, h('dt', {}, 'Created'), h('dd', {}, timeEl(project.created_at)))),
       h('p', { class: 'muted small' }, 'Source: ', sourceText(project))));
 
-  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, hideCard(ctx, rerender), dangerCard(ctx)));
+  append(body, h('div', { class: 'grid' }, settingsForm, repositoryCard(ctx, rerender), envCard(ctx, rerender), domainsCard(ctx), secretsCard(ctx), h('div', { class: 'grid two' }, scheduleForm, webhookCard(ctx)), info, jobsCard(ctx), hideCard(ctx, rerender), dangerCard(ctx)));
+}
+
+const JOB_PRESETS = [
+  ['*/5 * * * *', 'Every 5 minutes'], ['*/15 * * * *', 'Every 15 minutes'], ['0 * * * *', 'Hourly'],
+  ['0 3 * * *', 'Daily at 03:00 UTC'], ['0 3 * * 1', 'Mondays at 03:00 UTC'], ['0 0 1 * *', 'Monthly (1st, 00:00 UTC)'], ['', 'Custom…'],
+];
+
+const JOB_STATUS_KIND = { success: 'ok', failed: 'bad', timeout: 'bad', running: 'info live', skipped: 'warn' };
+
+/** Settings → Jobs: commands run in the live release on a cron schedule or on demand. */
+function jobsCard(ctx) {
+  const project = ctx.project();
+  const base = `/projects/${enc(project.id)}/jobs`;
+  const list = h('div', { class: 'table-wrap' });
+  const load = async () => {
+    try {
+      const jobs = await api('GET', base);
+      if (ctx.alive()) draw(jobs);
+    } catch (err) {
+      if (ctx.alive()) replace(list, errorBox(err));
+    }
+  };
+
+  const showRuns = async (job) => {
+    const runs = await run(null, () => api('GET', `${base}/${enc(job.id)}/runs`));
+    if (!runs) return;
+    await modal(() => h('form', { method: 'dialog' },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, `Runs of ${job.name}`),
+        runs.length
+          ? h('div', { class: 'job-runs' }, runs.map((r) => h('details', { 'data-run': r.status },
+            h('summary', {}, pill(r.status, JOB_STATUS_KIND[r.status] || ''), ' ', timeEl(r.started_at), ` · ${r.trigger}`,
+              r.exit_code != null ? ` · exit ${r.exit_code}` : '',
+              r.finished_at ? ` · ${fmtDuration(durationBetween(r.started_at, r.finished_at))}` : ''),
+            h('pre', { class: 'log-tail' }, r.output_tail || '(no output)'))))
+          : h('p', { class: 'muted' }, 'No runs yet.')),
+      h('div', { class: 'form-actions' }, h('button', { class: 'btn', value: 'close', type: 'submit' }, 'Close'))));
+  };
+
+  const draw = (jobs) => {
+    if (!jobs.length) {
+      replace(list, h('p', { class: 'muted small' }, 'No jobs yet.'));
+      return;
+    }
+    replace(list, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['Job', 'Schedule (UTC)', 'Next run', 'Last run', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, jobs.map((j) => {
+        const runBtn = h('button', { class: 'btn small', type: 'button', 'data-action': 'run-job' }, 'Run now');
+        runBtn.addEventListener('click', async () => {
+          const r = await run(runBtn, () => api('POST', `${base}/${enc(j.id)}/run`, {}), `${j.name} started`);
+          if (r) setTimeout(load, 1500);
+        });
+        const histBtn = h('button', { class: 'btn small ghost', type: 'button', 'data-action': 'job-runs' }, 'Runs');
+        histBtn.addEventListener('click', () => showRuns(j));
+        const toggle = h('button', { class: 'btn small', type: 'button', 'data-action': 'toggle-job' }, j.enabled ? 'Pause' : 'Resume');
+        toggle.addEventListener('click', async () => {
+          const r = await run(toggle, () => api('PUT', `${base}/${enc(j.id)}`, { enabled: !j.enabled }));
+          if (r) load();
+        });
+        const del = h('button', { class: 'btn small danger', type: 'button', 'data-action': 'delete-job' }, 'Delete');
+        del.addEventListener('click', async () => {
+          if (!(await confirmDialog({ title: `Delete ${j.name}?`, message: 'The job and its run history are removed.', confirmLabel: 'Delete', danger: true }))) return;
+          const r = await run(del, () => api('DELETE', `${base}/${enc(j.id)}`), `${j.name} deleted`);
+          if (r !== undefined) load();
+        });
+        return h('tr', { 'data-job': j.name },
+          h('td', { 'data-label': 'Job' }, h('strong', {}, j.name), h('div', { class: 'mono small muted truncate', title: j.command }, j.command)),
+          h('td', { 'data-label': 'Schedule', class: 'mono' }, j.schedule),
+          h('td', { 'data-label': 'Next run' }, j.enabled ? (j.next_run ? timeEl(j.next_run) : '–') : pill('Paused', 'warn')),
+          h('td', { 'data-label': 'Last run' }, j.last_run ? [pill(j.last_run.status, JOB_STATUS_KIND[j.last_run.status] || ''), ' ', timeEl(j.last_run.started_at)] : '–'),
+          h('td', { class: 'actions' },
+            can('deployer') ? runBtn : null, ' ', histBtn,
+            can('admin') ? [' ', toggle, ' ', del] : null));
+      }))));
+  };
+
+  let form = null;
+  if (can('admin')) {
+    const nameIn = h('input', { id: 'job-name', required: true, autocomplete: 'off', placeholder: 'nightly-cleanup', maxlength: 64 });
+    const preset = h('select', { id: 'job-preset', 'aria-label': 'Schedule' }, JOB_PRESETS.map(([v, l]) => h('option', { value: v }, l)));
+    const cronIn = h('input', { id: 'job-schedule', class: 'mono', required: true, autocomplete: 'off', spellcheck: 'false', value: JOB_PRESETS[0][0], 'aria-label': 'Cron expression' });
+    preset.addEventListener('change', () => {
+      if (preset.value) cronIn.value = preset.value;
+      cronIn.focus();
+    });
+    const cmdIn = h('textarea', { id: 'job-command', class: 'mono', rows: 2, required: true, spellcheck: 'false', placeholder: 'npm run cleanup' });
+    const timeoutIn = h('input', { id: 'job-timeout', type: 'number', min: 1, max: 86400, placeholder: '3600' });
+    const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'add-job' }, 'Add job');
+    form = h('form', {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const req = { name: nameIn.value.trim(), schedule: cronIn.value.trim(), command: cmdIn.value.trim() };
+        if (timeoutIn.value) req.timeout_secs = Number(timeoutIn.value);
+        const created = await run(addBtn, () => api('POST', base, req), (j) => `${j.name} added`);
+        if (!created) return;
+        nameIn.value = '';
+        cmdIn.value = '';
+        load();
+      },
+    },
+    h('div', { class: 'row' },
+      h('div', { class: 'field' }, h('label', { for: 'job-name' }, 'Job name'), nameIn),
+      h('div', { class: 'field' }, h('label', { for: 'job-preset' }, 'Schedule'), preset),
+      h('div', { class: 'field' }, h('label', { for: 'job-schedule' }, 'Cron (UTC)'), cronIn,
+        h('span', { class: 'hint' }, 'minute hour day-of-month month day-of-week, e.g. */15 * * * *'))),
+    h('div', { class: 'field' }, h('label', { for: 'job-command' }, 'Command'), cmdIn,
+      h('span', { class: 'hint' }, 'Runs with sh in the live release\'s folder, with the app\'s variables and secrets. Output is kept with each run.')),
+    h('div', { class: 'row' }, h('div', { class: 'field' }, h('label', { for: 'job-timeout' }, 'Timeout (seconds)'), timeoutIn)),
+    h('div', { class: 'form-actions' }, addBtn));
+  }
+
+  onEvents(ctx, (e) => {
+    if (e.event_type === '_resync' || (e.event_type.startsWith('Job') && e.payload?.project_id === project.id)) load();
+  });
+  load();
+  return h('section', { class: 'card', 'data-card': 'jobs' },
+    cardHeader('Jobs', 'app.jobs'),
+    h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Scheduled and on-demand commands in the live release: migrations, cleanups, reports. They need a deployed app and are not available for container apps yet.')),
+    list, form ? h('div', { class: 'card-body' }, form) : null);
 }
 
 /** Asks for an app's name and hide password; the app then shows for this session. */
@@ -3688,21 +3986,70 @@ function domainsCard(ctx) {
     }
   };
 
+  const addDomain = async (domain, btn) => {
+    const req = { domain, tls: tlsSelect.value };
+    if (!req.domain) return false;
+    if (req.tls === 'files') {
+      req.cert_path = certInput.value.trim();
+      req.key_path = keyInput.value.trim();
+    }
+    const added = await run(btn, () => api('POST', base, req), (d) => `${d.domain} added`);
+    if (!added) return false;
+    load();
+    return true;
+  };
+
+  // Subdomain shortcut: a label in front of a domain Aegis already serves.
+  const subLabel = h('input', { id: 'subdomain-label', class: 'mono', placeholder: 'api', autocomplete: 'off', spellcheck: 'false', pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*', 'aria-label': 'Subdomain' });
+  const subBase = h('select', { id: 'subdomain-base', 'aria-label': 'Base domain' });
+  const subCustom = h('input', { id: 'subdomain-custom', class: 'mono', placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false', hidden: true, 'aria-label': 'Other base domain' });
+  const subPreview = h('span', { class: 'mono small', 'data-subdomain-preview': '' });
+  const subBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'add-subdomain' }, 'Add subdomain');
+  const subValue = () => {
+    const base = (subBase.value === '__other' ? subCustom.value : subBase.value).trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+    const label = subLabel.value.trim().toLowerCase().replace(/\.+$/g, '');
+    return label && base ? `${label}.${base}` : '';
+  };
+  const syncSub = () => {
+    subCustom.hidden = subBase.value !== '__other';
+    subPreview.textContent = subValue() ? `→ ${subValue()}` : '';
+  };
+  for (const el of [subLabel, subBase, subCustom]) el.addEventListener('input', syncSub);
+  subBase.addEventListener('change', syncSub);
+  subBtn.addEventListener('click', async () => {
+    if (await addDomain(subValue(), subBtn)) {
+      subLabel.value = '';
+      syncSub();
+    }
+  });
+  // Base domains: what every route already uses, minus its first label.
+  const loadBases = async () => {
+    let bases = [];
+    try {
+      const proxy = await api('GET', '/proxy');
+      const names = (proxy.routes || []).map((r) => r.domain).filter((d) => d && !d.startsWith('*'));
+      bases = [...new Set(names.map((d) => (d.split('.').length > 2 ? d.split('.').slice(1).join('.') : d)))].sort();
+    } catch {
+      /* the custom field still works */
+    }
+    if (!ctx.alive()) return;
+    replace(subBase, bases.map((b) => h('option', { value: b }, b)), h('option', { value: '__other' }, 'Other domain…'));
+    syncSub();
+  };
+  loadBases();
+  const subRow = h('div', { class: 'field', 'data-card': 'subdomain' },
+    h('label', { for: 'subdomain-label' }, 'Quick add a subdomain'),
+    h('div', { class: 'row' }, subLabel, subBase, subCustom, subBtn),
+    subPreview,
+    h('p', { class: 'muted small' }, 'Create a DNS record for it (an A record to this server\'s IP, or a CNAME to a name that already points here) before or right after adding it; automatic HTTPS needs the record to resolve. Uses the TLS choice below.'));
+
   const form = h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
-      const req = { domain: domainInput.value.trim(), tls: tlsSelect.value };
-      if (!req.domain) return;
-      if (req.tls === 'files') {
-        req.cert_path = certInput.value.trim();
-        req.key_path = keyInput.value.trim();
-      }
-      const added = await run(addBtn, () => api('POST', base, req), (d) => `${d.domain} added`);
-      if (!added) return;
-      domainInput.value = '';
-      load();
+      if (await addDomain(domainInput.value.trim(), addBtn)) domainInput.value = '';
     },
   },
+  subRow,
   h('div', { class: 'row' },
     h('div', { class: 'field' }, h('label', { for: 'domain-name' }, 'Domain'), domainInput),
     h('div', { class: 'field' }, h('label', { for: 'domain-tls' }, 'TLS'), tlsSelect)),
@@ -4913,8 +5260,52 @@ async function accountPage(main, ctx) {
       admin ? usersCard(ctx, session.name) : null,
       admin ? tokenCard : null,
       admin ? backupCard : null,
+      admin ? monitoringCard(ctx) : null,
       h('div', { class: 'grid two' }, pwForm, prefs)));
   if (admin) await Promise.all([loadTokens(), loadBackups()]);
+}
+
+/** Admins: switch the Prometheus endpoint on or off and fetch the Grafana dashboard. */
+function monitoringCard(ctx) {
+  const body = h('div', { class: 'card-body' });
+  const scrape = `${location.origin}/metrics`;
+  const draw = (enabled) => {
+    const toggle = h('button', { class: `btn ${enabled ? 'danger' : 'primary'}`, type: 'button', 'data-action': 'toggle-prometheus' },
+      enabled ? 'Turn metrics off' : 'Turn metrics on');
+    toggle.addEventListener('click', async () => {
+      const res = await run(toggle, () => api('PUT', '/system/prometheus', { enabled: !enabled }),
+        (r) => (r.enabled ? 'Prometheus metrics are on' : 'Prometheus metrics are off'));
+      if (res && ctx.alive()) draw(res.enabled);
+    });
+    const dash = h('button', { class: 'btn', type: 'button', 'data-action': 'download-grafana' }, 'Download Grafana dashboard');
+    dash.addEventListener('click', async () => {
+      const res = await run(dash, async () => {
+        const r = await fetch('/api/v1/system/grafana-dashboard', { credentials: 'same-origin' });
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.blob();
+      });
+      if (!res) return;
+      const url = URL.createObjectURL(res);
+      const a = h('a', { href: url, download: 'aegis-grafana-dashboard.json' });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    replace(body,
+      h('p', { class: 'muted small' }, 'Off until you turn it on. Prometheus scrapes the metrics (apps up, CPU, memory, restarts, deployments, host load and disk); Grafana charts them with the dashboard below.'),
+      enabled
+        ? h('div', { class: 'grid' },
+          h('p', { class: 'small' }, 'Scrape URL: ', h('code', { 'data-scrape-url': '' }, scrape)),
+          h('p', { class: 'small muted' }, 'Create a read token under API tokens and give it to Prometheus as a bearer token. If the daemon is reached through another host name, add it to [web] allowed_hosts. Sessions see only the apps they may see; tokens see all apps.'),
+          secretBox(`scrape_configs:\n  - job_name: aegis\n    metrics_path: /metrics\n    authorization:\n      credentials: <your read token>\n    static_configs:\n      - targets: ['${location.host}']`, 'prometheus.yml'))
+        : null,
+      h('div', { class: 'form-actions' }, toggle, ' ', dash));
+  };
+  api('GET', '/system/prometheus').then((r) => ctx.alive() && draw(r.enabled)).catch((err) => ctx.alive() && replace(body, errorBox(err)));
+  return h('section', { class: 'card', id: 'monitoring', 'data-card': 'monitoring' },
+    cardHeader('Monitoring (Prometheus & Grafana)', 'account.monitoring'),
+    body);
 }
 
 const ROLE_HELP = {
@@ -5028,10 +5419,17 @@ function usersCard(ctx, me) {
         const done = await run(appsBtn, () => api('PUT', `/users/${enc(u.username)}`, fields), `${u.username}: apps saved`);
         if (done !== undefined) load().catch(() => {});
       });
+      const dockerBox = h('input', { type: 'checkbox', checked: u.docker_access, disabled: u.owner, 'aria-label': `${u.username} can see Docker`, 'data-docker-access': u.username, title: u.owner ? 'The owner always has Docker access' : 'Can see Docker containers and their logs' });
+      dockerBox.addEventListener('change', async () => {
+        const done = await run(dockerBox, () => api('PUT', `/users/${enc(u.username)}`, { docker_access: dockerBox.checked }),
+          dockerBox.checked ? `${u.username} can see Docker` : `${u.username} can no longer see Docker`);
+        if (!done) dockerBox.checked = !dockerBox.checked;
+      });
       return h('tr', { 'data-user': u.username },
-        h('td', { 'data-label': 'User', class: 'mono' }, u.username, u.username === me ? h('span', { class: 'muted small' }, ' (you)') : null),
+        h('td', { 'data-label': 'User', class: 'mono' }, u.username, u.username === me ? h('span', { class: 'muted small' }, ' (you)') : null, u.owner ? [' ', pill('Owner', 'info')] : null),
         h('td', { 'data-label': 'Role' }, sel),
         h('td', { 'data-label': 'Apps', title: u.all_apps ? '' : u.apps.join(', ') }, appsBtn),
+        h('td', { 'data-label': 'Docker' }, dockerBox),
         h('td', { 'data-label': 'Created' }, timeEl(u.created_at)),
         h('td', { class: 'actions' }, resetBtn, ' ', deleteBtn));
     }));
@@ -5047,6 +5445,7 @@ function usersCard(ctx, me) {
     picker = appAccessPicker(apps, null);
     replace(accessSlot, picker.el);
   }).catch(() => {});
+  const dockerIn = h('input', { type: 'checkbox', id: 'user-docker' });
   roleIn.addEventListener('change', () => { accessSlot.hidden = roleIn.value === 'admin'; });
   const addBtn = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'create-user' }, 'Add user');
   const form = h('form', {
@@ -5056,7 +5455,7 @@ function usersCard(ctx, me) {
       const username = nameIn.value.trim();
       const password = randomPassword();
       const access = roleIn.value === 'admin' ? { all_apps: true } : picker.read();
-      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value, ...access }), `${username} added`);
+      const created = await run(addBtn, () => api('POST', '/users', { username, password, role: roleIn.value, docker_access: dockerIn.checked, ...access }), `${username} added`);
       if (!created) return;
       nameIn.value = '';
       showPassword(username, password);
@@ -5068,17 +5467,233 @@ function usersCard(ctx, me) {
       h('span', { class: 'hint' }, 'Lowercase letters, digits, . _ -')),
     h('div', { class: 'field' }, h('label', { for: 'user-role' }, 'Role'), roleIn)),
   h('div', { class: 'field' }, h('label', {}, 'Apps they can see'), accessSlot),
+  h('div', { class: 'field' }, h('label', { for: 'user-docker', class: 'small' }, dockerIn, ' Can see Docker containers and logs (off by default)')),
   h('div', { class: 'form-actions' }, addBtn),
   shown);
 
-  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 5 }, errorBox(err)))));
+  load().catch((err) => replace(tbody, h('tr', {}, h('td', { colspan: 6 }, errorBox(err)))));
   return h('section', { class: 'card', id: 'users' },
     cardHeader('Users', 'account.users'),
     h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Everyone signs in with their own account, so the audit log shows who did what. New users get a random password to pass on.')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
-      h('thead', {}, h('tr', {}, ['User', 'Role', 'Apps', 'Created', ''].map((t) => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['User', 'Role', 'Apps', 'Docker', 'Created', ''].map((t) => h('th', {}, t)))),
       tbody)),
     form);
+}
+
+// ----------------------------------------------------------------------
+// System: updates and storage (admins)
+// ----------------------------------------------------------------------
+
+async function systemPage(main, ctx) {
+  if (!can('admin')) {
+    append(main, pageHeader('System', 'system'), h('div', { class: 'card empty' }, h('h2', {}, 'Admins only'), h('p', {}, 'Ask an admin about updates and disk space.')));
+    return;
+  }
+  append(main, pageHeader('System', 'system'),
+    h('div', { class: 'grid' }, updatesSystemCard(ctx), storageCard(ctx)));
+}
+
+function updatesSystemCard(ctx) {
+  const body = h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Loading…'));
+  const draw = () => {
+    const s = update.status;
+    if (!s) return replace(body, h('p', { class: 'muted' }, 'Update status is not available.'));
+    const checkBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'check-update', disabled: !s.check_enabled }, 'Check now');
+    checkBtn.addEventListener('click', async () => {
+      const res = await run(checkBtn, () => api('POST', '/system/update/check'), (r) => (r.update_available ? `Aegis ${r.latest.version} is available` : 'You run the latest version'));
+      if (res) {
+        update.status = res;
+        renderUpdateBanner();
+        if (ctx.alive()) draw();
+      }
+    });
+    const busy = UPDATE_PHASES[s.phase];
+    const actions = [checkBtn];
+    if (s.update_available && s.latest) {
+      if (s.can_apply && !busy) {
+        actions.unshift(h('button', { class: 'btn primary', type: 'button', 'data-action': 'upgrade', onclick: (e) => upgradeNow(e.currentTarget) }, `Upgrade to ${s.latest.version}`));
+      }
+      if (s.latest.url) actions.push(h('a', { class: 'btn ghost', href: s.latest.url, target: '_blank', rel: 'noopener noreferrer' }, 'Release notes'));
+    }
+    replace(body,
+      h('dl', { class: 'kv' },
+        h('dt', {}, 'Running'), h('dd', {}, `v${s.current_version}`),
+        h('dt', {}, 'Latest'), h('dd', {}, s.latest ? [s.latest.version, ' ', s.update_available ? pill('New', 'info') : pill('Up to date', 'ok')] : (s.check_enabled ? 'Not checked yet' : 'Checks are off')),
+        h('dt', {}, 'Last check'), h('dd', {}, s.checked_at ? timeEl(s.checked_at) : '–'),
+        h('dt', {}, 'Installs by'), h('dd', {}, s.mode === 'in_place' ? 'Aegis replaces itself' : s.mode === 'helper' ? 'Root helper service' : s.mode === 'manual' ? 'A command you run' : 'Not available')),
+      s.check_error ? h('div', { class: 'alert warn' }, `Last check failed: ${s.check_error}`) : null,
+      busy ? h('div', { class: 'alert info' }, `${busy}…`) : null,
+      s.phase === 'failed' ? h('div', { class: 'alert' }, `The last update failed: ${s.phase_error || ''}`) : null,
+      s.update_available && !s.can_apply
+        ? h('div', { class: 'grid' },
+          h('p', { class: 'small muted' }, s.blocked_reason || s.mode_detail),
+          s.manual_command ? secretBox(s.manual_command, 'Run on the server') : null)
+        : null,
+      s.last_update ? h('p', { class: 'small muted' }, `Last update: v${s.last_update.from_version.replace(/^v/, '')} → v${s.last_update.to_version.replace(/^v/, '')}, `, timeEl(s.last_update.at)) : null,
+      h('div', { class: 'form-actions' }, actions));
+  };
+  (async () => {
+    try {
+      update.status = await api('GET', '/system/update');
+    } catch (err) {
+      if (ctx.alive()) replace(body, errorBox(err));
+      return;
+    }
+    if (ctx.alive()) draw();
+  })();
+  return h('section', { class: 'card', id: 'updates', 'data-card': 'updates' }, cardHeader('Updates', 'system.updates'), body);
+}
+
+const CLEAN_LABELS = {
+  old_builds: 'Old builds',
+  logs: 'Old logs',
+  backups: 'Extra backups',
+  temp: 'Temporary files',
+};
+
+function storageCard(ctx) {
+  const body = h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Measuring…'));
+  const load = async () => {
+    let r;
+    try {
+      r = await api('GET', '/system/storage');
+    } catch (err) {
+      if (ctx.alive()) replace(body, errorBox(err));
+      return;
+    }
+    if (!ctx.alive()) return;
+    const total = Math.max(1, r.categories.reduce((n, c) => n + c.bytes, 0));
+    const bar = h('div', { class: 'storage-bar', role: 'img', 'aria-label': 'Disk use by category' },
+      r.categories.map((c, i) => {
+        if (!c.bytes) return null;
+        const seg = h('span', { class: `cat-${i}`, title: `${c.label}: ${fmtBytes(c.bytes)}` });
+        seg.style.width = `${(c.bytes / total) * 100}%`;
+        return seg;
+      }));
+    const legend = h('ul', { class: 'storage-legend' }, r.categories.map((c, i) =>
+      h('li', { 'data-cat': c.key }, h('span', { class: `dot cat-${i}` }, ''), c.label,
+        h('span', { class: 'size' }, fmtBytes(c.bytes)),
+        c.reclaimable_bytes ? h('span', { class: 'muted small' }, ` (${fmtBytes(c.reclaimable_bytes)} can go)`) : null)));
+
+    const cleanBtn = h('button', { class: 'btn primary', type: 'button', 'data-action': 'cleanup', disabled: !r.reclaimable_bytes },
+      r.reclaimable_bytes ? `Clean up ${fmtBytes(r.reclaimable_bytes)}` : 'Nothing to clean');
+    cleanBtn.addEventListener('click', async () => {
+      const boxes = r.categories.filter((c) => CLEAN_LABELS[c.key] && c.reclaimable_bytes).map((c) => ({
+        key: c.key,
+        box: h('input', { type: 'checkbox', checked: true, 'data-target': c.key }),
+        text: `${CLEAN_LABELS[c.key]} (${fmtBytes(c.reclaimable_bytes)})`,
+      }));
+      let chosen = null;
+      const answer = await modal(() => h('form', { method: 'dialog', onsubmit: () => { chosen = boxes.filter((b) => b.box.checked).map((b) => b.key); } },
+        h('div', { class: 'dialog-body' },
+          h('h2', {}, 'Clean up now?'),
+          h('p', { class: 'muted' }, 'Removes only what is not needed: builds outside the rollback window, logs older than ', String(r.log_days), ' days, backups beyond the number kept, and old temporary files. Live releases, rollback targets, the database and the secrets key stay.'),
+          h('div', { class: 'grid' }, boxes.map((b) => h('label', {}, b.box, ' ', b.text)))),
+        h('div', { class: 'form-actions' },
+          h('button', { class: 'btn', value: 'cancel', type: 'submit', formnovalidate: true }, 'Cancel'),
+          h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Clean up'))));
+      if (answer !== 'ok' || !chosen || !chosen.length) return;
+      const res = await run(cleanBtn, () => api('POST', '/system/storage/cleanup', { targets: chosen }), (d) => `Freed ${fmtBytes(d.freed_bytes)}`);
+      if (res) load();
+    });
+
+    const auto = h('input', { type: 'checkbox', id: 'auto-clean', checked: r.auto_cleanup });
+    const days = h('input', { type: 'number', id: 'log-days', min: 1, max: 3650, value: r.log_days, 'aria-label': 'Keep logs for days' });
+    const saveBtn = h('button', { class: 'btn', type: 'button', 'data-action': 'save-auto' }, 'Save');
+    saveBtn.addEventListener('click', async () => {
+      const res = await run(saveBtn, () => api('PUT', '/system/storage/auto', { enabled: auto.checked, log_days: Number(days.value) }), 'Saved');
+      if (res) load();
+    });
+
+    const apps = r.apps.filter((a) => a.releases_bytes + a.old_builds_bytes + a.logs_bytes > 0);
+    replace(body,
+      h('div', { class: 'row' },
+        h('div', {}, h('div', { class: 'muted small' }, 'Used by Aegis'), h('div', { class: 'big', 'data-storage-total': '' }, fmtBytes(r.total_bytes)))),
+      bar, legend,
+      h('div', { class: 'form-actions' }, cleanBtn),
+      h('h3', {}, 'Automatic cleanup'),
+      h('p', { class: 'muted small' }, 'Once an hour: removes old builds, logs not written for the number of days below, backups beyond the number kept and temporary files. Off until you turn it on.'),
+      h('div', { class: 'row' },
+        h('label', { for: 'auto-clean' }, auto, ' Clean up automatically'),
+        h('label', { for: 'log-days', class: 'small' }, 'Keep logs for ', days, ' days'),
+        saveBtn),
+      apps.length
+        ? h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+          h('thead', {}, h('tr', {}, ['App', 'Releases in use', 'Old builds', 'Logs'].map((t) => h('th', {}, t)))),
+          h('tbody', {}, apps.map((a) => h('tr', { 'data-app': a.name },
+            h('td', { 'data-label': 'App' }, h('a', { href: `#/apps/${enc(a.name)}` }, a.name)),
+            h('td', { 'data-label': 'Releases in use' }, fmtBytes(a.releases_bytes)),
+            h('td', { 'data-label': 'Old builds' }, fmtBytes(a.old_builds_bytes)),
+            h('td', { 'data-label': 'Logs' }, fmtBytes(a.logs_bytes)))))))
+        : null);
+  };
+  load();
+  return h('section', { class: 'card', id: 'storage', 'data-card': 'storage' }, cardHeader('Storage and cleanup', 'system.storage'), body);
+}
+
+// ----------------------------------------------------------------------
+// Docker: containers on the server and their logs (shared separately)
+// ----------------------------------------------------------------------
+
+async function dockerPage(main, ctx) {
+  append(main, pageHeader('Docker', 'docker'));
+  if (!state.session.docker_access) {
+    append(main, h('div', { class: 'card empty', 'data-docker': 'denied' }, h('h2', {}, 'Docker is not shared with you'), h('p', {}, 'The owner can allow it in Account → Users.')));
+    return;
+  }
+  const listBody = h('div', {}, h('p', { class: 'muted card-body' }, 'Loading…'));
+  const logSlot = h('div', {});
+  let selected = null;
+  const open = (c) => {
+    selected = c.id;
+    for (const tr of listBody.querySelectorAll('tr[data-container]')) tr.setAttribute('aria-selected', String(tr.dataset.container === c.id));
+    state.routeToken += 0;
+    // A fresh viewer per container; the old one's timer ends with its own cleanup.
+    const sub = { alive: () => ctx.alive() && selected === c.id, cleanup: ctx.cleanup };
+    replace(logSlot, h('section', { class: 'card', 'data-docker-logs': c.name },
+      h('div', { class: 'card-header' }, h('h2', {}, c.name), pill(c.state, c.state === 'running' ? 'ok' : 'plain'), h('span', { class: 'muted small mono' }, c.image)),
+      h('div', { class: 'card-body' }, logViewer(sub, c.name, {
+        poll: () => api('GET', `/docker/containers/${enc(c.id)}/logs?lines=1500`),
+      }))));
+  };
+  const load = async () => {
+    let r;
+    try {
+      r = await api('GET', '/docker/containers');
+    } catch (err) {
+      if (ctx.alive()) replace(listBody, errorBox(err));
+      return;
+    }
+    if (!ctx.alive()) return;
+    if (!r.available) {
+      replace(listBody, h('div', { class: 'card-body' }, h('div', { class: 'alert warn' }, r.reason || 'Docker is not available on this server.')));
+      return;
+    }
+    if (!r.containers.length) {
+      replace(listBody, h('div', { class: 'empty' }, h('h2', {}, 'No containers'), h('p', {}, 'Nothing is running or stopped in Docker on this server.')));
+      return;
+    }
+    replace(listBody, h('div', { class: 'table-wrap' }, h('table', { class: 'stack' },
+      h('thead', {}, h('tr', {}, ['Name', 'Image', 'State', 'Ports', 'Created', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, r.containers.map((c) => {
+        const tr = h('tr', { class: 'container-row', 'data-container': c.id, tabindex: '0', 'aria-selected': String(selected === c.id) },
+          h('td', { 'data-label': 'Name', class: 'mono' }, c.name, c.managed ? [' ', pill('Aegis app', 'info')] : null),
+          h('td', { 'data-label': 'Image', class: 'mono small' }, c.image),
+          h('td', { 'data-label': 'State' }, pill(c.status || c.state, c.state === 'running' ? 'ok' : c.state === 'exited' ? 'plain' : 'warn')),
+          h('td', { 'data-label': 'Ports', class: 'small' }, c.ports || '–'),
+          h('td', { 'data-label': 'Created', class: 'small' }, c.created.split(' +')[0]),
+          h('td', { class: 'actions' }, h('button', { class: 'btn small', type: 'button', 'data-action': 'container-logs' }, 'Logs')));
+        tr.addEventListener('click', () => open(c));
+        tr.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(c); });
+        return tr;
+      })))));
+  };
+  const refresh = h('button', { class: 'btn small', type: 'button', onclick: () => load() }, 'Refresh');
+  append(main, h('div', { class: 'grid' },
+    h('section', { class: 'card', 'data-card': 'containers' }, h('div', { class: 'card-header' }, h('h2', {}, 'Containers'), h('div', { class: 'spacer' }), refresh), listBody),
+    logSlot));
+  await load();
 }
 
 // ----------------------------------------------------------------------
@@ -5090,6 +5705,8 @@ const SHORTCUTS = [
   ['g d', 'Deployments'],
   ['g e', 'Events'],
   ['g a', 'Account'],
+  ['g s', 'System (updates, storage)'],
+  ['g c', 'Docker containers'],
   ['n', 'New app'],
   ['1 – 6', 'Switch tabs on an app page'],
   ['/', 'Search (logs and events)'],
@@ -5111,7 +5728,7 @@ document.addEventListener('keydown', (e) => {
   if (pendingG) {
     clearTimeout(pendingG);
     pendingG = null;
-    const dest = { o: '/', d: '/deployments', e: '/events', a: '/account' }[e.key];
+    const dest = { o: '/', d: '/deployments', e: '/events', a: '/account', s: '/system', c: '/docker' }[e.key];
     if (dest) {
       e.preventDefault();
       go(dest);
