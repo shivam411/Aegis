@@ -2585,6 +2585,7 @@ function logViewer(ctx, target, opts = {}) {
   });
 
   const download = () => {
+    applySearch(); // the search box may have changed within the debounce delay
     const text = lines.filter(visible).map((l) => `${l.timestamp} [${l.stream}] ${l.line}`).join('\n');
     const url = URL.createObjectURL(new Blob([`${text}\n`], { type: 'text/plain' }));
     const a = h('a', { href: url, download: `${target}-${new Date().toISOString().replace(/[:.]/g, '-')}.log` });
