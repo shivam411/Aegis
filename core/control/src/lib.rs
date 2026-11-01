@@ -123,6 +123,8 @@ pub struct ControlSettings {
     pub data_dir: PathBuf,
     /// Used when a project doesn't set `deploy.max_retained_versions`.
     pub max_retained_versions: usize,
+    /// Deployments that may run at once (at least 1); the rest stay queued.
+    pub max_parallel_deployments: usize,
     pub health_poll_interval: Duration,
     /// How long a health-URL-less release must stay up to count as healthy.
     pub liveness_window: Duration,
@@ -152,6 +154,7 @@ impl ControlSettings {
         Self {
             data_dir,
             max_retained_versions: 2,
+            max_parallel_deployments: 1,
             health_poll_interval: Duration::from_millis(500),
             liveness_window: Duration::from_secs(3),
             resources: aegis_resources::Mode::Auto,
@@ -207,6 +210,9 @@ struct Inner {
     artifact_store: ArtifactStore,
     settings: ControlSettings,
     project_locks: Mutex<HashMap<ProjectId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Limits how many deployments run at once (default 1); the rest wait
+    /// here in the order they were queued (the semaphore is first come, first served).
+    deploy_gate: tokio::sync::Semaphore,
     /// Release version each supervised process was started from.
     process_release: Mutex<HashMap<ProcessId, String>>,
     shutting_down: AtomicBool,
@@ -300,6 +306,7 @@ impl ControlPlane {
             settings.data_dir.join("run").join("docker"),
             aegis_docker::Docker::instance_for(&settings.data_dir),
         ));
+        let parallel = settings.max_parallel_deployments.max(1);
         Ok(Self {
             inner: Arc::new(Inner {
                 store,
@@ -308,6 +315,7 @@ impl ControlPlane {
                 artifact_store: ArtifactStore::new(settings.data_dir.join("artifacts")),
                 settings,
                 project_locks: Mutex::new(HashMap::new()),
+                deploy_gate: tokio::sync::Semaphore::new(parallel),
                 running_jobs: Mutex::new(HashSet::new()),
                 process_release: Mutex::new(HashMap::new()),
                 shutting_down: AtomicBool::new(false),

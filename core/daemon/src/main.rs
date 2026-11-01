@@ -937,6 +937,7 @@ async fn run_daemon(config: Config, config_path: &str) -> Result<Exit, anyhow::E
     // 4. Control plane: rebuilds state from history and runs deployments.
     let mut settings = ControlSettings::new(data_dir.clone());
     settings.max_retained_versions = config.daemon.max_retained_versions;
+    settings.max_parallel_deployments = config.daemon.max_parallel_deployments.max(1);
     settings.resources = resource_mode(&config.resources);
     settings.sample_interval = Duration::from_secs(config.resources.sample_interval_secs);
     settings.metrics_retention = Duration::from_secs(config.resources.retention_days * 86400);

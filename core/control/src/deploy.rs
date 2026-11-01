@@ -305,6 +305,9 @@ impl ControlPlane {
 
         let lock = self.project_lock(project_id);
         let _guard = lock.lock().await;
+        // At most `max_parallel_deployments` (default 1) run at once; the
+        // others stay "Queued" until their turn.
+        let _turn = self.inner.deploy_gate.acquire().await;
 
         if self
             .inner

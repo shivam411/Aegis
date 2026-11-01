@@ -8,6 +8,10 @@ fn default_max_retained_versions() -> usize {
     2
 }
 
+fn default_max_parallel_deployments() -> usize {
+    1
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DaemonConfig {
     pub host: String,
@@ -16,6 +20,9 @@ pub struct DaemonConfig {
     pub log_level: String,
     #[serde(default = "default_max_retained_versions")]
     pub max_retained_versions: usize,
+    /// Deployments that may run at the same time; the rest wait their turn.
+    #[serde(default = "default_max_parallel_deployments")]
+    pub max_parallel_deployments: usize,
     /// Where releases, logs and build output live. Defaults to `~/.aegis`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<PathBuf>,
@@ -668,6 +675,7 @@ impl Default for DaemonConfig {
             database_path: PathBuf::from("aegis.db"),
             log_level: "info".to_string(),
             max_retained_versions: 2,
+            max_parallel_deployments: 1,
             data_dir: None,
         }
     }

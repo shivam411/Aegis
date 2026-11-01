@@ -161,6 +161,7 @@ database_path = "/var/lib/aegis/aegis.db"
 log_level = "info"
 data_dir = "/var/lib/aegis"      # releases, logs and artifact metadata
 max_retained_versions = 2        # used when a project doesn't set its own
+max_parallel_deployments = 1     # deployments running at once; the rest wait in a queue
 ```
 
 | Setting | Default |
@@ -171,6 +172,7 @@ max_retained_versions = 2        # used when a project doesn't set its own
 | `daemon.log_level` | `"info"` |
 | `daemon.data_dir` | `~/.aegis` |
 | `daemon.max_retained_versions` | `2` |
+| `daemon.max_parallel_deployments` | `1`: one deployment at a time across all apps; others stay Queued in order. Raise it to deploy several at once |
 
 ### HTTP API (`[web]`)
 
