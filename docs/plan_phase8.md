@@ -77,7 +77,7 @@ Each change is shown first, asked for, backed up, recorded as an event (`HostSet
 1. **Never sleep while Aegis runs.** Preferred: hold a sleep inhibitor only while the daemon runs, so nothing is left behind on uninstall: `systemd-inhibit`/logind D-Bus `Inhibit("sleep:idle:handle-lid-switch")` on Linux, an IOPMAssertion (`caffeinate -s`) on macOS, `SetThreadExecutionState(ES_SYSTEM_REQUIRED)` on Windows. Optional permanent mode writes a `logind.conf.d/aegis.conf` drop-in (`HandleLidSwitch=ignore`, `HandleLidSwitchExternalPower=ignore`, `IdleAction=ignore`).
 2. **Screen off, machine on.** Turn the display off after a minute (`consoleblank`, `pmset displaysleep`, `powercfg`), since a lit laptop panel wastes power and wears out.
 3. **Start at boot.** The existing hardened systemd unit; a `launchd` daemon plist on macOS; a Windows service (`windows-service` crate). Apps come back up through today's daemon-restart recovery.
-4. **Battery care.** If the laptop supports a charge limit (`charge_control_end_threshold`, ThinkPad/ASUS/Dell/Framework, or the vendor tool), offer to cap it at 80%, since a battery held at 100% on a charger swells and ages fastest. Otherwise show a warning and the vendor's setting.
+4. **Battery care.** Write the limit, read it back and report what stuck (many drivers accept only some values). If the laptop supports a charge limit (`charge_control_end_threshold`, ThinkPad/ASUS/Dell/Framework, or the vendor tool), offer to cap it at 80%, since a battery held at 100% on a charger swells and ages fastest. Otherwise show a warning and the vendor's setting.
 5. **Wake-on-LAN** where the NIC supports it (`ethtool -s <if> wol g`), with the MAC address shown so another device (or a future Aegis node) can wake it.
 6. **Automatic OS security updates** (`unattended-upgrades`/`dnf-automatic`), offered, not forced, with reboots only in a maintenance window that Aegis already knows about from schedules.
 
@@ -89,16 +89,18 @@ Home connections usually can't take inbound traffic: the router does NAT, many I
 
 | Mode | How | Needs | Notes |
 | :--- | :--- | :--- | :--- |
-| **Direct** | Router forwards 80/443 to this machine, ideally opened for you over UPnP-IGD or NAT-PMP/PCP; Aegis's ACME and proxy as today | A public IPv4 (not CGNAT) or IPv6 | Fastest and no third party. `host check` tells you if your WAN address is in `100.64.0.0/10` (CGNAT) or differs from what an outside echo sees. |
-| **Cloudflare Tunnel** | Aegis runs and supervises `cloudflared` like an app, and maps each Aegis domain to `http://127.0.0.1:<proxy port>` | A free Cloudflare account and a domain on Cloudflare | Works behind CGNAT; TLS ends at Cloudflare. The tunnel token is an Aegis secret. |
-| **Tailscale** | Private access through the tailnet; public through Funnel | A Tailscale account | Best for "only me and my team" dashboards. |
-| **Aegis relay on a VPS (self-hosted)** | A tiny `aegis-relay` (or WireGuard + the existing proxy) on any $4 VPS; the home node dials out and holds the connection | One small VPS | No third party sees the traffic, TLS still ends at home. Reuses the mutual-TLS agent design from the fleet milestone. |
+| **Direct** | Router forwards 80/443 to this machine, ideally opened for you with leased mappings over PCP, then NAT-PMP, then UPnP (`crab_nat`; never UPnP exposed to the WAN); Aegis's ACME and proxy as today | A public IPv4 (not CGNAT) or IPv6 | Fastest and no third party. `host check` tells you if your WAN address is in `100.64.0.0/10` (CGNAT) or differs from what an outside echo sees. |
+| **Cloudflare Tunnel** | Aegis creates the tunnel and its routes through the Cloudflare API (a scoped API token), then runs and supervises `cloudflared` like an app, mapping each Aegis domain to `http://127.0.0.1:<proxy port>` | A free Cloudflare account and a domain on Cloudflare | Works behind CGNAT; TLS ends at Cloudflare. The same tunnel on a second node becomes a replica, which gives failover for free (N5). |
+| **Tailscale** | Private access through the tailnet; Funnel for a quick public link | A Tailscale account | Best for "only me and my team" dashboards. Funnel can't serve your own domain (only `*.ts.net`, ports 443/8443/10000). |
+| **Aegis relay on a VPS (self-hosted)** | A tiny `aegis-relay` on any $4 VPS built on iroh (`iroh-relay`, dial by key, hole punching first); the home node dials out and holds the connection | One small VPS | No third party sees the traffic, TLS still ends at home. The same transport carries the fleet (M6) and the pool (N). |
 | **Local only** | `aegis.local` over mDNS and the LAN IP | Nothing | Default for a first run. |
 
 Supporting work:
 
 - **Dynamic DNS** for direct mode when the home IP changes: update an A/AAAA record through Cloudflare, DuckDNS, deSEC or a generic RFC 2136 server; an event on each change (`PublicAddressChanged`).
-- **ACME DNS-01** in `runtime/ingress/src/acme.rs` (today HTTP-01 only), so certificates work without inbound port 80 and wildcards become possible. Shares the provider code with Phase 7 M4's DNS integrations.
+- **ACME TLS-ALPN-01 and DNS-01** in `runtime/ingress/src/acme.rs` (today HTTP-01 only; `instant-acme` already supports the others, plus ARI renewal hints). TLS-ALPN-01 covers ISPs that block port 80 but not 443 with no DNS provider; DNS-01 (through `dns-update`) gives wildcards and works with no inbound port. Shares the provider code with Phase 7 M4's DNS integrations.
+- **Address change detection** with `if-watch` (events, not polling). For IPv6, publish the address the OS reports after each change, since RFC 7217 addresses change their suffix with the prefix, or offer to set a stable token.
+- **Optional own DNS on the edge node** (acme-dns pattern, `hickory-server`): delegate `home.example.com` once, then dynamic DNS and DNS-01 need no provider API.
 - **Reachability probe:** after setup, request the public URL from outside (through the tunnel or a public echo the user configures) and show the result on the Host page, the same way the live URL check does today.
 - **Dashboard safety:** the dashboard is never exposed through a tunnel by default; a tunnel route for it needs TOTP (Phase 7 M1) switched on first.
 
@@ -163,16 +165,16 @@ cloud_init = "cloud-init.yaml"   # optional: users, SSH keys, packages
 | Step | What | Size |
 | :--- | :--- | :--- |
 | V1 | **Capability check:** `/dev/kvm` and its permissions, CPU virtualization flags (VT-x/AMD-V, and whether the firmware disabled them), QEMU installed, free disk. Shown on the Host page and in `aegis doctor`. | S |
-| V2 | **Linux VMs on QEMU/KVM:** supervised `qemu-system-*`, user-mode networking with loopback port forwards, cloud-init seed, an image cache with checksums, live CPU and memory limits through the existing cgroup code. | M |
-| V3 | **Releases are disk snapshots:** each deploy or snapshot is a qcow2 overlay; rollback switches to the previous overlay; retention and storage cleanup cover overlays. Events: `VmCreated`, `VmSnapshotTaken`, `VmRolledBack`, `VmDeleted`. | M |
-| V4 | **Console in the browser:** QEMU VNC over WebSocket shown with noVNC, plus a serial console view. Admin or per-app deployer only; every console session is an audited event. | M |
+| V2 | **Linux VMs on QEMU/KVM:** supervised `qemu-system-*` (arguments as an argv array, never a shell string), `passt` networking (QEMU ≥ 10.1) falling back to user networking, loopback port forwards, cloud-init served over HTTP through NoCloud SMBIOS (no ISO tools), an image catalog seeded from Lima's templates with SHA-256 digests, a small QMP client typed with `serde_json`, live CPU and memory limits through the existing cgroup code. | M |
+| V3 | **Releases are disk snapshots:** each deploy or snapshot is a qcow2 overlay, taken with filesystems frozen through `qemu-guest-agent` when present; rollback switches to the previous overlay; retention and storage cleanup cover overlays. Events: `VmCreated`, `VmSnapshotTaken`, `VmRolledBack`, `VmDeleted`. | M |
+| V4 | **Console in the browser:** QEMU VNC over WebSocket on Unix sockets only (no TCP port, no VNC password), proxied by Aegis and shown with a vendored noVNC, plus a serial console view. Admin or per-app deployer only; every console session is an audited event. | M |
 | V5 | **Dashboard:** a "New VM" wizard (image, size, SSH key), VM cards with state, CPU, memory and disk, and start/stop/reboot/force-off/snapshot/rollback/delete buttons. VM backups are included in Backups. | M |
 | V6 | **Bridged networking** (the VM gets its own LAN address) and attached extra disks; ISO install for Windows guests. | M |
-| V7 | **Other hosts:** macOS through Apple's Virtualization framework (`vfkit`; needs a signed binary with the virtualization entitlement) and Windows through Hyper-V. Experimental. | L |
+| V7 | **Other hosts:** macOS through Apple's Virtualization framework (`vfkit`) or libkrun, with an ad-hoc signed binary (no Apple developer account), and Windows through QEMU's WHPX accelerator (works on Windows Home, keeps one `QemuLauncher`). Experimental. | L |
 | V8 | **Optional backends:** drive Incus or libvirt for people who already use them, and Firecracker/Cloud Hypervisor microVMs as a fast "sandbox" runtime for apps that need stronger isolation. | L |
 | V9 | **Physical to virtual:** a guided import of an old machine's disk (`virt-p2v` or Disk2vhd → `qemu-img convert` → qcow2) so a retired laptop's whole system keeps running as a VM on another node. | M |
 
-Done when: on a CI runner with `/dev/kvm` (GitHub's Linux runners expose it), a test boots an Alpine cloud image, waits for its forwarded port to answer the health check, maps a domain to it through the proxy, takes a snapshot, changes a file, rolls back and sees the old file, and survives a daemon restart. A Playwright test opens the console page against a running VM.
+Done when: on a CI runner with `/dev/kvm` (common on GitHub's Linux runners but not officially promised, so the test falls back to software emulation, `-accel tcg`), a test boots an Alpine cloud image, waits for its forwarded port to answer the health check, maps a domain to it through the proxy, takes a snapshot, changes a file, rolls back and sees the old file, and survives a daemon restart. A Playwright test opens the console page against a running VM.
 
 Risks: nested virtualization on VPS hosts is often missing (V1 reports it clearly); VMs need far more memory and disk than processes, so the wizard shows what is free; a browser console is a remote shell, so it is behind roles, per-app access, TOTP when exposed through a tunnel, and the audit log.
 
@@ -181,10 +183,10 @@ Risks: nested virtualization on VPS hosts is often missing (V1 reports it clearl
 Existing tools each solve one layer (app platforms, home-server OSes, VM managers, tunnels). This milestone joins them. See [research_home_hosting.md §4](research_home_hosting.md#4-the-next-generation-what-no-existing-tool-does).
 
 1. **Join any machine in one command** (laptop, PC, Pi, VPS) as a node of your Aegis, built on the fleet agent (Phase 7 M6) and H1–H4's host data.
-2. **Address-free networking:** nodes connect over a WireGuard mesh, so nothing depends on a node's IP. A node with a public IP (or a tunnel) is the public edge. Apps keep their names when a home IP changes or a laptop changes Wi-Fi.
+2. **Address-free networking:** nodes connect by key over iroh (QUIC, hole punching, our own relay on the edge node) and always dial out, never listen, so nothing depends on a node's IP. A node with a public IP (or a tunnel) is the public edge. Apps keep their names when a home IP changes or a laptop changes Wi-Fi.
 3. **Automatic "reach" choice:** each node detects its case (public IPv4 that changes, CGNAT, IPv6 with a changing prefix; [research §2](research_home_hosting.md#2-the-three-cases-a-no-static-ip-machine-can-be-in)), picks the best working route, keeps a second one as a fallback, and switches when the first fails.
-4. **Power- and health-aware placement:** when a laptop goes on battery, overheats, loses its network or its disk degrades, its workloads (processes, containers, VMs) move to another node, or Aegis wakes a sleeping one with Wake-on-LAN.
-5. **Home plus edge failover:** run at home for free, fail over to a small VPS when the home connection drops, and move back when it returns. Backups replicate across nodes.
+4. **Power- and health-aware placement:** when a laptop goes on battery, overheats, loses its network or its disk degrades, its workloads (processes, containers, VMs) are restarted on another node from the replicated release and volume, or Aegis wakes a sleeping one with Wake-on-LAN. Live migration only for VMs between hosts with the same CPU.
+5. **Home plus edge failover:** run at home for free, fail over to a small VPS when the home connection drops (Cloudflare tunnel replicas or the iroh edge), and move back when it returns. Backups replicate across nodes.
 6. **Private pools:** share spare capacity with your team or family through the existing roles and per-app access. A public marketplace (as Akash Homenode tries) is only considered after reliability and trust are proven.
 
 Done when: three nodes in CI (one "edge" with a public address, two behind a simulated NAT) serve one app; the node running it is told it is "on battery, 10%", and the app moves to the other home node with no failed requests through the edge; the edge reports the change as events.
