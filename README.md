@@ -232,8 +232,10 @@ max_retained_versions = 2
 | **0–1** | Real deploys, health checks, rollback, supervision; HTTP API | ✅ Shipped (tested in CI) |
 | **2** | Authentication, TLS, GitHub webhooks, hardened server install | ✅ Shipped (tested in CI) |
 | **3–4** | Web dashboard; live CPU/memory monitoring and limits | ✅ Shipped (tested in CI) |
-| **5** | Env vars and secrets, domains + reverse proxy + TLS, webhook setup and config-as-code in the UI | ▶ **Now** |
-| **6** | Users and roles, backup/restore, self-update, terminal UI, Docker runtime | 📅 Next |
+| **5** | Env vars and secrets, domains + reverse proxy + TLS, webhook setup and config-as-code in the UI | ✅ Shipped |
+| **6** | Users and roles, backup/restore, self-update, terminal UI, Docker runtime | ✅ Shipped (parts experimental) |
+| **7** | Access control, safer releases, alerts, integrations, add-ons ([plan](docs/plan_phase7.md)) | ▶ In progress |
+| **8** | Home server mode (turn a laptop or PC into a server, reachable behind CGNAT), always-on fixes, Compose and buildpacks ([plan](docs/plan_phase8.md)) | 📝 Proposed |
 | **Later** | Multi-node fleet | 📅 Planned |
 
 Not yet measured: production use, soaks longer than a few hours, performance on real hardware, and migration accuracy. Benchmarks and 5/60-minute soaks run in CI ([benchmarks.md](docs/benchmarks.md)). See the [scorecard](docs/scorecard.md).

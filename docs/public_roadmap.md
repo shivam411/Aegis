@@ -38,6 +38,11 @@ An operator-focused summary of the Aegis roadmap. The detailed, phased plan is [
 ## 🟣 NEXT (proposed)
 The detailed plan for the next phase (access control, canary deploys, observability, cloud integrations, add-ons and a multi-node fleet) is in [`plan_phase7.md`](plan_phase7.md).
 
+After that, [`plan_phase8.md`](plan_phase8.md) (proposed):
+- **Home server mode:** turn an ordinary laptop, desktop or mini PC into a server with `install.sh --server --home` / `aegis host prepare`. It stays awake with the lid closed, starts at boot, cares for the battery, and is reachable over HTTPS even behind CGNAT (Cloudflare Tunnel, Tailscale, a self-hosted relay, or direct with dynamic DNS and DNS-01 certificates). It alerts on power loss, low battery, heat and disk health.
+- **Always-on fixes first:** the supervisor fd leak, a published 24 h soak, and macOS/Windows supervisor tests in CI.
+- **Easier deploys:** Docker Compose apps, buildpacks, one-click templates, GitLab/Gitea/Bitbucket webhooks, `git push` deploys, remote builds.
+
 ---
 
 ## 🔵 LATER (Future Horizons)
