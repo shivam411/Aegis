@@ -1,4 +1,6 @@
-# Plan: Phase 8 (any machine is a server, then the rest of Phase 7)
+# Plan: Phase 8 (any machine is a server, runs VMs, works without a static IP)
+
+Research behind this plan (existing tools, VM options, dynamic IPs, what comes next): [research_home_hosting.md](research_home_hosting.md).
 
 Status: **proposed** (2026-11-04). This plan follows [Phase 7](plan_phase7.md), the [public roadmap](public_roadmap.md) and the [web control plane roadmap](roadmap_web_control_plane.md). Sizes: **S** ≈ days, **M** ≈ 1–2 weeks, **L** ≈ several weeks. Every item ships on its own, off by default, with a "done when" check, and starts as 🧪 Experimental in [feature_maturity.md](feature_maturity.md) until CI backs it.
 
@@ -141,6 +143,52 @@ Done when: unit tests with recorded `/sys` trees and `upsc`/`smartctl -j` output
 
 ---
 
+## 3a. Milestone V: virtual machines from the dashboard — L
+
+**Goal:** the machine from Milestone H also runs full VMs (Ubuntu, Debian, Fedora, Alpine; Windows with your own ISO and license). You create, start, stop, snapshot, roll back, back up and open them in the browser from the Aegis dashboard, as Proxmox does, but without reinstalling the machine. Research and options: [research_home_hosting.md §1.3 and §3](research_home_hosting.md#3-how-vms-fit-aegiss-design).
+
+**Design:** a VM is a third workload kind next to processes and Docker containers. A `QemuLauncher` implements the existing `Launcher` trait (`runtime/process/src/lib.rs`), the way `DockerLauncher` does (`integrations/docker/src/launcher.rs`). Restart policy, logs, health checks, cgroup limits, proxy cutover, roles and per-app access then work without new code paths.
+
+```toml
+[run]
+runtime = "vm"
+image = "ubuntu-24.04"     # a cloud image Aegis downloads and checks against its SHA-256, or a path to a qcow2/ISO
+cpus = 2
+memory_mb = 2048
+disk_gb = 20
+ports = [8080]             # forwarded to 127.0.0.1, so domains and the proxy work as for any app
+cloud_init = "cloud-init.yaml"   # optional: users, SSH keys, packages
+```
+
+| Step | What | Size |
+| :--- | :--- | :--- |
+| V1 | **Capability check:** `/dev/kvm` and its permissions, CPU virtualization flags (VT-x/AMD-V, and whether the firmware disabled them), QEMU installed, free disk. Shown on the Host page and in `aegis doctor`. | S |
+| V2 | **Linux VMs on QEMU/KVM:** supervised `qemu-system-*`, user-mode networking with loopback port forwards, cloud-init seed, an image cache with checksums, live CPU and memory limits through the existing cgroup code. | M |
+| V3 | **Releases are disk snapshots:** each deploy or snapshot is a qcow2 overlay; rollback switches to the previous overlay; retention and storage cleanup cover overlays. Events: `VmCreated`, `VmSnapshotTaken`, `VmRolledBack`, `VmDeleted`. | M |
+| V4 | **Console in the browser:** QEMU VNC over WebSocket shown with noVNC, plus a serial console view. Admin or per-app deployer only; every console session is an audited event. | M |
+| V5 | **Dashboard:** a "New VM" wizard (image, size, SSH key), VM cards with state, CPU, memory and disk, and start/stop/reboot/force-off/snapshot/rollback/delete buttons. VM backups are included in Backups. | M |
+| V6 | **Bridged networking** (the VM gets its own LAN address) and attached extra disks; ISO install for Windows guests. | M |
+| V7 | **Other hosts:** macOS through Apple's Virtualization framework (`vfkit`; needs a signed binary with the virtualization entitlement) and Windows through Hyper-V. Experimental. | L |
+| V8 | **Optional backends:** drive Incus or libvirt for people who already use them, and Firecracker/Cloud Hypervisor microVMs as a fast "sandbox" runtime for apps that need stronger isolation. | L |
+| V9 | **Physical to virtual:** a guided import of an old machine's disk (`virt-p2v` or Disk2vhd → `qemu-img convert` → qcow2) so a retired laptop's whole system keeps running as a VM on another node. | M |
+
+Done when: on a CI runner with `/dev/kvm` (GitHub's Linux runners expose it), a test boots an Alpine cloud image, waits for its forwarded port to answer the health check, maps a domain to it through the proxy, takes a snapshot, changes a file, rolls back and sees the old file, and survives a daemon restart. A Playwright test opens the console page against a running VM.
+
+Risks: nested virtualization on VPS hosts is often missing (V1 reports it clearly); VMs need far more memory and disk than processes, so the wizard shows what is free; a browser console is a remote shell, so it is behind roles, per-app access, TOTP when exposed through a tunnel, and the audit log.
+
+## 3b. Milestone N: next-generation hosting — every machine you own is one pool — L (after V and the fleet)
+
+Existing tools each solve one layer (app platforms, home-server OSes, VM managers, tunnels). This milestone joins them. See [research_home_hosting.md §4](research_home_hosting.md#4-the-next-generation-what-no-existing-tool-does).
+
+1. **Join any machine in one command** (laptop, PC, Pi, VPS) as a node of your Aegis, built on the fleet agent (Phase 7 M6) and H1–H4's host data.
+2. **Address-free networking:** nodes connect over a WireGuard mesh, so nothing depends on a node's IP. A node with a public IP (or a tunnel) is the public edge. Apps keep their names when a home IP changes or a laptop changes Wi-Fi.
+3. **Automatic "reach" choice:** each node detects its case (public IPv4 that changes, CGNAT, IPv6 with a changing prefix; [research §2](research_home_hosting.md#2-the-three-cases-a-no-static-ip-machine-can-be-in)), picks the best working route, keeps a second one as a fallback, and switches when the first fails.
+4. **Power- and health-aware placement:** when a laptop goes on battery, overheats, loses its network or its disk degrades, its workloads (processes, containers, VMs) move to another node, or Aegis wakes a sleeping one with Wake-on-LAN.
+5. **Home plus edge failover:** run at home for free, fail over to a small VPS when the home connection drops, and move back when it returns. Backups replicate across nodes.
+6. **Private pools:** share spare capacity with your team or family through the existing roles and per-app access. A public marketplace (as Akash Homenode tries) is only considered after reliability and trust are proven.
+
+Done when: three nodes in CI (one "edge" with a public address, two behind a simulated NAT) serve one app; the node running it is told it is "on battery, 10%", and the app moves to the other home node with no failed requests through the edge; the edge reports the change as events.
+
 ## 4. Milestone F: fix what blocks "always on" (S, first)
 
 Before any of the above: a server that runs for weeks.
@@ -183,6 +231,9 @@ F (fd leak, soak, OS CI) ──► H1 check ──► H2 stay on ──► H4 ha
              M4 S3 backups ──► D3 templates / add-ons ─┘
              M3 alerts (ntfy, Telegram, email) alongside H4
              D1 Compose, D2 buildpacks alongside, independent
+
+H1 check ──► V1 KVM check ──► V2 QEMU VMs ──► V3 snapshots ──► V4 console ──► V5 dashboard ──► V6–V9
+M6 fleet + H3 relay + V ──► N (one pool of machines)
 ```
 
 **First slice (about 4 weeks):** F1–F2, H1, H2 on Linux, H3 with Cloudflare Tunnel and DNS-01, and ntfy/Telegram alerts for H4's battery and heat events. At the end of it, an old Linux laptop on a home connection serves an app over HTTPS behind CGNAT, survives a lid close, a reboot and a power cut, and alerts the owner's phone.
@@ -194,7 +245,9 @@ F (fd leak, soak, OS CI) ──► H1 check ──► H2 stay on ──► H4 ha
 | **v0.9** | F, H1, H2 (Linux), M1 tokens + TOTP |
 | **v0.10** | H3 (tunnel, DDNS, DNS-01), H4, M3 phone alerts, M4 S3 backups |
 | **v0.11** | D1 Compose, D2 buildpacks, D3 templates, H2/H4 on macOS and Windows |
-| **v0.12** | M2 hooks and previews, D4–D6, M6 fleet and the self-hosted relay |
+| **v0.12** | M2 hooks and previews, D4–D6, M6 fleet and the self-hosted relay, V1–V3 (Linux VMs with snapshots) |
+| **v0.13** | V4–V6 (browser console, VM dashboard, bridged networking), V9 physical-to-virtual import |
+| **v1.x** | N (one pool of machines with automatic reach, placement and failover), V7–V8 (macOS/Windows hosts, microVMs) |
 
 ## 9. Open questions
 

@@ -235,7 +235,7 @@ max_retained_versions = 2
 | **5** | Env vars and secrets, domains + reverse proxy + TLS, webhook setup and config-as-code in the UI | ✅ Shipped |
 | **6** | Users and roles, backup/restore, self-update, terminal UI, Docker runtime | ✅ Shipped (parts experimental) |
 | **7** | Access control, safer releases, alerts, integrations, add-ons ([plan](docs/plan_phase7.md)) | ▶ In progress |
-| **8** | Home server mode (turn a laptop or PC into a server, reachable behind CGNAT), always-on fixes, Compose and buildpacks ([plan](docs/plan_phase8.md)) | 📝 Proposed |
+| **8** | Home server mode (turn a laptop or PC into a server, reachable without a static IP), VMs from the dashboard, always-on fixes, Compose and buildpacks ([plan](docs/plan_phase8.md)) | 📝 Proposed |
 | **Later** | Multi-node fleet | 📅 Planned |
 
 Not yet measured: production use, soaks longer than a few hours, performance on real hardware, and migration accuracy. Benchmarks and 5/60-minute soaks run in CI ([benchmarks.md](docs/benchmarks.md)). See the [scorecard](docs/scorecard.md).
