@@ -2,6 +2,7 @@
 name = "aegis-ingress"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Built-in reverse proxy: routes domains to apps, with automatic HTTPS"
 
 [dependencies]

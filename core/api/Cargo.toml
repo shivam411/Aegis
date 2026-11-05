@@ -2,6 +2,7 @@
 name = "aegis-api"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 tonic = { workspace = true }

@@ -2,6 +2,7 @@
 name = "aegis-update"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Aegis self-update: GitHub release lookup, checksum verification and binary replacement"
 
 [dependencies]

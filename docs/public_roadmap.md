@@ -42,7 +42,7 @@ After that, [`plan_phase8.md`](plan_phase8.md) (proposed):
 - **Home server mode:** turn an ordinary laptop, desktop or mini PC into a server with `install.sh --server --home` / `aegis host prepare`. It stays awake with the lid closed, starts at boot, cares for the battery, and is reachable over HTTPS even behind CGNAT (Cloudflare Tunnel, Tailscale, a self-hosted relay, or direct with dynamic DNS and DNS-01 certificates). It alerts on power loss, low battery, heat and disk health.
 - **Virtual machines from the dashboard:** create, start, snapshot, roll back and open (browser console) full VMs on that machine with QEMU/KVM, without reinstalling it; macOS/Windows hosts, microVMs and importing an old machine as a VM come later.
 - **Next-generation hosting:** every machine you own joins one pool over an encrypted mesh, so IP addresses stop mattering; workloads move off a laptop that goes on battery or overheats, and fail over between home and a small VPS. Research: [`research_home_hosting.md`](research_home_hosting.md).
-- **Always-on fixes first:** the supervisor fd leak, a published 24 h soak, and macOS/Windows supervisor tests in CI.
+- **Always-on proof first:** a published 24 h soak, a week on a real home machine, `install.sh --server` in CI, and macOS/Windows supervisor tests in CI.
 - **Easier deploys:** Docker Compose apps, buildpacks, one-click templates, GitLab/Gitea/Bitbucket webhooks, `git push` deploys, remote builds.
 
 ---

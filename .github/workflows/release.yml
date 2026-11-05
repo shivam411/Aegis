@@ -131,6 +131,7 @@ jobs:
               cp "target/${{ matrix.target }}/release/${bin}" dist/
             fi
           done
+          cp LICENSE dist/
           cd dist
           tar -czf "../${{ matrix.archive }}" *
 
@@ -146,6 +147,7 @@ jobs:
               Copy-Item $src -Destination dist/
             }
           }
+          Copy-Item LICENSE -Destination dist/
           Compress-Archive -Path dist/* -DestinationPath "${{ matrix.archive }}"
 
       - name: Upload artifact

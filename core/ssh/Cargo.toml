@@ -2,6 +2,7 @@
 name = "aegis-ssh"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 # Per-app SSH deploy keys: key generation, git remote URL helpers, pinned
 # host keys and the short-lived key files git uses while it runs.

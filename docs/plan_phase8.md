@@ -12,13 +12,15 @@ Principles (unchanged): one binary, embedded SQLite, no required external servic
 
 **Done:** deploy pipeline with health checks and automatic rollback, supervisor, HTTP API, auth and roles, TLS and ACME (HTTP-01 only), built-in reverse proxy with zero-downtime cutover, dashboard, live cgroup limits, secrets, backups, self-update, Docker runtime, instances with Rolling/BlueGreen, jobs, live URL check, Prometheus, per-user app lists, storage cleanup.
 
+**Fixed since the last audit:** the supervisor fd leak (commit `4273822`, "Close a process's log file when it stops"); the nightly 60-minute soak has passed since.
+
 **Open from Phase 7:** per-app API tokens, TOTP, OIDC (M1); deploy hooks, approval gates, canary, preview environments (M2); more alert channels and alert rules (M3); S3 backups and cloud integrations (M4); add-ons, buildpacks, scale to zero (M5); fleet (M6).
 
 **Known gaps that matter for this plan:**
 
 | Gap | Where | Why it matters |
 | :--- | :--- | :--- |
-| fd leak: one open log file per app process ever started | `runtime/process` (found by the 15-min soak) | A server that runs for weeks will run out of descriptors. Blocks any "always on" story. |
+| No soak longer than 60 minutes (the fd leak the 15-min soak found is fixed, and the nightly 60-min soak passes) | [benchmarks.md](benchmarks.md) | An always-on home server needs evidence for weeks, not an hour. |
 | macOS and Windows are built but never tested | [compatibility.md](compatibility.md) | A laptop is often a Mac or a Windows machine. |
 | ACME only does HTTP-01 | `runtime/ingress/src/acme.rs` | Needs inbound port 80. Home networks and CGNAT usually can't offer it. |
 | `core/ssh`, `core/state`, `git/action`, `integrations/github`, `deployment/analytics` are stubs | [feature_maturity.md](feature_maturity.md#not-implemented-yet) | Fleet and "add a server by SSH" depend on `core/ssh`. |
@@ -191,16 +193,16 @@ Existing tools each solve one layer (app platforms, home-server OSes, VM manager
 
 Done when: three nodes in CI (one "edge" with a public address, two behind a simulated NAT) serve one app; the node running it is told it is "on battery, 10%", and the app moves to the other home node with no failed requests through the edge; the edge reports the change as events.
 
-## 4. Milestone F: fix what blocks "always on" (S, first)
+## 4. Milestone F: prove "always on" (S, first)
 
 Before any of the above: a server that runs for weeks.
 
-1. **Fix the fd leak** in the supervisor (close each finished process's log file) and make the nightly 60-minute soak pass again.
+1. ~~**Fix the fd leak** in the supervisor.~~ Done (commit `4273822`); the nightly 60-minute soak passes.
 2. **A 24 h soak** published in `validation/`, then 7 days on a real home machine (dogfooding).
 3. **Run `install.sh --server` in CI** (a systemd container), including the self-update helper units.
 4. **Test the macOS and Windows supervisors in CI** (start, stop, restart, logs), which H2 needs.
 
-Done when: nightly soak is green, the 24 h report is published, and `macos-latest` and `windows-latest` run the process supervisor tests.
+Done when: the 24 h report is published, and `macos-latest` and `windows-latest` run the process supervisor tests.
 
 ## 5. Milestone D: easier deploys (M–L)
 
@@ -226,7 +228,7 @@ What users of Coolify, Dokploy, Kamal and Dokku expect, ranked by how often it d
 ## 7. Suggested order
 
 ```
-F (fd leak, soak, OS CI) ──► H1 check ──► H2 stay on ──► H4 hardware ──► H5
+F (24 h soak, OS CI) ──► H1 check ──► H2 stay on ──► H4 hardware ──► H5
                                   │
              M1 tokens + TOTP ────┴──► H3 reach it (tunnel, DDNS, DNS-01) ──► M6 fleet / relay
                                                        │
@@ -238,7 +240,7 @@ H1 check ──► V1 KVM check ──► V2 QEMU VMs ──► V3 snapshots ─
 M6 fleet + H3 relay + V ──► N (one pool of machines)
 ```
 
-**First slice (about 4 weeks):** F1–F2, H1, H2 on Linux, H3 with Cloudflare Tunnel and DNS-01, and ntfy/Telegram alerts for H4's battery and heat events. At the end of it, an old Linux laptop on a home connection serves an app over HTTPS behind CGNAT, survives a lid close, a reboot and a power cut, and alerts the owner's phone.
+**First slice (about 4 weeks):** F2, H1, H2 on Linux, H3 with Cloudflare Tunnel and DNS-01, and ntfy/Telegram alerts for H4's battery and heat events. At the end of it, an old Linux laptop on a home connection serves an app over HTTPS behind CGNAT, survives a lid close, a reboot and a power cut, and alerts the owner's phone.
 
 ## 8. Release mapping
 

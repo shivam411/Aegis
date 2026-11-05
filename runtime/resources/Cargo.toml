@@ -2,6 +2,7 @@
 name = "aegis-resources"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Per-app CPU, memory and process limits with Linux cgroups"
 
 [dependencies]
