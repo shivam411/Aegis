@@ -62,7 +62,8 @@ impl From<aegis_control::DomainView> for DomainDto {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct MapDomainRequest {
-    /// e.g. "app.example.com"; no wildcards.
+    /// e.g. "app.example.com", or "*.example.com" for every subdomain one
+    /// level down.
     pub domain: String,
     /// "acme" (automatic certificate, default), "files" or "off".
     pub tls: Option<String>,

@@ -93,7 +93,20 @@ Serve the app on your domain through the built-in reverse proxy.
 
 The table shows TLS mode, certificate state (**HTTPS**, **Issuing certificate**, **Renewing**, **Expired**, **Certificate error**, **HTTP only**) and expiry. **Remove** stops serving the domain at once; its certificate is kept.
 
-If the proxy is off, domains are saved but not served until `[proxy] enabled = true` in the daemon configuration ([configuration](../configuration.md)). Wildcard domains are refused.
+If the proxy is off, domains are saved but not served until `[proxy] enabled = true` in the daemon configuration ([configuration](../configuration.md)). ### Wildcard subdomains
+
+Enter `*.example.com` to serve every name one level below `example.com`
+(`shop.example.com`, but not `a.b.example.com` or `example.com`). Add a DNS
+record `*.example.com` pointing at the server. A domain mapped by its exact
+name wins over the wildcard, so one app can take `api.example.com` while
+another takes the rest.
+
+- **Automatic HTTPS**: each subdomain gets its own certificate the first time
+  it is visited, so the very first HTTPS visit can fail for a few seconds. At
+  most 20 subdomains per wildcard get one (certificate authorities limit how
+  many a domain may have, and anyone can request any name).
+- **Certificate files**: give a wildcard certificate; it covers all of them.
+- **HTTP only**: for example behind Cloudflare.
 
 ## Secrets
 

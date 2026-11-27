@@ -12,6 +12,11 @@
 //! go back to the release they had before. Everything is recorded as events
 //! (`GroupDeploymentStarted`, `GroupMemberSkipped`, `GroupMemberDeployed`,
 //! `GroupDeploymentFinished`, `GroupDeploymentFailed`, ...).
+//!
+//! A *virtual* group has no repository of its own: any apps can be in it, and
+//! each is deployed from its own source (so there is no shared commit, watch
+//! paths or group webhook). Order, rollback on failure, rollback and history
+//! work the same.
 
 use crate::git::{is_sha, touches, validate_watch_path, Git};
 use crate::scan::normalize_repo;
@@ -37,6 +42,8 @@ pub struct GroupSpec {
     pub branch: String,
     /// Default: true.
     pub rollback_on_failure: Option<bool>,
+    /// No shared repository (see the module docs).
+    pub virtual_group: bool,
 }
 
 /// A member to put in a group, in deploy order.
@@ -131,6 +138,20 @@ impl ControlPlane {
             )));
         }
         let url = spec.repository_url.trim().to_string();
+        if spec.virtual_group {
+            if !url.is_empty() || !spec.branch.trim().is_empty() {
+                return Err(ControlError::InvalidArgument(
+                    "A virtual group has no repository or branch".into(),
+                ));
+            }
+            return Ok(GroupSpec {
+                name,
+                repository_url: url,
+                branch: String::new(),
+                rollback_on_failure: spec.rollback_on_failure,
+                virtual_group: true,
+            });
+        }
         if url.is_empty() {
             return Err(ControlError::InvalidArgument(
                 "A group needs the repository its apps are deployed from".into(),
@@ -149,6 +170,7 @@ impl ControlPlane {
             repository_url: url,
             branch,
             rollback_on_failure: spec.rollback_on_failure,
+            virtual_group: false,
         })
     }
 
@@ -159,6 +181,16 @@ impl ControlPlane {
         group_id: &str,
         project: &ProjectState,
     ) -> Option<String> {
+        let in_another = || {
+            let other = self.group_of(&project.id).filter(|g| g.id != group_id)?;
+            Some(format!(
+                "'{}' is already in group '{}'; an app can be in one group only",
+                project.name, other.name
+            ))
+        };
+        if group.virtual_group {
+            return in_another();
+        }
         if project.repository_url.is_empty() || project.source_dir.is_some() {
             return Some(format!(
                 "'{}' is deployed from a folder; only apps deployed from {} can be in this group",
@@ -177,13 +209,7 @@ impl ControlPlane {
                 project.name, project.branch, group.branch
             ));
         }
-        if let Some(other) = self.group_of(&project.id).filter(|g| g.id != group_id) {
-            return Some(format!(
-                "'{}' is already in group '{}'; an app can be in one group only",
-                project.name, other.name
-            ));
-        }
-        None
+        in_another()
     }
 
     /// Creates a group, optionally with its members.
@@ -223,6 +249,11 @@ impl ControlPlane {
     /// members must still match the repository and branch.
     pub async fn update_group(&self, id: &str, spec: GroupSpec) -> ControlResult<GroupState> {
         let group = self.resolve_group(id)?;
+        // A group stays the kind it was created as.
+        let spec = GroupSpec {
+            virtual_group: group.is_virtual(),
+            ..spec
+        };
         let spec = self.check_spec(&spec, Some(&group.id))?;
         for member in &group.members {
             if let Some(project) = self.inner.projection.get_project(&member.project_id) {
@@ -334,6 +365,7 @@ impl ControlPlane {
             repository_url: group.repository_url.clone(),
             branch: group.branch.clone(),
             rollback_on_failure: Some(group.rollback_on_failure),
+            virtual_group: group.is_virtual(),
         };
         let members = self.check_members(&spec, &group.id, members)?;
         self.record(
@@ -359,6 +391,11 @@ impl ControlPlane {
                 "Group '{}' has no apps yet",
                 group.name
             )));
+        }
+        if group.is_virtual() && commit.is_some() {
+            return Err(ControlError::InvalidArgument(
+                "A virtual group has no shared commit; each app deploys its own latest".into(),
+            ));
         }
         if let Some(c) = &commit {
             aegis_builder::validate_git_ref(c)
@@ -464,6 +501,9 @@ impl ControlPlane {
         commit: Option<String>,
         only_changed: bool,
     ) -> Result<(), String> {
+        if group.is_virtual() {
+            return self.deploy_members(group, run_id, only_changed, None).await;
+        }
         let scratch = self
             .inner
             .settings
@@ -559,6 +599,25 @@ impl ControlPlane {
             .await;
 
         // 2. Members in order.
+        let checkout = Checkout {
+            git,
+            dir: checkout,
+            sha,
+        };
+        self.deploy_members(group, run_id, only_changed, Some(&checkout))
+            .await
+    }
+
+    /// Deploys the members in order, from `checkout` or (a virtual group)
+    /// each from its own source.
+    async fn deploy_members(
+        &self,
+        group: &GroupState,
+        run_id: &str,
+        only_changed: bool,
+        checkout: Option<&Checkout>,
+    ) -> Result<(), String> {
+        let sha = checkout.map(|c| c.sha.clone());
         let mut switched: Vec<(ProjectId, Option<String>)> = Vec::new();
         for member in &group.members {
             if self
@@ -574,16 +633,20 @@ impl ControlPlane {
             let pid = project.id.to_string();
             let live_commit = self.live_commit(&project);
             if only_changed {
-                if let Some(reason) = self
-                    .unchanged_reason(
-                        &git,
-                        &checkout,
-                        live_commit.as_deref(),
-                        &sha,
-                        &member.watch_paths,
-                    )
-                    .await
-                {
+                let reason = match checkout {
+                    Some(c) => {
+                        self.unchanged_reason(
+                            &c.git,
+                            &c.dir,
+                            live_commit.as_deref(),
+                            &c.sha,
+                            &member.watch_paths,
+                        )
+                        .await
+                    }
+                    None => self.no_new_commits(&project.id).await,
+                };
+                if let Some(reason) = reason {
                     let _ = self
                         .record(
                             "GroupMemberSkipped",
@@ -594,16 +657,16 @@ impl ControlPlane {
                     continue;
                 }
             }
-            let dir = match &project.source_subdir {
-                Some(sub) => checkout.join(sub),
-                None => checkout.clone(),
-            };
+            let dir = checkout.map(|c| match &project.source_subdir {
+                Some(sub) => c.dir.join(sub),
+                None => c.dir.clone(),
+            });
             let previous = project.current_release.clone();
             let queued = self
                 .queue_deployment(DeployRequest {
                     project_id: project.id,
-                    branch: Some(group.branch.clone()),
-                    source_dir: Some(dir),
+                    branch: checkout.map(|_| group.branch.clone()),
+                    source_dir: dir,
                     trigger: format!("group:{}", group.name),
                     ..Default::default()
                 })
@@ -682,6 +745,14 @@ impl ControlPlane {
             )
             .await;
         Ok(())
+    }
+
+    /// `Some(reason)` when a virtual group's member has nothing new to
+    /// deploy. A failed or inconclusive check deploys the app.
+    async fn no_new_commits(&self, project_id: &ProjectId) -> Option<String> {
+        let status = self.check_updates(project_id).await.ok()?;
+        (status.deployed && status.up_to_date && status.error.is_none())
+            .then(|| "No new commits".to_string())
     }
 
     /// The commit a project's live release was built from, when known.
@@ -852,6 +923,13 @@ impl ControlPlane {
             }
         }
     }
+}
+
+/// The one clone a repository group's members are built from.
+struct Checkout {
+    git: Git,
+    dir: std::path::PathBuf,
+    sha: String,
 }
 
 /// Files changed between two commits of a checkout (paths from its root).

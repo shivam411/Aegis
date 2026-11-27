@@ -172,6 +172,9 @@ impl From<aegis_control::LiveCheck> for LiveCheckDto {
 pub struct ProjectGroupDto {
     pub id: String,
     pub name: String,
+    /// No shared repository: the app still deploys on its own too.
+    #[serde(default, rename = "virtual")]
+    pub is_virtual: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -373,7 +376,11 @@ impl From<ProjectView> for ProjectDto {
                 process_ids: s.process_ids.iter().map(|i| i.to_string()).collect(),
                 until: s.until,
             }),
-            group: view.group.map(|(id, name)| ProjectGroupDto { id, name }),
+            group: view.group.map(|(id, name, is_virtual)| ProjectGroupDto {
+                id,
+                name,
+                is_virtual,
+            }),
             commit: view.commit,
             updates: view.updates.map(Into::into),
             protected: false,

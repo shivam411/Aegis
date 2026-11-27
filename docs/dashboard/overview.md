@@ -46,7 +46,8 @@ Start, Stop and Restart appear once the app has a release.
 ## Grid or list, and bulk actions
 
 - **Grid / List** switches cards and a table. Remembered in this browser.
-- Deployers and admins get checkboxes and **Select all**. **Deploy**, **Restart**, **Start**, **Stop** then act on all after one confirmation, one at a time; a message lists failures. Apps without a release are skipped by Start, Restart, Stop. **Clear** empties the selection.
+- Deployers and admins get checkboxes and **Select all**. **Deploy**, **Restart**, **Start**, **Stop** then act on all after one confirmation, one at a time; a message lists failures. Apps without a release are skipped by Start, Restart, Stop. After **Deploy**, queued apps are unticked (failed ones stay ticked). **Clear** empties the selection.
+- Admins: tick two or more apps and choose **Group** to put them in a [virtual group](../groups.md#virtual-groups).
 - [Grouped](groups.md) apps can't be selected; deploy them via their group.
 
 ## Help

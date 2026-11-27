@@ -140,6 +140,8 @@ fn user_only(path: &str) -> bool {
         // Installing a new Aegis binary (and asking GitHub on demand).
         || path.starts_with("/api/v1/system/update/")
         || path == "/api/v1/system/prometheus"
+        // The assistant reads every app's logs (owner only, see assistant.rs).
+        || path.starts_with("/api/v1/system/assistant")
         // Disk use and cleanup; the server's Docker containers.
         || path.starts_with("/api/v1/system/storage")
         || path.starts_with("/api/v1/docker/")
@@ -204,7 +206,7 @@ pub(crate) fn required_role(method: &Method, path: &str) -> Role {
         // Variable names and their sources (never values).
         ["projects", _, "env"] if read => Role::Viewer,
         // Disk use is for admins; Docker has its own per-user permission.
-        ["system", "storage", ..] => Role::Admin,
+        ["system", "storage" | "assistant", ..] => Role::Admin,
         ["docker", ..] => Role::Viewer,
         _ if read => Role::Viewer,
         // Checking now and installing a new Aegis version.
@@ -777,7 +779,8 @@ async fn github_event(
                 .map_err(|e| ApiError::bad_request(e.to_string()))?;
             // A group deploys its apps together, from its own webhook: the
             // same push must not also deploy this app on its own.
-            if let Some(group) = st.control.group_of(&project.id) {
+            let repo_group = st.control.group_of(&project.id).filter(|g| !g.is_virtual());
+            if let Some(group) = repo_group {
                 return Ok(webhook_result(
                     StatusCode::ACCEPTED,
                     "ignored",

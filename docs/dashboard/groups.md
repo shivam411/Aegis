@@ -24,3 +24,7 @@ Click the group's name.
 - **Group settings** (admins): name, repository, branch, roll back on failure, **Delete group** (apps stay).
 
 An app's page shows a **Group** link next to its status.
+
+## Virtual groups
+
+Tick two or more apps on the Overview and choose **Group** to group apps from different sources. A virtual group deploys in order and rolls back like any group, but each app deploys from its own source: no shared commit, watch paths or group webhook. See [Virtual groups](../groups.md#virtual-groups).

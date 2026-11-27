@@ -176,6 +176,7 @@ async fn new_commits_on_the_branch_and_in_a_folder() {
                 repository_url: r.to_string_lossy().to_string(),
                 branch: "main".into(),
                 rollback_on_failure: None,
+                virtual_group: false,
             },
             vec![MemberSpec {
                 project_id: app,

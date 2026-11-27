@@ -207,7 +207,7 @@ async fn deploys_behind_the_proxy_never_drop_a_request() {
 
     // Domain validation and uniqueness.
     assert!(control
-        .map_domain(project, "*.example.com", "off", None, None)
+        .map_domain(project, "a.*.example.com", "off", None, None)
         .await
         .is_err());
     assert!(control

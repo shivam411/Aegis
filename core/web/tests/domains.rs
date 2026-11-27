@@ -111,7 +111,10 @@ async fn domains_are_mapped_by_users_and_read_by_tokens() {
     assert_eq!(domain["tls"], "acme");
 
     for (body, code) in [
-        (json!({"domain": "*.example.com"}), StatusCode::BAD_REQUEST),
+        (
+            json!({"domain": "a.*.example.com"}),
+            StatusCode::BAD_REQUEST,
+        ),
         (json!({"domain": "10.0.0.1"}), StatusCode::BAD_REQUEST),
         (
             json!({"domain": "a.example.com", "tls": "maybe"}),

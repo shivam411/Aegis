@@ -18,16 +18,21 @@ pub mod proxy;
 pub mod routes;
 
 pub use acme::{AcmeSettings, ChallengeStore, LETS_ENCRYPT_PRODUCTION, LETS_ENCRYPT_STAGING};
-pub use aegis_types::domain::normalize_domain;
+pub use aegis_types::domain::{normalize_domain, normalize_route_domain, wildcard_of};
 pub use certs::{CertStatus, CertStore};
 pub use routes::{DomainRoute, InFlight, Resolution, RouteTable, Target, TlsMode};
 
 use chrono::Utc;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// How many subdomains of one wildcard route get their own certificate.
+/// Anyone can ask for any subdomain, and certificate authorities limit how
+/// many a registered domain may have.
+pub const MAX_ON_DEMAND_CERTS: usize = 20;
 
 /// How long to wait before retrying a failed ACME order for a domain. Let's
 /// Encrypt allows only a few failed validations per hour.
@@ -114,6 +119,9 @@ pub(crate) struct Inner {
     file_errors: Mutex<HashMap<String, String>>,
     acme_busy: Mutex<Option<String>>,
     wake: tokio::sync::Notify,
+    /// Subdomains of wildcard routes with their own ACME certificate (or
+    /// waiting for one).
+    on_demand: Mutex<BTreeSet<String>>,
 }
 
 /// A cheap, cloneable handle to the proxy's routing and certificate state.
@@ -145,6 +153,7 @@ impl Ingress {
                 file_errors: Mutex::new(HashMap::new()),
                 acme_busy: Mutex::new(None),
                 wake: tokio::sync::Notify::new(),
+                on_demand: Mutex::new(BTreeSet::new()),
             }),
         }
     }
@@ -170,6 +179,9 @@ impl Ingress {
         inner.acme_failures.lock().unwrap().remove(domain);
         match route.tls {
             TlsMode::Files => self.load_files(domain, &route),
+            // A wildcard has no certificate of its own: load the ones
+            // already issued to its subdomains.
+            TlsMode::Acme if domain.starts_with("*.") => self.load_on_demand(domain),
             TlsMode::Acme => {
                 let (cert, key) = certs::acme_paths(&inner.config.certs_dir, domain);
                 if cert.exists() {
@@ -183,8 +195,78 @@ impl Ingress {
             }
             TlsMode::Off => {}
         }
+        if route.tls != TlsMode::Acme {
+            self.forget_on_demand(domain);
+        }
         inner.routes.set_domain(domain, route);
         inner.wake.notify_one();
+    }
+
+    /// Loads the certificates already stored for subdomains of `pattern`.
+    fn load_on_demand(&self, pattern: &str) {
+        let inner = &self.inner;
+        let Ok(entries) = std::fs::read_dir(&inner.config.certs_dir) else {
+            return;
+        };
+        let mut hosts: Vec<String> = entries
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|h| wildcard_of(h).as_deref() == Some(pattern))
+            .filter(|h| inner.routes.domain(h).is_none())
+            .collect();
+        hosts.sort();
+        for host in hosts.into_iter().take(MAX_ON_DEMAND_CERTS) {
+            let (cert, key) = certs::acme_paths(&inner.config.certs_dir, &host);
+            match certs::load_cert_files(&cert, &key) {
+                Ok(loaded) => {
+                    inner.certs.insert(&host, loaded);
+                    inner.on_demand.lock().unwrap().insert(host);
+                }
+                Err(e) => {
+                    tracing::warn!(domain = %host, error = %e, "Stored certificate is unusable")
+                }
+            }
+        }
+    }
+
+    /// Drops the per-subdomain certificates of a wildcard that no longer
+    /// uses them (the files stay on disk).
+    fn forget_on_demand(&self, pattern: &str) {
+        let inner = &self.inner;
+        inner.on_demand.lock().unwrap().retain(|host| {
+            let covered = wildcard_of(host).as_deref() == Some(pattern);
+            if covered && inner.routes.domain(host).is_none() {
+                inner.certs.remove(host);
+                inner.acme_failures.lock().unwrap().remove(host);
+            }
+            !covered
+        });
+    }
+
+    /// Notes that `host` was asked for: when a wildcard route with automatic
+    /// HTTPS covers it, a certificate is requested for it.
+    fn want_certificate(&self, host: &str) {
+        let inner = &self.inner;
+        if inner.config.acme.is_none() || inner.certs.contains(host) {
+            return;
+        }
+        // Only a real hostname gets as far as the certificate authority.
+        if normalize_domain(host).ok().as_deref() != Some(host) {
+            return;
+        }
+        let Some((pattern, route)) = inner.routes.matching(host) else {
+            return;
+        };
+        if pattern == host || route.tls != TlsMode::Acme {
+            return;
+        }
+        let mut hosts = inner.on_demand.lock().unwrap();
+        let used = hosts
+            .iter()
+            .filter(|h| wildcard_of(h).as_deref() == Some(pattern.as_str()))
+            .count();
+        if used < MAX_ON_DEMAND_CERTS {
+            hosts.insert(host.to_string());
+        }
     }
 
     fn load_files(&self, domain: &str, route: &DomainRoute) {
@@ -213,6 +295,7 @@ impl Ingress {
 
     pub fn remove_domain(&self, domain: &str) {
         self.inner.routes.remove_domain(domain);
+        self.forget_on_demand(domain);
         self.inner.certs.remove(domain);
         self.inner.file_errors.lock().unwrap().remove(domain);
         self.inner.acme_failures.lock().unwrap().remove(domain);
@@ -275,6 +358,29 @@ impl Ingress {
             return status;
         }
         let now = Utc::now();
+        if mode == TlsMode::Acme && domain.starts_with("*.") {
+            let issued = self
+                .inner
+                .on_demand
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|h| wildcard_of(h).as_deref() == Some(domain))
+                .filter(|h| self.inner.certs.contains(h))
+                .count();
+            if self.inner.config.acme.is_none() {
+                status.state = "disabled".into();
+                status.message =
+                    Some("Automatic HTTPS is off; enable [proxy.acme] in aegis.toml".into());
+            } else {
+                status.state = "on_demand".into();
+                status.message = Some(format!(
+                    "Each subdomain gets its certificate on first visit ({} of at most {} issued)",
+                    issued, MAX_ON_DEMAND_CERTS
+                ));
+            }
+            return status;
+        }
         if let Some(cert) = self.inner.certs.get(domain) {
             status.not_after = cert.not_after.map(|t| t.to_rfc3339());
             status.state = match cert.not_after {
@@ -369,7 +475,23 @@ impl Ingress {
         let inner = &self.inner;
         let now = Utc::now();
         let mut due = Vec::new();
-        for (domain, route) in inner.routes.domains() {
+        // Names the TLS handshake or a plain visit had no certificate for.
+        for host in inner.certs.take_missed() {
+            self.want_certificate(&host);
+        }
+        // Mapped names, then the subdomains a wildcard has been asked for
+        // (the wildcard itself can't be validated over HTTP).
+        let mut names = inner.routes.domains();
+        names.retain(|(d, r)| !(r.tls == TlsMode::Acme && d.starts_with("*.")));
+        let hosts: Vec<String> = inner.on_demand.lock().unwrap().iter().cloned().collect();
+        for host in hosts {
+            if let Some((pattern, route)) = inner.routes.matching(&host) {
+                if pattern != host {
+                    names.push((host, route));
+                }
+            }
+        }
+        for (domain, route) in names {
             match route.tls {
                 TlsMode::Files => {
                     let (Some(cert), Some(key)) = (&route.cert_path, &route.key_path) else {
@@ -434,8 +556,8 @@ impl Ingress {
             // The domain may have been unmapped while the order ran.
             let still_acme = inner
                 .routes
-                .domain(&domain)
-                .is_some_and(|r| r.tls == TlsMode::Acme);
+                .matching(&domain)
+                .is_some_and(|(_, r)| r.tls == TlsMode::Acme);
             match stored {
                 Ok(loaded) if still_acme => {
                     tracing::info!(domain = %domain, not_after = ?loaded.not_after, "Certificate issued");
@@ -471,6 +593,7 @@ impl Ingress {
             tokio::select! {
                 _ = tokio::time::sleep(self.inner.config.maintenance_interval) => {}
                 _ = self.inner.wake.notified() => {}
+                _ = self.inner.certs.on_miss.notified() => {}
                 _ = &mut shutdown => return,
             }
         }

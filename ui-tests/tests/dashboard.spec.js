@@ -207,9 +207,18 @@ test('full lifecycle from the browser', async ({ page }) => {
     await expect(row).toBeVisible();
     await expect(row).toContainText('HTTP only');
     // Invalid names are refused by the server.
-    await card.locator('#domain-name').fill('*.example.com');
+    await card.locator('#domain-name').fill('a.*.example.com');
     await card.getByRole('button', { name: 'Add domain' }).click();
-    await expect(page.locator('.toast.bad', { hasText: 'Wildcard' })).toBeVisible();
+    await expect(page.locator('.toast.bad', { hasText: 'wildcard' })).toBeVisible();
+    // A wildcard as the first label covers every subdomain.
+    await card.locator('#domain-name').fill('*.example.com');
+    await card.locator('#domain-tls').selectOption('off');
+    await card.getByRole('button', { name: 'Add domain' }).click();
+    const wildcard = card.locator('tr[data-domain="*.example.com"]');
+    await expect(wildcard).toContainText('HTTP only');
+    await wildcard.getByRole('button', { name: 'Remove' }).click();
+    await confirm(page, 'Remove');
+    await expect(wildcard).toHaveCount(0);
     await row.getByRole('button', { name: 'Remove' }).click();
     await confirm(page, 'Remove');
     await expect(row).toHaveCount(0);

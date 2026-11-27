@@ -839,3 +839,9 @@ input[aria-invalid="true"] { border-color: var(--bad); }
 .kv dt { color: var(--text-muted); } .kv dd { margin: 0; font-weight: 550; }
 .container-row { cursor: pointer; }
 .container-row[aria-selected="true"] { background: var(--accent-soft); }
+
+.chat { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.chat-msg { max-width: 85%; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; }
+.chat-msg.you { align-self: flex-end; background: var(--accent-soft); border-color: transparent; }
+.chat-msg.pending { opacity: .6; }
+.chat-msg.error { color: var(--bad); }
