@@ -79,7 +79,7 @@ impl ControlPlane {
         key_path: Option<String>,
     ) -> ControlResult<DomainView> {
         let domain =
-            aegis_ingress::normalize_domain(domain).map_err(ControlError::InvalidArgument)?;
+            aegis_ingress::normalize_route_domain(domain).map_err(ControlError::InvalidArgument)?;
         let mode = TlsMode::parse(tls).ok_or_else(|| {
             ControlError::InvalidArgument("tls must be \"acme\", \"files\" or \"off\"".into())
         })?;

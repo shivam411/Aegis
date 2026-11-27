@@ -9,6 +9,7 @@
 mod access;
 mod api;
 mod appconfig;
+mod assistant;
 mod auth;
 mod backup;
 mod docker;
@@ -288,7 +289,9 @@ impl Modify for SecuritySchemes {
         backup::list_backups, backup::create_backup, backup::download_backup,
         backup::delete_backup,
         update::update_status, update::check_update, update::apply_update,
-        metrics::prometheus_status, metrics::set_prometheus, metrics::grafana_dashboard
+        metrics::prometheus_status, metrics::set_prometheus, metrics::grafana_dashboard,
+        assistant::assistant_status, assistant::set_assistant, assistant::install_assistant,
+        assistant::set_assistant_credential, assistant::ask_assistant
     ),
     components(schemas(
         StatusDto, ProjectDto, ScheduleDto, ProcessDto, InstanceDto, StandbyDto, ReleaseDto,
@@ -310,7 +313,7 @@ impl Modify for SecuritySchemes {
         SetSecretRequest, SecretSaved, DiffLineDto, ConfigPreviewDto, WebhookDeliveryDto,
         WebhookStatusDto, backup::BackupDto, backup::CreateBackupRequest,
         update::UpdateStatusDto, update::LatestReleaseDto, update::LastUpdateDto,
-        update::ApplyUpdateRequest, metrics::PrometheusDto, metrics::SetPrometheusRequest, sources::DeployKeyDto, sources::CreateDeployKeyRequest,
+        update::ApplyUpdateRequest, metrics::PrometheusDto, metrics::SetPrometheusRequest, assistant::AssistantDto, assistant::SetAssistantRequest, assistant::AssistantCredentialRequest, assistant::AssistantChatRequest, assistant::AssistantReplyDto, sources::DeployKeyDto, sources::CreateDeployKeyRequest,
         sources::AccessCheckDto, sources::CheckAccessRequest, sources::ScanInfoDto,
         sources::ScanRequest, sources::ScanWarningDto, sources::StartHintDto,
         sources::ScanCandidateDto, sources::ScanResultDto, sources::ImportAppRequest,
@@ -364,6 +367,19 @@ pub fn router(state: AppState) -> Router {
             get(metrics::prometheus_status).put(metrics::set_prometheus),
         )
         .route("/system/grafana-dashboard", get(metrics::grafana_dashboard))
+        .route(
+            "/system/assistant",
+            get(assistant::assistant_status).put(assistant::set_assistant),
+        )
+        .route(
+            "/system/assistant/install",
+            post(assistant::install_assistant),
+        )
+        .route(
+            "/system/assistant/credential",
+            put(assistant::set_assistant_credential),
+        )
+        .route("/system/assistant/chat", post(assistant::ask_assistant))
         .route("/system/storage", get(storage::storage))
         .route("/system/storage/cleanup", post(storage::cleanup))
         .route("/system/storage/auto", put(storage::set_auto))

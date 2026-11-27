@@ -373,7 +373,7 @@ impl ControlPlane {
         if unchanged {
             return Ok(project);
         }
-        if let Some(group) = self.group_of(&project_id) {
+        if let Some(group) = self.group_of(&project_id).filter(|g| !g.is_virtual()) {
             return Err(ControlError::FailedPrecondition(format!(
                 "'{}' is in group '{}', which deploys it from {} @ {}; remove it from the group first",
                 project.name, group.name, group.repository_url, group.branch

@@ -628,6 +628,7 @@ const ROUTES = [
   [/^\/account$/, accountPage, 'account'],
   [/^\/system$/, systemPage, 'system'],
   [/^\/docker$/, dockerPage, 'docker'],
+  [/^\/assistant$/, assistantPage, 'assistant'],
 ];
 
 function currentPath() {
@@ -690,6 +691,7 @@ function shell(section) {
       h('a', { href: '#/events', 'data-nav': 'events' }, 'Events'),
       h('a', { href: '#/docker', 'data-nav': 'docker', hidden: true }, 'Docker'),
       h('a', { href: '#/system', 'data-nav': 'system', hidden: true }, 'System'),
+      h('a', { href: '#/assistant', 'data-nav': 'assistant', hidden: true }, 'Assistant'),
       h('a', { href: '#/account', 'data-nav': 'account' }, 'Account'));
     const main = h('main', { id: 'main' });
     const banner = h('div', { id: 'update-banner', class: 'update-banner', 'aria-live': 'polite' });
@@ -707,6 +709,8 @@ function shell(section) {
     state.shell = { root: h('div', {}, bar, banner, main), main };
     replace($('#app'), state.shell.root);
     refreshUpdate();
+    // Shown to the owner once they have turned the assistant on.
+    if (can('admin')) api('GET', '/system/assistant').then((r) => showAssistantNav(r.enabled)).catch(() => {});
   }
   for (const a of state.shell.root.querySelectorAll('[data-nav]')) {
     if (a.dataset.nav === 'docker') a.hidden = !state.session?.docker_access;
@@ -717,6 +721,11 @@ function shell(section) {
   replace(state.shell.main);
   window.scrollTo(0, 0);
   return state.shell.main;
+}
+
+function showAssistantNav(on) {
+  const link = state.shell?.root.querySelector('[data-nav="assistant"]');
+  if (link) link.hidden = !on;
 }
 
 /** A page title with its help button (`help` is a key of HELP). */
@@ -1415,8 +1424,19 @@ function appsToolbar(apps, selected, view, setView, redraw, reload) {
           class: `btn small${danger ? ' danger' : ''}${action === 'deploy' ? ' primary' : ''}`,
           type: 'button',
           'data-bulk': action,
-          onclick: (e) => bulkAction(action, chosen, e.currentTarget, reload),
+          // A queued deployment unticks its app; failed ones stay ticked.
+          onclick: (e) => bulkAction(action, chosen, e.currentTarget, reload, (names) => {
+            if (action !== 'deploy') return;
+            for (const name of names) selected.delete(name);
+            redraw();
+          }),
         }, label));
+      }
+      if (can('admin') && chosen.length >= 2) {
+        parts.push(h('button', {
+          class: 'btn small', type: 'button', 'data-bulk': 'group', title: 'Put the selected apps in a group',
+          onclick: (e) => groupSelection(chosen, e.currentTarget, () => { selected.clear(); reload().catch(() => {}); }),
+        }, 'Group'));
       }
       parts.push(h('button', { class: 'btn small ghost', type: 'button', 'data-bulk': 'clear', onclick: () => { selected.clear(); redraw(); } }, 'Clear'));
     }
@@ -1425,7 +1445,7 @@ function appsToolbar(apps, selected, view, setView, redraw, reload) {
 }
 
 /** Deploy, start, restart or stop the chosen apps one after another and report. */
-async function bulkAction(action, apps, btn, reload) {
+async function bulkAction(action, apps, btn, reload, after) {
   const needsProcess = action !== 'deploy';
   const doable = apps.filter((p) => !needsProcess || p.current_release);
   const skipped = apps.length - doable.length;
@@ -1443,21 +1463,48 @@ async function bulkAction(action, apps, btn, reload) {
   if (!ok) return;
   btn.disabled = true;
   const failed = [];
+  const succeeded = [];
   for (const p of doable) {
     try {
       if (action === 'deploy') await api('POST', `/projects/${enc(p.name)}/deploy`, {});
       else if (action === 'rollback') await api('POST', `/projects/${enc(p.name)}/rollback`, {});
       else await api('POST', `/processes/${enc(p.name)}/${action}`);
+      succeeded.push(p.name);
     } catch (err) {
       if (err.status === 401) return;
       failed.push(`${p.name}: ${err.message}`);
     }
   }
   btn.disabled = false;
-  const done = doable.length - failed.length;
+  if (after) after(succeeded);
+  const done = succeeded.length;
   const past = { deploy: 'queued for deployment', restart: 'restarted', start: 'started', stop: 'stopped', rollback: 'rolled back to the previous release' }[action];
   toast(`${done} app${done === 1 ? '' : 's'} ${past}${failed.length ? `; ${failed.length} failed: ${failed.join('; ')}` : ''}`, failed.length ? 'bad' : '');
   reload().catch(() => {});
+}
+
+/** Names a virtual group and puts the chosen apps in it, in list order. */
+async function groupSelection(apps, btn, after) {
+  const name = h('input', { id: 'virtual-group-name', autocomplete: 'off', required: true, maxlength: 64 });
+  const rollback = h('input', { type: 'checkbox', id: 'virtual-group-rollback', checked: true });
+  const result = await modal((dlg) =>
+    h('form', { method: 'dialog' },
+      h('div', { class: 'dialog-body' },
+        h('h2', {}, `Group ${apps.length} apps`),
+        h('p', { class: 'muted small' }, `${apps.map((p) => p.name).join(', ')}. They deploy together, in this order; you can reorder them on the group page.`),
+        h('div', { class: 'field' }, h('label', { for: 'virtual-group-name' }, 'Group name'), name),
+        h('label', { class: 'small', for: 'virtual-group-rollback' }, rollback, ' When an app fails, roll back the apps already switched')),
+      h('div', { class: 'form-actions' },
+        h('button', { class: 'btn', type: 'button', onclick: () => dlg.close('cancel') }, 'Cancel'),
+        h('button', { class: 'btn primary', value: 'ok', type: 'submit', 'data-confirm': '' }, 'Create group'))));
+  if (result !== 'ok' || !name.value.trim()) return;
+  const res = await run(btn, () => api('POST', '/groups', {
+    name: name.value.trim(),
+    virtual: true,
+    rollback_on_failure: rollback.checked,
+    members: apps.map((p) => ({ project: p.id, watch_paths: [] })),
+  }), (g) => `Group ${g.name} created`);
+  if (res) after();
 }
 
 function appCard(project, activeDeployment, reload, sel) {
@@ -1527,6 +1574,11 @@ function groupRunPill(run) {
   return h('span', { 'data-group-run': run.status }, pill(run.status === 'Running' ? 'Deploying' : run.status, GROUP_RUN_KIND[run.status] ?? ''));
 }
 
+/** Where a group's apps come from, for headings. */
+function groupSource(group) {
+  return group.virtual ? 'Virtual group: each app deploys from its own source' : `${group.repository_url} @ ${group.branch}`;
+}
+
 /** Overview: a group as one card with its apps inside. */
 function groupCard(group, projects, active, reload) {
   const runOf = (id) => group.last_deployment?.members.find((m) => m.project_id === id);
@@ -1558,7 +1610,7 @@ function groupCard(group, projects, active, reload) {
         h('span', { 'data-group-updates': String(changed) },
           behind > 0 ? pill(`${behind} new commit${behind === 1 ? '' : 's'} · ${changed} app${changed === 1 ? '' : 's'} changed`, 'info') : null),
         groupRunPill(group.last_deployment)),
-      h('div', { class: 'source muted truncate', title: `${group.repository_url} @ ${group.branch}` }, `${group.repository_url} @ ${group.branch}`),
+      h('div', { class: 'source muted truncate', title: groupSource(group) }, groupSource(group)),
       h('table', { class: 'table compact' },
         h('thead', {}, h('tr', {}, h('th', {}, 'App'), h('th', {}, 'Status'), h('th', {}, 'Version'), h('th', {}, ''))),
         h('tbody', {}, rows))),
@@ -1574,15 +1626,15 @@ function groupFields(group = {}) {
   const el = [
     h('div', { class: 'row' },
       h('div', { class: 'field' }, h('label', { for: 'group-name' }, 'Group name'), name),
-      h('div', { class: 'field' }, h('label', { for: 'group-branch' }, 'Branch'), branch)),
-    h('div', { class: 'field' }, h('label', { for: 'group-repo' }, 'Repository URL'), repo,
+      group.virtual ? null : h('div', { class: 'field' }, h('label', { for: 'group-branch' }, 'Branch'), branch)),
+    group.virtual ? null : h('div', { class: 'field' }, h('label', { for: 'group-repo' }, 'Repository URL'), repo,
       h('span', { class: 'hint' }, 'Every app in the group is deployed from this repository and branch.')),
     h('label', { class: 'small', for: 'group-rollback' }, rollback, ' When an app fails, roll back the apps this group deployment already switched'),
   ];
   const read = () => ({
     name: name.value.trim(),
-    repository_url: repo.value.trim(),
-    branch: branch.value.trim() || null,
+    repository_url: group.virtual ? '' : repo.value.trim(),
+    branch: group.virtual ? null : branch.value.trim() || null,
     rollback_on_failure: rollback.checked,
   });
   return { el, read, repo, branch };
@@ -1654,7 +1706,7 @@ async function groupPage(main, ctx, key) {
       h('h1', {}, group.name), helpButton('groups'), groupRunPill(group.last_deployment),
       h('span', { 'data-group-updates': '' }),
       h('div', { class: 'spacer' }), groupButtons(group, reload, { small: false }),
-      h('div', { class: 'subtitle muted small' }, `${group.repository_url} @ ${group.branch} · ${group.members.length} app${group.members.length === 1 ? '' : 's'}`)));
+      h('div', { class: 'subtitle muted small' }, `${groupSource(group)} · ${group.members.length} app${group.members.length === 1 ? '' : 's'}`)));
 
     const admin = can('admin');
     const rows = group.members.map((m, i) => {
@@ -1687,16 +1739,18 @@ async function groupPage(main, ctx, key) {
         h('td', { class: 'mono small' }, m.current_release || '–', m.commit ? h('div', { class: 'muted' }, m.commit.slice(0, 10)) : null),
         h('td', { 'data-member-updates': '' }),
         h('td', {}, last ? pill(last.status, MEMBER_RUN_KIND[last.status] ?? '') : null, last?.reason ? h('div', { class: 'muted small' }, last.reason) : null),
-        h('td', {}, h('div', { class: 'row' }, watch, admin ? saveBtn : null)),
+        group.virtual ? null : h('td', {}, h('div', { class: 'row' }, watch, admin ? saveBtn : null)),
         admin ? h('td', {}, move(-1, 'Move up'), move(1, 'Move down'), removeBtn) : null);
     });
     const membersCard = h('section', { class: 'card', 'data-card': 'group-members' },
       cardHeader('Apps', 'groups.members'),
       h('div', { class: 'card-body' },
-        h('p', { class: 'muted small' }, 'Deployed in this order. An app with watch paths is only deployed by "Deploy changed only" (and the webhook) when a file matching them changed since its live commit; without watch paths, any change counts.'),
+        h('p', { class: 'muted small' }, group.virtual
+          ? 'Deployed in this order. "Deploy changed only" skips apps with no new commits.'
+          : 'Deployed in this order. An app with watch paths is only deployed by "Deploy changed only" (and the webhook) when a file matching them changed since its live commit; without watch paths, any change counts.'),
         group.members.length
           ? h('table', { class: 'table' },
-            h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'App'), h('th', {}, 'Live'), h('th', {}, 'Changes'), h('th', {}, 'Last group deployment'), h('th', {}, 'Watch paths'), admin ? h('th', {}, '') : null)),
+            h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'App'), h('th', {}, 'Live'), h('th', {}, 'Changes'), h('th', {}, 'Last group deployment'), group.virtual ? null : h('th', {}, 'Watch paths'), admin ? h('th', {}, '') : null)),
             h('tbody', {}, rows))
           : h('p', {}, 'No apps yet.'),
         admin ? addMemberForm() : null));
@@ -1706,17 +1760,19 @@ async function groupPage(main, ctx, key) {
       cardHeader('Group deployments', 'groups'),
       h('div', { class: 'card-body', 'data-group-history': '' }, h('p', { class: 'muted small' }, 'Loading…')));
     loadHistory(history.querySelector('[data-group-history]'));
-    const commitsCard = h('section', { class: 'card', 'data-card': 'group-commits' },
+    const commitsCard = group.virtual ? null : h('section', { class: 'card', 'data-card': 'group-commits' },
       cardHeader(`New commits on ${group.branch}`, 'app.updates'),
       h('div', { class: 'card-body', 'data-group-commits': '' }, h('p', { class: 'muted small' }, 'Checking…')));
     replace(body, membersCard, commitsCard, history,
-      admin ? hookCard(`/groups/${enc(group.id)}/webhook`, 'groups.webhook', 'this group') : null,
+      admin && !group.virtual ? hookCard(`/groups/${enc(group.id)}/webhook`, 'groups.webhook', 'this group') : null,
       settingsCard);
     drawGroupUpdates(ctx, group, main);
   };
 
   const addMemberForm = () => {
-    const apps = eligibleApps(projects, group.repository_url, group.branch, group.id)
+    const apps = (group.virtual
+      ? projects.filter((p) => !p.group || p.group.id === group.id)
+      : eligibleApps(projects, group.repository_url, group.branch, group.id))
       .filter((p) => !group.members.some((m) => m.project_id === p.id));
     if (!apps.length) return h('p', { class: 'muted small' }, 'Other apps deployed from this repository and branch appear here to be added.');
     const pick = h('select', { id: 'group-add', 'aria-label': 'App to add' }, apps.map((p) => h('option', { value: p.id }, p.name)));
@@ -1962,7 +2018,7 @@ function updatesCard(ctx) {
         folder ? 'in the folder' : `on ${u.branch}`, ' since the live release (', h('code', {}, (u.live_commit || '').slice(0, 8)), ')',
         u.dirty > 0 ? [' · ', pill(`${u.dirty} uncommitted file${u.dirty === 1 ? '' : 's'}`, 'warn')] : null);
     }
-    const deployLatest = can('deployer') && u.deployed && !u.up_to_date && !project.group
+    const deployLatest = can('deployer') && u.deployed && !u.up_to_date && !(project.group && !project.group.virtual)
       ? h('button', { class: 'btn small primary', type: 'button', 'data-action': 'deploy-latest' }, folder ? 'Deploy the folder' : 'Deploy latest')
       : null;
     if (deployLatest) {
@@ -1973,7 +2029,7 @@ function updatesCard(ctx) {
       });
     }
     replace(out, summary, commitList(u),
-      project.group && !u.up_to_date && u.deployed
+      project.group && !project.group.virtual && !u.up_to_date && u.deployed
         ? h('p', { class: 'muted small' }, 'This app is in group ', h('a', { href: `#/groups/${enc(project.group.name)}` }, project.group.name), ': deploy it with the group.')
         : null,
       h('div', { class: 'form-actions' }, h('span', { class: 'muted small' }, `Checked ${fmtAgo(u.checked_at)}`), deployLatest));
@@ -2307,6 +2363,51 @@ function logLevel(l) {
   return l.stream === 'err' ? 'error' : 'info';
 }
 
+// Terminal colour and cursor codes, shown as junk in a browser.
+// eslint-disable-next-line no-control-regex
+const ANSI_CODES = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const MAX_BLOCK_LINES = 500;
+
+/** Open minus closed braces and brackets, ignoring those inside strings. */
+function braceDelta(text) {
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '\\') i += 1;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === '{' || c === '[') depth += 1;
+    else if (c === '}' || c === ']') depth -= 1;
+  }
+  return depth;
+}
+
+/**
+ * Gives a line its level, in arrival order. A line ending in "{" or "["
+ * opens a block (usually pretty-printed JSON): every line of it, up to the
+ * closing brace, takes that line's level. `open` holds one block per stream.
+ */
+function annotateLine(l, open) {
+  l.line = l.line.replace(ANSI_CODES, '');
+  const block = open[l.stream];
+  // A new timestamped record ends a block that never closed.
+  if (block && !/^\s*\[?\d{4}-\d\d-\d\d[ T]\d\d:/.test(l.line)) {
+    l._lvl = block.lvl;
+    block.depth += braceDelta(l.line);
+    block.lines += 1;
+    if (block.depth <= 0 || block.lines >= MAX_BLOCK_LINES) delete open[l.stream];
+    return;
+  }
+  delete open[l.stream];
+  l._lvl = logLevel(l);
+  if (/[{[]\s*$/.test(l.line)) {
+    const depth = braceDelta(l.line);
+    if (depth > 0) open[l.stream] = { lvl: l._lvl, depth, lines: 0 };
+  }
+}
+
 const LOG_LEVELS = [['error', 'Errors'], ['warn', 'Warnings'], ['info', 'Info'], ['debug', 'Debug']];
 const LOG_RANGES = [['all', 'All time'], ['300', 'Last 5 min'], ['900', 'Last 15 min'], ['3600', 'Last hour'], ['21600', 'Last 6 hours'], ['86400', 'Last 24 hours'], ['custom', 'Custom range…']];
 
@@ -2317,6 +2418,7 @@ const LOG_RANGES = [['all', 'All time'], ['300', 'Last 5 min'], ['900', 'Last 15
  */
 function logViewer(ctx, target, opts = {}) {
   const lines = [];
+  let blocks = {};
   let pending = [];
   let paused = false;
   let query = '';
@@ -2368,7 +2470,7 @@ function logViewer(ctx, target, opts = {}) {
 
   const visible = (l) => {
     if (streamFilter !== 'all' && l.stream !== streamFilter) return false;
-    const lvl = l._lvl || (l._lvl = logLevel(l));
+    const lvl = l._lvl;
     if (lvl !== 'sys' && !levelOn[lvl]) return false;
     if (matcher ? !matcher(l.line) : query && !l.line.toLowerCase().includes(query)) return false;
     const t = stamp(l);
@@ -2381,7 +2483,7 @@ function logViewer(ctx, target, opts = {}) {
   };
 
   const lineEl = (l) => {
-    const text = h('span', { class: `msg lvl-${l._lvl || (l._lvl = logLevel(l))}` });
+    const text = h('span', { class: `msg lvl-${l._lvl}` });
     const parts = [];
     if (matcher) {
       const re = new RegExp(matcher.source, matcher.flags.includes('g') ? matcher.flags : `${matcher.flags}g`);
@@ -2422,8 +2524,7 @@ function logViewer(ctx, target, opts = {}) {
   const redraw = () => {
     const counts = { error: 0, warn: 0, info: 0, debug: 0 };
     for (const l of lines) {
-      const lvl = l._lvl || (l._lvl = logLevel(l));
-      if (counts[lvl] !== undefined) counts[lvl] += 1;
+      if (counts[l._lvl] !== undefined) counts[l._lvl] += 1;
     }
     for (const [k, n] of Object.entries(chipCounts)) n.textContent = String(counts[k]);
     const shown = lines.filter(visible);
@@ -2433,6 +2534,7 @@ function logViewer(ctx, target, opts = {}) {
   };
 
   const add = (batch) => {
+    for (const l of batch) annotateLine(l, blocks);
     lines.push(...batch);
     const overflow = lines.length - MAX_LOG_LINES;
     if (overflow > 0) {
@@ -2445,7 +2547,7 @@ function logViewer(ctx, target, opts = {}) {
       if (view.firstChild && view.firstChild.classList?.contains('notice')) view.replaceChildren();
       append(view, shown.map(lineEl));
     }
-    for (const l of batch) if (chipCounts[l._lvl || (l._lvl = logLevel(l))]) chipCounts[l._lvl].textContent = String(Number(chipCounts[l._lvl].textContent) + 1);
+    for (const l of batch) if (chipCounts[l._lvl]) chipCounts[l._lvl].textContent = String(Number(chipCounts[l._lvl].textContent) + 1);
     updateCounter();
     scroll();
   };
@@ -2478,6 +2580,7 @@ function logViewer(ctx, target, opts = {}) {
   const connect = () => {
     // Each connection replays recent history, so start from a clean slate.
     lines.length = 0;
+    blocks = {};
     pending = [];
     queued = [];
     redraw();
@@ -2514,6 +2617,8 @@ function logViewer(ctx, target, opts = {}) {
       if (!ctx.alive()) return;
       if (!paused) {
         lines.length = 0;
+        blocks = {};
+        for (const l of fresh) annotateLine(l, blocks);
         lines.push(...fresh);
         redraw();
         setStatus('Live', 'ok live');
@@ -3063,7 +3168,7 @@ function webhookCard(ctx) {
       cardHeader('GitHub webhook', 'app.webhook'),
       h('div', { class: 'card-body' }, h('p', { class: 'muted small' }, 'Webhooks need a git repository as the source.')));
   }
-  if (project.group) {
+  if (project.group && !project.group.virtual) {
     return h('section', { class: 'card', 'data-card': 'webhook' },
       cardHeader('GitHub webhook', 'app.webhook'),
       h('div', { class: 'card-body' },
@@ -3909,6 +4014,7 @@ function certPill(domain) {
     case 'error': return pill('Certificate error', 'bad');
     case 'disabled': return pill('ACME off', 'warn');
     case 'off': return pill('HTTP only', '');
+    case 'on_demand': return pill('HTTPS on first visit', 'info');
     default: return pill(`${c.state}${until}`, '');
   }
 }
@@ -3920,7 +4026,7 @@ function domainsCard(ctx) {
   const hint = h('div');
   const list = h('div', { class: 'table-wrap' });
   const domainInput = h('input', {
-    id: 'domain-name', class: 'mono', placeholder: 'app.example.com',
+    id: 'domain-name', class: 'mono', placeholder: 'app.example.com or *.example.com',
     autocomplete: 'off', spellcheck: 'false', required: true,
   });
   const tlsSelect = h('select', { id: 'domain-tls' },
@@ -3966,12 +4072,14 @@ function domainsCard(ctx) {
         const scheme = d.tls === 'off' || d.cert?.state !== 'valid' ? 'http' : 'https';
         return h('tr', { 'data-domain': d.domain },
           h('td', { 'data-label': 'Domain', class: 'mono' },
-            h('a', { href: `${scheme}://${d.domain}/`, target: '_blank', rel: 'noopener noreferrer' }, d.domain)),
+            d.domain.startsWith('*.')
+              ? h('span', { title: 'Every subdomain one level down' }, d.domain)
+              : h('a', { href: `${scheme}://${d.domain}/`, target: '_blank', rel: 'noopener noreferrer' }, d.domain)),
           h('td', { 'data-label': 'TLS' }, TLS_LABELS[d.tls] || d.tls),
           h('td', { 'data-label': 'Certificate', title: d.cert?.message || '' },
             certPill(d),
             d.cert?.not_after ? h('div', { class: 'small muted' }, `Expires ${new Date(d.cert.not_after).toLocaleDateString()}`) : null,
-            d.cert?.message && ['error', 'disabled', 'pending'].includes(d.cert.state)
+            d.cert?.message && ['error', 'disabled', 'pending', 'on_demand'].includes(d.cert.state)
               ? h('div', { class: 'small muted' }, d.cert.message) : null),
           h('td', { class: 'actions' }, removeBtn));
       }))));
@@ -5260,7 +5368,7 @@ async function accountPage(main, ctx) {
       admin ? usersCard(ctx, session.name) : null,
       admin ? tokenCard : null,
       admin ? backupCard : null,
-      admin ? monitoringCard(ctx) : null,
+      admin ? monitoringCard(ctx), assistantCard(ctx) : null,
       h('div', { class: 'grid two' }, pwForm, prefs)));
   if (admin) await Promise.all([loadTokens(), loadBackups()]);
 }
@@ -5306,6 +5414,121 @@ function monitoringCard(ctx) {
   return h('section', { class: 'card', id: 'monitoring', 'data-card': 'monitoring' },
     cardHeader('Monitoring (Prometheus & Grafana)', 'account.monitoring'),
     body);
+}
+
+/** Account: the owner turns the assistant on, installs Claude Code, adds a key. */
+function assistantCard(ctx) {
+  const body = h('div', { class: 'card-body' });
+  const section = h('section', { class: 'card', id: 'assistant', 'data-card': 'assistant', hidden: true },
+    cardHeader('Claude assistant', 'account.assistant'), body);
+  const draw = (s) => {
+    section.hidden = false;
+    showAssistantNav(s.enabled);
+    const call = async (btn, method, path, req, message) => {
+      const res = await run(btn, () => api(method, path, req), message);
+      if (res && ctx.alive()) draw(res);
+    };
+    const toggle = h('button', { class: `btn ${s.enabled ? 'danger' : 'primary'}`, type: 'button', 'data-action': 'toggle-assistant', disabled: !s.supported },
+      s.enabled ? 'Turn assistant off' : 'Turn assistant on');
+    toggle.addEventListener('click', () => call(toggle, 'PUT', '/system/assistant', { enabled: !s.enabled },
+      s.enabled ? 'The assistant is off' : 'The assistant is on'));
+    const parts = [
+      h('p', { class: 'muted small' }, 'Off until you turn it on. Claude Code runs on this server and answers questions about your apps from their status, deployments, events and logs, which are sent to Anthropic. It can only read that snapshot: it cannot run commands or change anything. Only you (the owner) can use it.'),
+      s.supported ? null : h('p', { class: 'small' }, 'Available on Linux and macOS servers.'),
+    ];
+    const actions = [toggle];
+    if (s.enabled) {
+      const install = h('button', { class: 'btn', type: 'button', 'data-action': 'install-assistant' }, s.version ? 'Update Claude Code' : 'Install Claude Code');
+      install.addEventListener('click', async () => {
+        const label = install.textContent;
+        install.textContent = 'Installing…';
+        await call(install, 'POST', '/system/assistant/install', {}, 'Claude Code installed');
+        install.textContent = label;
+      });
+      const key = h('input', { id: 'assistant-key', type: 'password', autocomplete: 'off', placeholder: 'sk-ant-…' });
+      const save = h('button', { class: 'btn', type: 'button', 'data-action': 'save-assistant-key' }, 'Save');
+      save.addEventListener('click', () => key.value.trim() && call(save, 'PUT', '/system/assistant/credential', { value: key.value.trim() }, 'Saved'));
+      const remove = h('button', { class: 'btn danger', type: 'button' }, 'Remove');
+      remove.addEventListener('click', () => call(remove, 'PUT', '/system/assistant/credential', { value: '' }, 'Removed'));
+      parts.push(
+        h('p', { class: 'small', 'data-assistant-version': '' }, s.version ? `Claude Code ${s.version}` : 'Claude Code is not installed yet.'),
+        h('div', { class: 'field' },
+          h('label', { for: 'assistant-key' }, 'Anthropic API key, or a token from "claude setup-token"'),
+          h('div', { class: 'row' }, key, save, s.credential ? remove : null),
+          h('span', { class: 'hint' }, s.credential ? `Stored (${s.credential === 'api_key' ? 'API key' : 'token'}), encrypted. It is never shown again.` : 'Stored encrypted on this server.')));
+      actions.push(install, h('a', { class: 'btn primary', href: '#/assistant' }, 'Open chat'));
+    }
+    parts.push(h('div', { class: 'form-actions' }, actions));
+    replace(body, parts.filter(Boolean));
+  };
+  // Anyone but the owner gets a 403: no card for them.
+  if (can('admin')) api('GET', '/system/assistant').then((r) => ctx.alive() && draw(r)).catch(() => {});
+  return section;
+}
+
+/** Ask Claude about this server. The conversation lives until you leave. */
+async function assistantPage(main, ctx) {
+  append(main, pageHeader('Assistant', 'assistant'));
+  let status;
+  try {
+    status = await api('GET', '/system/assistant');
+  } catch (err) {
+    append(main, errorBox(err));
+    return;
+  }
+  if (!ctx.alive()) return;
+  if (!status.enabled || !status.version || !status.credential) {
+    append(main, h('div', { class: 'card empty' },
+      h('p', {}, 'Turn the assistant on, install Claude Code and add a key first.'),
+      h('a', { class: 'btn primary', href: '#/account' }, 'Open Account')));
+    return;
+  }
+  let session = null;
+  const thread = h('div', { class: 'chat', 'aria-live': 'polite', 'data-chat': '' });
+  const input = h('textarea', { rows: 3, 'aria-label': 'Question', placeholder: 'Why did the last deployment of api fail?', maxlength: 8000 });
+  const send = h('button', { class: 'btn primary', type: 'submit', 'data-action': 'ask' }, 'Ask');
+  const fresh = h('button', { class: 'btn ghost', type: 'button', 'data-action': 'new-chat' }, 'New chat');
+  fresh.addEventListener('click', () => {
+    session = null;
+    thread.replaceChildren();
+  });
+  const bubble = (who, text) => {
+    const el = h('div', { class: `chat-msg ${who}` }, text);
+    thread.append(el);
+    el.scrollIntoView({ block: 'nearest' });
+    return el;
+  };
+  const ask = async () => {
+    const message = input.value.trim();
+    if (!message || send.disabled) return;
+    input.value = '';
+    bubble('you', message);
+    const answer = bubble('claude pending', 'Looking…');
+    send.disabled = true;
+    fresh.disabled = true;
+    try {
+      const res = await api('POST', '/system/assistant/chat', { message, session_id: session });
+      session = res.session_id;
+      answer.textContent = res.answer;
+      answer.className = 'chat-msg claude';
+    } catch (err) {
+      answer.textContent = err.message;
+      answer.className = 'chat-msg claude error';
+    }
+    send.disabled = false;
+    fresh.disabled = false;
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      ask();
+    }
+  });
+  const form = h('form', { onsubmit: (e) => { e.preventDefault(); ask(); } },
+    input, h('div', { class: 'form-actions' }, fresh, send));
+  append(main, h('section', { class: 'card' }, h('div', { class: 'card-body' },
+    h('p', { class: 'muted small' }, 'Claude reads a snapshot of app status, deployments, events and recent logs (sent to Anthropic). It cannot change anything.'),
+    thread, form)));
 }
 
 const ROLE_HELP = {

@@ -482,6 +482,15 @@ impl ControlPlane {
     /// Checks every app of a group against the group's branch (one fetch).
     pub async fn check_group_updates(&self, group_id: &str) -> ControlResult<GroupUpdates> {
         let group = self.resolve_group(group_id)?;
+        if group.is_virtual() {
+            let mut members = Vec::new();
+            for member in &group.members {
+                if let Ok(status) = self.check_updates(&member.project_id).await {
+                    members.push((member.project_id, status));
+                }
+            }
+            return Ok(summarize(members, None));
+        }
         let ssh = self.group_ssh(&group);
         let url = self.group_clone_url(&group, ssh.is_some());
         let fetched = self.fetch_cached(&url, &group.branch, ssh.as_ref()).await;

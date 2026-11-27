@@ -151,6 +151,12 @@ pub(crate) async fn handle(
         } => (domain, route, Some(port)),
     };
 
+    // The first plain-HTTP visit to a subdomain of a wildcard route asks
+    // for its certificate (HTTPS visits are noted by the TLS handshake).
+    if !https && route.tls == TlsMode::Acme && !inner.certs.contains(&domain) {
+        inner.certs.miss(&domain);
+    }
+
     // A trusted front proxy (e.g. nginx terminating TLS) may say the client
     // used HTTPS; such a request is not redirected again, which would loop.
     let trusted = inner
@@ -165,7 +171,8 @@ pub(crate) async fn handle(
         &host,
     );
 
-    if !forwarded.is_https() && route.tls != TlsMode::Off && inner.certs.contains(&domain) {
+    if !forwarded.is_https() && route.tls != TlsMode::Off && inner.certs.for_host(&domain).is_some()
+    {
         // Behind a trusted front proxy the public HTTPS port is the front
         // proxy's (443), not this listener's.
         let port_suffix = match inner.config.https_port {

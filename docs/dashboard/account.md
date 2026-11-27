@@ -30,6 +30,11 @@ Admins only. Tokens are for the CLI, scripts and CI. Send one as `Authorization:
 
 Admins only. Optional Prometheus metrics and a Grafana dashboard, off by default. See [Monitoring](monitoring.md).
 
+## Claude assistant
+
+Owner only, off by default. Turn it on, install Claude Code, add a key, then
+use the **Assistant** page. See [Assistant](assistant.md).
+
 ## Backups
 
 Admins only. A backup is a `.tar.gz` archive with the database, the secrets key (without it, app secrets can't be decrypted), the certificates and, optionally, the release directories.

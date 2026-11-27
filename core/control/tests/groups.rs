@@ -171,6 +171,7 @@ async fn a_group_deploys_its_apps_in_order_from_one_clone() {
         repository_url: url.clone(),
         branch: "main".into(),
         rollback_on_failure: None,
+        virtual_group: false,
     };
     // Only apps of the same repository and branch.
     let err = control
@@ -348,4 +349,90 @@ async fn a_group_deploys_its_apps_in_order_from_one_clone() {
     control.delete_project(web, false).await.unwrap();
     assert_eq!(control.resolve_group("ty").unwrap().members.len(), 1);
     control.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_virtual_group_deploys_apps_from_their_own_sources() {
+    let (a_repo, b_repo) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let data = TempDir::new().unwrap();
+    for repo in [a_repo.path(), b_repo.path()] {
+        git(repo, &["init", "-q", "-b", "main"]);
+        write_app(repo, free_port(), SERVE);
+        commit(repo, "c1");
+    }
+    let control = control(data.path()).await;
+    let register = |name: &str, repo: &Path| RegisterProject {
+        name: name.into(),
+        repository_url: repo.to_string_lossy().to_string(),
+        branch: "main".into(),
+        ..Default::default()
+    };
+    let a = control
+        .register_project(register("a", a_repo.path()))
+        .await
+        .unwrap()
+        .id;
+    let b = control
+        .register_project(register("b", b_repo.path()))
+        .await
+        .unwrap()
+        .id;
+    let member = |project_id| MemberSpec {
+        project_id,
+        watch_paths: vec![],
+    };
+    let spec = GroupSpec {
+        name: "both".into(),
+        virtual_group: true,
+        ..Default::default()
+    };
+    let group = control
+        .create_group(spec, vec![member(a), member(b)])
+        .await
+        .unwrap();
+    assert!(group.is_virtual());
+
+    // No shared commit to ask for.
+    assert!(control
+        .deploy_group(&group.id, Some("main".into()), false, "test")
+        .await
+        .is_err());
+
+    let run = control
+        .deploy_group(&group.id, None, false, "test")
+        .await
+        .unwrap();
+    let run = wait_group(&control, &run).await;
+    assert_eq!(run.status, "Success", "{:?}", run.error);
+    assert_eq!(status_of(&run, a), "deployed");
+    assert_eq!(status_of(&run, b), "deployed");
+
+    // Only the app with a new commit is deployed again.
+    std::fs::write(b_repo.path().join("change.txt"), "x").unwrap();
+    let c2 = commit(b_repo.path(), "c2");
+    // Past the repository cache's fetch interval.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let run = control
+        .deploy_group(&group.id, None, true, "test")
+        .await
+        .unwrap();
+    let run = wait_group(&control, &run).await;
+    assert_eq!(run.status, "Success", "{:?}", run.error);
+    assert_eq!(status_of(&run, a), "skipped");
+    assert_eq!(status_of(&run, b), "deployed");
+    assert_eq!(live(&control, b).1, c2);
+
+    // It stays virtual when renamed.
+    let renamed = control
+        .update_group(
+            &group.id,
+            GroupSpec {
+                name: "pair".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(renamed.is_virtual());
+    assert_eq!(renamed.members.len(), 2);
 }

@@ -177,7 +177,8 @@ pub struct GroupMember {
     pub watch_paths: Vec<String>,
 }
 
-/// Apps deployed from the same repository and branch, in deploy order.
+/// Apps deployed together, in deploy order: from one repository and branch,
+/// or (a virtual group, with no repository) each from its own source.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GroupState {
     pub id: String,
@@ -191,6 +192,13 @@ pub struct GroupState {
     pub created_at: String,
     /// The latest group deployment.
     pub last_deployment: Option<String>,
+}
+
+impl GroupState {
+    /// No shared repository: each member deploys from its own source.
+    pub fn is_virtual(&self) -> bool {
+        self.repository_url.is_empty()
+    }
 }
 
 /// One member's part in a group deployment.

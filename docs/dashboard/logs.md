@@ -15,6 +15,11 @@ Lines are colored by level: errors red, warnings amber, debug dim, Aegis supervi
 | Time range | Last 5 min, 15 min, hour, 6 hours, 24 hours, or **Custom range** with from/to. |
 | Stream menu | All output, stdout, stderr, or Supervisor only. |
 
+A line ending in `{` or `[` (usually pretty-printed JSON) gives its colour and
+level to every line up to the matching closing brace, so one error stays red as
+a whole and the level chips show or hide it together. Terminal colour codes are
+removed.
+
 The line count shows `shown of loaded`. The view keeps the latest 5,000 lines.
 
 ## Other controls

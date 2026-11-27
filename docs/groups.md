@@ -29,6 +29,23 @@ in one group at most, and its repository and branch must be the group's
 (GitHub URLs are compared as `github.com/owner/repo`, so `https://…` and
 `git@…` forms match).
 
+## Virtual groups
+
+A **virtual group** puts any apps together, whatever their source: different
+repositories, branches or server folders. On Overview, tick two or more apps,
+choose **Group** and give it a name (or `POST /api/v1/groups` with
+`"virtual": true` and no repository or branch).
+
+It deploys in order, stops on failure, rolls back and keeps history like any
+group. The differences:
+
+- Each app is deployed from its own source, so there is no shared commit and
+  no single clone.
+- **Deploy changed only** skips apps with no new commits. There are no watch
+  paths.
+- There is no group webhook. Each app's own webhook keeps working, and the app
+  can still be deployed on its own.
+
 ## Example: tripyog
 
 One repository, `git@github.com:tripyog/tripyog.git`, with `frontend_v2/`,

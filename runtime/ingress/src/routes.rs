@@ -9,6 +9,7 @@
 //! Passive health: when an instance refuses a connection the proxy marks its
 //! port down for [`DOWN_FOR`], and the other instances take its requests.
 
+use aegis_types::domain::wildcard_of;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -131,6 +132,15 @@ fn pick(pool: &Pool, down: &HashMap<u16, Instant>, avoid: Option<u16>) -> Option
         .or_else(|| candidates.clone().next())
 }
 
+fn match_route<'a>(routes: &'a Routes, host: &str) -> Option<(String, &'a DomainRoute)> {
+    if let Some(route) = routes.domains.get(host) {
+        return Some((host.to_string(), route));
+    }
+    let wildcard = wildcard_of(host)?;
+    let route = routes.domains.get(&wildcard)?;
+    Some((wildcard, route))
+}
+
 /// The host part of a Host header or URI authority, lowercase, without
 /// port or trailing dot. IP literals are returned as they are (and never
 /// match a route).
@@ -167,6 +177,13 @@ impl RouteTable {
 
     pub fn domain(&self, domain: &str) -> Option<DomainRoute> {
         self.routes.read().unwrap().domains.get(domain).cloned()
+    }
+
+    /// The route that serves `host`: its own, or else a wildcard covering
+    /// it. Returns the mapped name too (`host` or `*.…`).
+    pub fn matching(&self, host: &str) -> Option<(String, DomainRoute)> {
+        let routes = self.routes.read().unwrap();
+        match_route(&routes, host).map(|(name, route)| (name, route.clone()))
     }
 
     /// Points every domain of a project at `port` (or at nothing). This is
@@ -312,7 +329,8 @@ impl RouteTable {
     pub fn resolve(&self, host: &str) -> Resolution {
         let domain = host_only(host);
         let routes = self.routes.read().unwrap();
-        let Some(route) = routes.domains.get(&domain) else {
+        // `domain` stays the name asked for, also under a wildcard.
+        let Some((_, route)) = match_route(&routes, &domain) else {
             return Resolution::Unknown;
         };
         let port = match &route.target {
@@ -397,6 +415,26 @@ mod tests {
         assert_eq!(host_only("example.com"), "example.com");
         assert_eq!(host_only("[::1]:80"), "[::1]");
         assert_eq!(host_only("127.0.0.1:80"), "127.0.0.1");
+    }
+
+    #[test]
+    fn wildcard_routes_cover_one_level_and_exact_names_win() {
+        let table = RouteTable::new();
+        table.set_domain("*.example.com", DomainRoute::project("wild", TlsMode::Off));
+        table.set_domain("api.example.com", DomainRoute::project("api", TlsMode::Off));
+        let target = |host: &str| table.matching(host).map(|(name, _)| name);
+        assert_eq!(target("shop.example.com").as_deref(), Some("*.example.com"));
+        assert_eq!(
+            target("api.example.com").as_deref(),
+            Some("api.example.com")
+        );
+        assert_eq!(target("a.b.example.com"), None);
+        assert_eq!(target("example.com"), None);
+        table.set_upstream("wild", Some(4000));
+        assert!(matches!(
+            table.resolve("Shop.Example.com:443"),
+            Resolution::Upstream { ref domain, port: 4000, .. } if domain == "shop.example.com"
+        ));
     }
 
     #[test]

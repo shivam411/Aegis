@@ -4074,6 +4074,195 @@
         }
       }
     },
+    "/api/v1/system/assistant": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "assistant_status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "set_assistant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAssistantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/assistant/chat": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "ask_assistant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantReplyDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Off, not set up, busy or Claude failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/assistant/credential": {
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "set_assistant_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/assistant/install": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "install_assistant",
+        "requestBody": {
+          "description": "Empty object `{}`",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Claude Code installed with Anthropic's installer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Off, busy or the installer failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/grafana-dashboard": {
       "get": {
         "tags": [
@@ -4937,6 +5126,93 @@
               "null"
             ],
             "description": "The version the operator confirmed (e.g. `v0.2.0`); refused if the\nlatest known release is a different one."
+          }
+        }
+      },
+      "AssistantChatRequest": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From the previous reply, to continue that conversation."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AssistantCredentialRequest": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "An Anthropic API key or a `claude setup-token` token; \"\" removes it."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AssistantDto": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "supported"
+        ],
+        "properties": {
+          "credential": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "\"api_key\" or \"oauth_token\" when one is stored; the value is never returned."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Turned on by the owner (default: off)."
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "Claude Code can run on this platform."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The installed Claude Code version."
+          }
+        }
+      },
+      "AssistantReplyDto": {
+        "type": "object",
+        "required": [
+          "answer"
+        ],
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -6319,6 +6595,10 @@
             "type": "boolean",
             "description": "When a member fails, the members already switched in that group\ndeployment go back to their previous release."
           },
+          "virtual": {
+            "type": "boolean",
+            "description": "No shared repository: each app deploys from its own source."
+          },
           "webhook_configured": {
             "type": "boolean",
             "description": "A webhook secret exists for the group."
@@ -6460,6 +6740,11 @@
             ],
             "description": "Default: true.",
             "default": null
+          },
+          "virtual": {
+            "type": "boolean",
+            "description": "A virtual group: any apps, each deployed from its own source; leave\n`repository_url` and `branch` out (create only).",
+            "default": false
           }
         },
         "additionalProperties": false
@@ -7109,7 +7394,7 @@
           },
           "domain": {
             "type": "string",
-            "description": "e.g. \"app.example.com\"; no wildcards."
+            "description": "e.g. \"app.example.com\", or \"*.example.com\" for every subdomain one\nlevel down."
           },
           "key_path": {
             "type": [
@@ -7545,6 +7830,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "virtual": {
+            "type": "boolean",
+            "description": "No shared repository: the app still deploys on its own too."
           }
         }
       },
@@ -8449,6 +8738,18 @@
             "description": "\"read\" or \"deploy\" (tokens only)."
           }
         }
+      },
+      "SetAssistantRequest": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "SetPrometheusRequest": {
         "type": "object",

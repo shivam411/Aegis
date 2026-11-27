@@ -232,7 +232,7 @@ export const HELP = {
   },
   groups: {
     title: 'App groups',
-    summary: 'Apps from the same repository and branch, deployed together in order from one clone. "Deploy changed only" and the group webhook deploy just apps whose watch paths changed.',
+    summary: 'Apps deployed together in order. From one repository and branch (one clone, watch paths, one webhook), or a virtual group made by ticking apps on Overview and choosing Group: each deploys from its own source.',
     controls: [
       ['Deploy group', 'Deploys every app at the branch\'s latest commit, in order.'],
       ['Deploy changed only', 'Skips apps with no changed watched files; reasons are listed.'],
@@ -241,6 +241,27 @@ export const HELP = {
     ],
     roles: 'Everyone sees groups; deployers deploy and roll back; admins edit.',
     docs: 'groups.md',
+  },
+  'account.assistant': {
+    title: 'Claude assistant',
+    summary: 'Optional and off by default: Claude Code on this server answers questions from a read-only snapshot of app status, deployments, events and logs. That snapshot is sent to Anthropic.',
+    controls: [
+      ['Turn assistant on/off', 'Off removes the page; nothing is run while off.'],
+      ['Install Claude Code', 'Runs Anthropic\'s installer for the Aegis user (needs curl and internet access).'],
+      ['API key or token', 'Stored encrypted; usage is billed to that Anthropic account.'],
+    ],
+    roles: 'The owner (first admin) only.',
+    docs: 'assistant.md',
+  },
+  assistant: {
+    title: 'Assistant',
+    summary: 'Ask why a deployment failed, what an app is logging, or what is using memory. Claude cannot run commands or change anything.',
+    controls: [
+      ['Ask (Enter)', 'Takes a fresh snapshot and answers; Shift+Enter adds a line.'],
+      ['New chat', 'Forgets the conversation so far.'],
+    ],
+    roles: 'The owner only.',
+    docs: 'assistant.md',
   },
   'app.updates': {
     title: 'New changes',

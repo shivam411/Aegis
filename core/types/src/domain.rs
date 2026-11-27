@@ -13,7 +13,7 @@ pub fn normalize_domain(input: &str) -> Result<String, String> {
         return Err("The domain must not be empty".into());
     }
     if name.contains('*') {
-        return Err("Wildcard domains are not supported; map each name separately".into());
+        return Err("A wildcard (*) is not allowed here".into());
     }
     if name.contains(':') || name.contains('/') {
         return Err("Give only the domain name, without a scheme, port or path".into());
@@ -68,9 +68,66 @@ pub fn normalize_domain(input: &str) -> Result<String, String> {
     Ok(name)
 }
 
+/// Like [`normalize_domain`], but also accepts a wildcard subdomain,
+/// `*.example.com`: every name exactly one label below `example.com`.
+pub fn normalize_route_domain(input: &str) -> Result<String, String> {
+    match input.trim().strip_prefix("*.") {
+        Some(base) => normalize_domain(base).map(|b| format!("*.{}", b)),
+        None if input.contains('*') => {
+            Err("A wildcard must be the whole first label, as in *.example.com".into())
+        }
+        None => normalize_domain(input),
+    }
+}
+
+/// The wildcard name that would cover `host`: `a.example.com` gives
+/// `*.example.com`. `None` when what is left has fewer than two labels.
+pub fn wildcard_of(host: &str) -> Option<String> {
+    let (label, base) = host.split_once('.')?;
+    (!label.is_empty() && label != "*" && base.contains('.')).then(|| format!("*.{}", base))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::normalize_domain;
+    use super::{normalize_domain, normalize_route_domain, wildcard_of};
+
+    #[test]
+    fn route_domains_may_be_wildcards() {
+        assert_eq!(
+            normalize_route_domain(" *.Example.COM. ").unwrap(),
+            "*.example.com"
+        );
+        assert_eq!(
+            normalize_route_domain("a.example.com").unwrap(),
+            "a.example.com"
+        );
+        for bad in [
+            "*",
+            "*.com",
+            "a.*.example.com",
+            "*a.example.com",
+            "*.*.a.com",
+        ] {
+            assert!(
+                normalize_route_domain(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn wildcard_covers_one_label() {
+        assert_eq!(
+            wildcard_of("a.example.com").as_deref(),
+            Some("*.example.com")
+        );
+        assert_eq!(
+            wildcard_of("a.b.example.com").as_deref(),
+            Some("*.b.example.com")
+        );
+        assert_eq!(wildcard_of("example.com"), None);
+        assert_eq!(wildcard_of("*.example.com"), None);
+    }
 
     #[test]
     fn accepts_and_normalizes_valid_names() {

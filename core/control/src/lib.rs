@@ -5,6 +5,7 @@
 //! then executed; state is read back from the projection, which is updated
 //! synchronously as each event is persisted.
 
+mod assistant;
 pub mod backup;
 mod config_file;
 mod cron;
@@ -43,6 +44,7 @@ use std::time::Duration;
 
 pub use aegis_docker::DockerStatus;
 pub use aegis_secrets::SecretInfo;
+pub use assistant::{AssistantReply, AssistantStatus};
 pub use config_file::ConfigPreview;
 pub use cron::CronSchedule;
 pub use deploy::{DeployRequest, LiveCheck};
@@ -195,8 +197,8 @@ pub struct ProjectView {
     /// The previous release's instances, kept running after a BlueGreen
     /// switch as an instant rollback target.
     pub standby: Option<StandbyView>,
-    /// The group the app belongs to: (id, name).
-    pub group: Option<(String, String)>,
+    /// The group the app belongs to: (id, name, is virtual).
+    pub group: Option<(String, String, bool)>,
     /// The commit the live release was built from, when known.
     pub commit: Option<String>,
     /// The latest "new commits" check, if one has run.
@@ -245,6 +247,8 @@ struct Inner {
     docker: Arc<aegis_docker::Docker>,
     /// One deployment or rollback per group at a time.
     group_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One assistant install or question at a time.
+    assistant_lock: tokio::sync::Mutex<()>,
     /// The latest "new commits" check of each app.
     updates: Mutex<HashMap<ProjectId, updates::UpdateStatus>>,
     /// Fetch state of each cached repository.
@@ -334,6 +338,7 @@ impl ControlPlane {
                 backup_lock: tokio::sync::Mutex::new(()),
                 docker,
                 group_locks: Mutex::new(HashMap::new()),
+                assistant_lock: tokio::sync::Mutex::new(()),
                 updates: Mutex::new(HashMap::new()),
                 repo_caches: Mutex::new(HashMap::new()),
             }),
@@ -740,11 +745,10 @@ impl ControlPlane {
                     usage,
                     instances: self.instance_views(&project),
                     standby: self.standby_view(&project.id),
-                    group: self
-                        .inner
-                        .projection
-                        .group_of(&project.id)
-                        .map(|g| (g.id, g.name)),
+                    group: self.inner.projection.group_of(&project.id).map(|g| {
+                        let is_virtual = g.is_virtual();
+                        (g.id, g.name, is_virtual)
+                    }),
                     commit: project
                         .current_release
                         .as_ref()

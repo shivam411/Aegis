@@ -1,15 +1,17 @@
 //! Certificates for HTTPS: loading PEM files, choosing a certificate by SNI,
 //! expiry parsing and the renewal decision.
 
+use aegis_types::domain::wildcard_of;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
+use tokio::sync::Notify;
 
 /// Renew certificates this long before they expire.
 pub const RENEW_BEFORE_DAYS: i64 = 30;
@@ -196,7 +198,14 @@ pub struct CertStatus {
 #[derive(Default)]
 pub struct CertStore {
     certs: RwLock<HashMap<String, LoadedCert>>,
+    /// Server names asked for that had no certificate.
+    missed: Mutex<HashSet<String>>,
+    /// Wakes certificate maintenance after a miss.
+    pub(crate) on_miss: Notify,
 }
+
+/// Misses kept between maintenance passes (anyone can send any name).
+const MAX_MISSED: usize = 64;
 
 impl std::fmt::Debug for CertStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -220,6 +229,25 @@ impl CertStore {
     pub fn contains(&self, domain: &str) -> bool {
         self.certs.read().unwrap().contains_key(domain)
     }
+
+    /// The certificate for `host`: its own, or a wildcard one covering it.
+    pub fn for_host(&self, host: &str) -> Option<LoadedCert> {
+        self.get(host)
+            .or_else(|| wildcard_of(host).and_then(|w| self.get(&w)))
+    }
+
+    /// Remembers a name that had no certificate, so one can be requested if
+    /// a wildcard route covers it.
+    pub(crate) fn miss(&self, host: &str) {
+        let mut missed = self.missed.lock().unwrap();
+        if missed.len() < MAX_MISSED && missed.insert(host.to_string()) {
+            self.on_miss.notify_one();
+        }
+    }
+
+    pub(crate) fn take_missed(&self) -> Vec<String> {
+        self.missed.lock().unwrap().drain().collect()
+    }
 }
 
 /// Picks the certificate for the server name the client asked for (SNI).
@@ -234,7 +262,11 @@ impl ResolvesServerCert for SniResolver {
             .server_name()?
             .trim_end_matches('.')
             .to_ascii_lowercase();
-        self.0.get(&name).map(|c| c.key)
+        let found = self.0.for_host(&name);
+        if found.is_none() {
+            self.0.miss(&name);
+        }
+        found.map(|c| c.key)
     }
 }
 

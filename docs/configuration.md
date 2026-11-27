@@ -449,4 +449,4 @@ Deploy keys are used over SSH with `StrictHostKeyChecking=yes`: a server whose h
 - `AEGIS_*` environment variable overrides for individual settings (only `AEGIS_CONFIG` exists today).
 - A global `~/.aegis/config.toml` merged underneath project settings.
 - Least-connections balancing and active health checks of running instances (the proxy balances round robin and only skips instances that refuse connections).
-- Wildcard domains and the DNS-01 challenge.
+- The DNS-01 challenge (one certificate for a whole wildcard domain).

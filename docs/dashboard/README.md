@@ -29,6 +29,7 @@ Sign in as `admin`. The first password is in `<data_dir>/initial-admin-password`
 | ↳ [Activity tab](activity.md) | The app's own audit log. |
 | [Deployments](deployments.md) | Every deployment of every app, with details. |
 | [Events](events.md) | The audit log for the whole server. |
+| [Assistant](assistant.md) | Optional chat with Claude Code about your apps (owner only, off by default). |
 | [Account](account.md) | Password, theme, and for admins: users, API tokens, backups. |
 | [System](system.md) | Updates and storage cleanup (admins). |
 | [Docker](docker.md) | Server containers and their logs; owner only unless shared. |

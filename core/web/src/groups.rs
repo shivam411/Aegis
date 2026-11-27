@@ -74,6 +74,9 @@ pub struct GroupDto {
     pub name: String,
     pub repository_url: String,
     pub branch: String,
+    /// No shared repository: each app deploys from its own source.
+    #[serde(default, rename = "virtual")]
+    pub is_virtual: bool,
     /// When a member fails, the members already switched in that group
     /// deployment go back to their previous release.
     pub rollback_on_failure: bool,
@@ -105,6 +108,10 @@ pub struct GroupRequest {
     pub rollback_on_failure: Option<bool>,
     /// Members in deploy order (create only; use the members endpoints later).
     pub members: Vec<MemberRequest>,
+    /// A virtual group: any apps, each deployed from its own source; leave
+    /// `repository_url` and `branch` out (create only).
+    #[serde(rename = "virtual")]
+    pub is_virtual: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
@@ -247,6 +254,7 @@ pub(crate) async fn group_dto(st: &AppState, group: GroupState) -> ApiResult<Gro
         .map_err(ApiError::internal)?
         .is_some();
     Ok(GroupDto {
+        is_virtual: group.is_virtual(),
         last_deployment: group
             .last_deployment
             .as_ref()
@@ -323,6 +331,7 @@ pub(crate) async fn create_group(
                 repository_url: req.repository_url,
                 branch: req.branch.unwrap_or_default(),
                 rollback_on_failure: req.rollback_on_failure,
+                virtual_group: req.is_virtual,
             },
             members,
         )
@@ -365,6 +374,7 @@ pub(crate) async fn update_group(
                 repository_url: req.repository_url,
                 branch: req.branch.unwrap_or_default(),
                 rollback_on_failure: req.rollback_on_failure,
+                virtual_group: req.is_virtual,
             },
         )
         .await?;
@@ -621,6 +631,13 @@ pub(crate) async fn rotate_webhook_secret(
     Path(key): Path<String>,
 ) -> ApiResult<Json<WebhookSecretDto>> {
     let group = st.control.resolve_group(&key)?;
+    if group.is_virtual() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "failed_precondition",
+            "A virtual group has no webhook; use each app's own",
+        ));
+    }
     let secret = st
         .auth
         .rotate_webhook_secret(&webhook_key(&group.id))

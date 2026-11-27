@@ -102,8 +102,9 @@ test('switch to the list view and restart the selected apps', async ({ page }) =
   await confirm(page, 'Deploy');
   await expect(page.locator('.toast', { hasText: 'queued for deployment' })).toBeVisible();
 
-  await page.locator('[data-bulk="clear"]').click();
+  // A queued deployment unticks its app.
   await expect(page.locator('[data-selected-count]')).toHaveCount(0);
+  await expect(page.locator(`[data-select="${name}"]`)).not.toBeChecked();
   await page.locator('[data-view="grid"]').click();
   await expect(page.locator('table.apps-table')).toHaveCount(0);
 });
