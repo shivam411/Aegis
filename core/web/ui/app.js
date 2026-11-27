@@ -5368,7 +5368,8 @@ async function accountPage(main, ctx) {
       admin ? usersCard(ctx, session.name) : null,
       admin ? tokenCard : null,
       admin ? backupCard : null,
-      admin ? monitoringCard(ctx), assistantCard(ctx) : null,
+      admin ? monitoringCard(ctx) : null,
+      admin ? assistantCard(ctx) : null,
       h('div', { class: 'grid two' }, pwForm, prefs)));
   if (admin) await Promise.all([loadTokens(), loadBackups()]);
 }
